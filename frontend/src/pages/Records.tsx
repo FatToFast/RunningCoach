@@ -38,10 +38,10 @@ interface RecordCardProps {
   category: string;
   value: number;
   unit: string;
-  activityName: string;
+  activityName: string | null;
   achievedDate: string;
-  previousBest?: number;
-  improvementPct?: number;
+  previousBest?: number | null;
+  improvementPct?: number | null;
   formatValue?: (value: number) => string;
   icon: React.ElementType;
   accentColor: string;
@@ -73,7 +73,7 @@ function RecordCard({
           </div>
           <div>
             <h3 className="font-display font-semibold">{category}</h3>
-            <p className="text-muted text-sm">{activityName}</p>
+            {activityName && <p className="text-muted text-sm">{activityName}</p>}
           </div>
         </div>
         <Trophy className="w-5 h-5 text-amber opacity-80" />
@@ -91,7 +91,7 @@ function RecordCard({
           <Calendar className="w-4 h-4" />
           {formatDate(achievedDate)}
         </div>
-        {improvementPct !== undefined && improvementPct > 0 && (
+        {improvementPct != null && improvementPct > 0 && (
           <div className="flex items-center gap-1 text-green">
             <TrendingUp className="w-4 h-4" />
             <span className="font-mono">+{improvementPct.toFixed(1)}%</span>
@@ -99,7 +99,7 @@ function RecordCard({
         )}
       </div>
 
-      {previousBest !== undefined && (
+      {previousBest != null && (
         <div className="mt-3 pt-3 border-t border-[var(--color-border)]">
           <div className="text-xs text-muted">
             Previous best:{' '}

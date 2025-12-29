@@ -7,7 +7,6 @@ import {
   Calendar,
   MessageSquare,
   Dumbbell,
-  Heart,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -18,7 +17,6 @@ const navItems = [
   { to: '/records', icon: Trophy, label: 'Records' },
   { to: '/calendar', icon: Calendar, label: 'Calendar' },
   { to: '/workouts', icon: Dumbbell, label: 'Workouts' },
-  { to: '/health', icon: Heart, label: 'Health' },
   { to: '/ai', icon: MessageSquare, label: 'AI Coach' },
 ];
 

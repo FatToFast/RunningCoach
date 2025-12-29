@@ -1,4 +1,4 @@
-import { Activity, Settings, User, RefreshCw } from 'lucide-react';
+import { Settings, User, RefreshCw } from 'lucide-react';
 
 interface HeaderProps {
   lastSync?: string | null;
@@ -12,7 +12,6 @@ export function Header({ lastSync, isConnected = false }: HeaderProps) {
         {/* Logo & Title */}
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <Activity className="w-8 h-8 text-cyan" />
             <h1 className="font-display text-xl font-bold tracking-tight">
               RUNNING<span className="text-cyan">COACH</span>
             </h1>
