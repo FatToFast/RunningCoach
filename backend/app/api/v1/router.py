@@ -1,45 +1,100 @@
 """API v1 router aggregating all endpoint routers.
 
-Routes are organized to match PRD.md and MVP.md specifications:
+Routes are organized to match PRD.md and MVP.md specifications.
+See docs/api-reference.md for complete API documentation.
+
+Canonical Routes (v1):
+======================
 
 Authentication:
-  /api/v1/auth/login, /logout, /me
-  /api/v1/auth/garmin/* (connect, refresh, disconnect, status)
-  /api/v1/auth/strava/* (connect, callback, refresh, status)
+  POST   /api/v1/auth/login              - 로컬 로그인
+  POST   /api/v1/auth/logout             - 로그아웃
+  GET    /api/v1/auth/me                 - 현재 사용자
+  POST   /api/v1/auth/garmin/connect     - Garmin 계정 연결
+  POST   /api/v1/auth/garmin/refresh     - Garmin 세션 갱신
+  DELETE /api/v1/auth/garmin/disconnect  - Garmin 연결 해제
+  GET    /api/v1/auth/garmin/status      - Garmin 연결 상태
+  POST   /api/v1/auth/strava/connect     - Strava OAuth 시작
+  POST   /api/v1/auth/strava/callback    - Strava OAuth 콜백
+  POST   /api/v1/auth/strava/refresh     - Strava 세션 갱신
+  GET    /api/v1/auth/strava/status      - Strava 연결 상태
 
 Data Ingestion:
-  /api/v1/ingest/run, /status, /history
+  POST   /api/v1/ingest/run              - 수동 동기화 실행
+  GET    /api/v1/ingest/status           - 동기화 상태 조회
+  GET    /api/v1/ingest/history          - 동기화 이력 (v1.0)
 
 Activities:
-  /api/v1/activities (list, detail, samples, fit)
+  GET    /api/v1/activities              - 활동 목록 (페이지네이션)
+  GET    /api/v1/activities/{id}         - 활동 상세
+  GET    /api/v1/activities/{id}/samples - 활동 샘플 (초 단위)
+  GET    /api/v1/activities/{id}/fit     - FIT 파일 다운로드
 
 Health Data:
-  /api/v1/sleep (list, by date)
-  /api/v1/hr (list, summary)
-  /api/v1/metrics (summary, body, fitness)
+  GET    /api/v1/sleep                   - 수면 기록 목록
+  GET    /api/v1/sleep/{date}            - 특정 날짜 수면 데이터
+  GET    /api/v1/hr                      - 심박/HRV 기록 목록
+  GET    /api/v1/hr/summary              - 심박 요약
+  GET    /api/v1/metrics                 - 건강/피트니스 지표 목록
+  GET    /api/v1/metrics/summary         - 지표 요약
+  GET    /api/v1/metrics/body            - 신체 지표
+  GET    /api/v1/metrics/fitness         - 피트니스 지표
 
 Dashboard:
-  /api/v1/dashboard/summary, /trends, /calendar
+  GET    /api/v1/dashboard/summary       - 주간/월간 요약
+  GET    /api/v1/dashboard/trends        - 트렌드 데이터 (차트용)
+  GET    /api/v1/dashboard/calendar      - 캘린더 뷰 데이터
 
 Analytics:
-  /api/v1/analytics/compare - 기간 비교 분석
-  /api/v1/analytics/personal-records - 개인 최고 기록 (PR)
+  GET    /api/v1/analytics/compare       - 기간 비교 분석
+  GET    /api/v1/analytics/personal-records - 개인 최고 기록 (PR)
 
-AI:
-  /api/v1/ai/chat, /conversations, /import, /export
+AI Planning:
+  POST   /api/v1/ai/chat                 - 대화형 계획 생성/수정
+  GET    /api/v1/ai/conversations        - 대화 목록
+  GET    /api/v1/ai/conversations/{id}   - 대화 상세
+  POST   /api/v1/ai/import               - 수동 플랜 JSON import
+  GET    /api/v1/ai/export               - ChatGPT 분석용 요약 생성
 
 Workouts:
-  /api/v1/workouts (CRUD, push, schedule)
+  POST   /api/v1/workouts                - 워크아웃 생성
+  GET    /api/v1/workouts                - 워크아웃 목록
+  GET    /api/v1/workouts/{id}           - 워크아웃 상세
+  PUT    /api/v1/workouts/{id}           - 워크아웃 수정
+  DELETE /api/v1/workouts/{id}           - 워크아웃 삭제
+  POST   /api/v1/workouts/{id}/push      - Garmin에 전송
+  POST   /api/v1/workouts/{id}/schedule  - 날짜 스케줄링
 
-Plans (v1.0):
-  /api/v1/plans (CRUD, approve, sync)
+Training Plans (v1.0):
+  POST   /api/v1/plans                   - 훈련 계획 생성
+  GET    /api/v1/plans                   - 계획 목록
+  GET    /api/v1/plans/{id}              - 계획 상세
+  PUT    /api/v1/plans/{id}              - 계획 수정
+  POST   /api/v1/plans/{id}/approve      - 계획 승인
+  POST   /api/v1/plans/{id}/sync         - Garmin 동기화
 
 Strava Sync:
-  /api/v1/strava/sync/run, /status
+  POST   /api/v1/strava/sync/run         - Strava 수동 동기화
+  GET    /api/v1/strava/sync/status      - Strava 동기화 상태
+  GET    /api/v1/strava/connect          - Strava OAuth 시작
+  POST   /api/v1/strava/callback         - Strava OAuth 콜백
+  GET    /api/v1/strava/status           - Strava 연결 상태
+  DELETE /api/v1/strava/disconnect       - Strava 연결 해제
+  GET    /api/v1/strava/activities       - 업로드 상태 목록
+  POST   /api/v1/strava/activities/{id}/upload - 단일 활동 업로드
+
+Aliases:
+  GET    /api/v1/aliases                 - 레거시 경로 목록
+
+Legacy/Alias Support:
+  - /sync/garmin/*  → /ingest/*  (deprecated, v2.0에서 제거)
+  - /data/*         → /*         (deprecated, v2.0에서 제거)
+  - /stats/*        → /dashboard/* (deprecated, v2.0에서 제거)
 """
 
 from fastapi import APIRouter
 
+from app.api.v1.aliases import alias_router
 from app.api.v1.endpoints import (
     activities,
     ai,
@@ -108,3 +163,8 @@ api_router.include_router(plans.router, prefix="/plans", tags=["plans"])
 # Strava Sync (separate from auth connection)
 # -------------------------------------------------------------------------
 api_router.include_router(strava.router, prefix="/strava", tags=["strava"])
+
+# -------------------------------------------------------------------------
+# Legacy/Alias Routes (backward compatibility)
+# -------------------------------------------------------------------------
+api_router.include_router(alias_router, tags=["aliases"])
