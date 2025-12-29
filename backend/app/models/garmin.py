@@ -1,0 +1,129 @@
+"""Garmin-related models."""
+
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Optional
+
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import BaseModel
+
+if TYPE_CHECKING:
+    from app.models.user import User
+    from app.models.activity import Activity
+
+
+class GarminSession(BaseModel):
+    """Garmin session tokens for API authentication."""
+
+    __tablename__ = "garmin_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,
+    )
+
+    # OAuth tokens (encrypted at rest)
+    oauth1_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    oauth2_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_login: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="garmin_session")
+
+    def __repr__(self) -> str:
+        return f"<GarminSession(user_id={self.user_id})>"
+
+
+class GarminSyncState(BaseModel):
+    """Sync state per endpoint for incremental sync."""
+
+    __tablename__ = "garmin_sync_state"
+    __table_args__ = (
+        UniqueConstraint("user_id", "endpoint", name="uq_garmin_sync_state_user_endpoint"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    endpoint: Mapped[str] = mapped_column(String(100), index=True)
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cursor: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="garmin_sync_states")
+
+    def __repr__(self) -> str:
+        return f"<GarminSyncState(user_id={self.user_id}, endpoint={self.endpoint})>"
+
+
+class GarminRawEvent(BaseModel):
+    """Raw JSON data fetched from Garmin API."""
+
+    __tablename__ = "garmin_raw_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    endpoint: Mapped[str] = mapped_column(String(100), index=True)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<GarminRawEvent(id={self.id}, endpoint={self.endpoint})>"
+
+
+class GarminRawFile(BaseModel):
+    """FIT file metadata for activities."""
+
+    __tablename__ = "garmin_raw_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    activity_id: Mapped[int] = mapped_column(
+        ForeignKey("activities.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    file_type: Mapped[str] = mapped_column(String(20), default="fit")
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default="now()",
+    )
+
+    # Relationship
+    activity: Mapped["Activity"] = relationship("Activity", back_populates="raw_file")
+
+    def __repr__(self) -> str:
+        return f"<GarminRawFile(activity_id={self.activity_id}, type={self.file_type})>"
