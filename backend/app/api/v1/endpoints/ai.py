@@ -2,7 +2,7 @@
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -207,24 +207,34 @@ async def list_conversations(
     )
 
 
+class CreateConversationRequest(BaseModel):
+    """Request to create a new conversation."""
+
+    title: Optional[str] = None
+    language: str = "ko"
+
+
 @router.post("/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
 async def create_conversation(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    title: Optional[str] = None,
-    language: str = "ko",
+    request: CreateConversationRequest | None = None,
 ) -> ConversationResponse:
     """Create a new AI conversation.
+
+    Accepts either JSON body or empty request (uses defaults).
 
     Args:
         current_user: Authenticated user.
         db: Database session.
-        title: Optional conversation title.
-        language: Conversation language (default: ko).
+        request: Optional request body with title and language.
 
     Returns:
         Created conversation.
     """
+    title = request.title if request else None
+    language = request.language if request else "ko"
+
     conversation = AIConversation(
         user_id=current_user.id,
         title=title or "새 대화",
@@ -514,14 +524,16 @@ async def _get_ai_response(
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     metrics = get_metrics_backend()
 
-    # Build message history
+    # Build message history (get most recent 20 messages, ordered chronologically)
+    # Note: user_message is not yet committed, so we won't get duplicates
     msg_result = await db.execute(
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation.id)
-        .order_by(AIMessage.created_at.asc())
-        .limit(20)  # Limit context window
+        .order_by(AIMessage.created_at.desc())
+        .limit(20)  # Limit context window to most recent
     )
-    history = msg_result.scalars().all()
+    # Reverse to get chronological order (oldest first)
+    history = list(reversed(msg_result.scalars().all()))
 
     # System prompt for running coach
     system_prompt = """당신은 전문 러닝 코치입니다. 사용자의 훈련 데이터와 목표를 기반으로 과학적이고 개인화된 훈련 계획을 제공합니다.
@@ -620,25 +632,35 @@ async def import_plan(
             )
 
         # Parse goal date if provided
-        goal_date = None
+        goal_date_parsed = None
         if request.goal_date:
             try:
-                goal_date = datetime.fromisoformat(request.goal_date.replace("Z", "+00:00"))
+                goal_date_parsed = date.fromisoformat(request.goal_date.split("T")[0])
             except ValueError:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid goal_date format: {request.goal_date}",
                 )
 
-        # Create plan
+        # Calculate plan start_date and end_date
+        # start_date: today (or provided start)
+        # end_date: goal_date or start_date + (weeks * 7 days)
+        plan_start_date = date.today()
+        if goal_date_parsed:
+            plan_end_date = goal_date_parsed
+        else:
+            plan_end_date = plan_start_date + timedelta(weeks=len(request.weeks))
+
+        # Create plan (map request fields to model fields)
         plan = Plan(
             user_id=current_user.id,
-            name=request.plan_name,
             goal_type=request.goal_type,
-            goal_date=goal_date,
+            goal_date=goal_date_parsed,
             goal_time=request.goal_time,
+            start_date=plan_start_date,
+            end_date=plan_end_date,
             status="draft",
-            notes=request.notes,
+            description=f"{request.plan_name}\n\n{request.notes or ''}".strip(),
         )
         db.add(plan)
         await db.flush()
@@ -648,11 +670,12 @@ async def import_plan(
         workouts_created = 0
 
         for week_data in request.weeks:
+            # Map request fields to model fields
             plan_week = PlanWeek(
                 plan_id=plan.id,
-                week_number=week_data.week_number,
+                week_index=week_data.week_number,  # week_number -> week_index
                 focus=week_data.focus,
-                weekly_distance_km=week_data.weekly_distance_km,
+                target_distance_km=week_data.weekly_distance_km,  # weekly_distance_km -> target_distance_km
                 notes=week_data.notes,
             )
             db.add(plan_week)
@@ -660,13 +683,14 @@ async def import_plan(
             weeks_created += 1
 
             for workout_data in week_data.workouts:
+                # Map request fields to model fields
                 workout = Workout(
                     plan_week_id=plan_week.id,
                     user_id=current_user.id,
                     name=workout_data.name,
-                    type=workout_data.type,
-                    structure=[step.model_dump() for step in workout_data.steps],
-                    notes=workout_data.notes,
+                    workout_type=workout_data.type,  # type -> workout_type
+                    structure={"steps": [step.model_dump() for step in workout_data.steps]},
+                    target={"notes": workout_data.notes} if workout_data.notes else None,
                 )
                 db.add(workout)
                 workouts_created += 1

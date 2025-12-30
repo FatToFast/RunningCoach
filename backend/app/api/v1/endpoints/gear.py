@@ -1,10 +1,11 @@
 """Gear (shoes/equipment) endpoints."""
 
 from datetime import date, datetime
-from typing import Annotated
+from enum import Enum
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +17,20 @@ from app.models.gear import ActivityGear, Gear, GearStatus, GearType
 from app.models.user import User
 
 router = APIRouter()
+
+# -------------------------------------------------------------------------
+# Configuration Constants
+# -------------------------------------------------------------------------
+
+# Default max distance for shoes before retirement (in meters)
+DEFAULT_MAX_DISTANCE_METERS = 800_000  # 800km
+
+# Percentage threshold for "near retirement" warning
+RETIREMENT_WARNING_THRESHOLD = 80  # 80%
+
+# Valid enum values for validation
+VALID_GEAR_TYPES = {e.value for e in GearType}
+VALID_GEAR_STATUSES = {e.value for e in GearStatus}
 
 
 # -------------------------------------------------------------------------
@@ -91,8 +106,15 @@ class GearCreateRequest(BaseModel):
     gear_type: str = Field(default=GearType.RUNNING_SHOES.value)
     purchase_date: date | None = None
     initial_distance_meters: float = Field(default=0.0, ge=0)
-    max_distance_meters: float | None = Field(default=800000.0, ge=0)  # 800km default
+    max_distance_meters: float | None = Field(default=None, ge=0)  # Uses DEFAULT_MAX_DISTANCE_METERS if None
     notes: str | None = None
+
+    @field_validator("gear_type")
+    @classmethod
+    def validate_gear_type(cls, v: str) -> str:
+        if v not in VALID_GEAR_TYPES:
+            raise ValueError(f"Invalid gear_type. Must be one of: {', '.join(VALID_GEAR_TYPES)}")
+        return v
 
 
 class GearUpdateRequest(BaseModel):
@@ -108,6 +130,20 @@ class GearUpdateRequest(BaseModel):
     max_distance_meters: float | None = Field(None, ge=0)
     notes: str | None = None
 
+    @field_validator("gear_type")
+    @classmethod
+    def validate_gear_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_GEAR_TYPES:
+            raise ValueError(f"Invalid gear_type. Must be one of: {', '.join(VALID_GEAR_TYPES)}")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_GEAR_STATUSES:
+            raise ValueError(f"Invalid status. Must be one of: {', '.join(VALID_GEAR_STATUSES)}")
+        return v
+
 
 class ActivityGearResponse(BaseModel):
     """Activity gear link."""
@@ -122,22 +158,44 @@ class ActivityGearResponse(BaseModel):
 # -------------------------------------------------------------------------
 
 
-async def get_gear_summary(gear: Gear, db: AsyncSession) -> GearSummaryResponse:
-    """Build gear summary with calculated fields."""
-    # Calculate total distance from activities
+async def get_gear_stats_batch(
+    gear_ids: list[int], db: AsyncSession
+) -> dict[int, tuple[float, int]]:
+    """Get activity distance and count for multiple gears in a single query.
+
+    Args:
+        gear_ids: List of gear IDs to fetch stats for.
+        db: Database session.
+
+    Returns:
+        Dict mapping gear_id -> (activity_distance, activity_count)
+    """
+    if not gear_ids:
+        return {}
+
+    # Single query to get both sum and count per gear
     result = await db.execute(
-        select(func.coalesce(func.sum(Activity.distance_meters), 0))
-        .join(ActivityGear, ActivityGear.activity_id == Activity.id)
-        .where(ActivityGear.gear_id == gear.id)
+        select(
+            ActivityGear.gear_id,
+            func.coalesce(func.sum(Activity.distance_meters), 0).label("total_distance"),
+            func.count(ActivityGear.id).label("activity_count"),
+        )
+        .join(Activity, ActivityGear.activity_id == Activity.id)
+        .where(ActivityGear.gear_id.in_(gear_ids))
+        .group_by(ActivityGear.gear_id)
     )
-    activity_distance = result.scalar() or 0
 
-    # Count activities
-    count_result = await db.execute(
-        select(func.count(ActivityGear.id)).where(ActivityGear.gear_id == gear.id)
-    )
-    activity_count = count_result.scalar() or 0
+    stats: dict[int, tuple[float, int]] = {gid: (0.0, 0) for gid in gear_ids}
+    for row in result.all():
+        stats[row.gear_id] = (float(row.total_distance), row.activity_count)
 
+    return stats
+
+
+def build_gear_summary(
+    gear: Gear, activity_distance: float, activity_count: int
+) -> GearSummaryResponse:
+    """Build gear summary from pre-fetched stats."""
     total_distance = gear.initial_distance_meters + activity_distance
     usage_pct = None
     if gear.max_distance_meters and gear.max_distance_meters > 0:
@@ -156,21 +214,17 @@ async def get_gear_summary(gear: Gear, db: AsyncSession) -> GearSummaryResponse:
     )
 
 
+async def get_gear_summary(gear: Gear, db: AsyncSession) -> GearSummaryResponse:
+    """Build gear summary with calculated fields (single gear)."""
+    stats = await get_gear_stats_batch([gear.id], db)
+    activity_distance, activity_count = stats.get(gear.id, (0.0, 0))
+    return build_gear_summary(gear, activity_distance, activity_count)
+
+
 async def get_gear_detail(gear: Gear, db: AsyncSession) -> GearDetailResponse:
     """Build gear detail with calculated fields."""
-    # Calculate total distance from activities
-    result = await db.execute(
-        select(func.coalesce(func.sum(Activity.distance_meters), 0))
-        .join(ActivityGear, ActivityGear.activity_id == Activity.id)
-        .where(ActivityGear.gear_id == gear.id)
-    )
-    activity_distance = result.scalar() or 0
-
-    # Count activities
-    count_result = await db.execute(
-        select(func.count(ActivityGear.id)).where(ActivityGear.gear_id == gear.id)
-    )
-    activity_count = count_result.scalar() or 0
+    stats = await get_gear_stats_batch([gear.id], db)
+    activity_distance, activity_count = stats.get(gear.id, (0.0, 0))
 
     total_distance = gear.initial_distance_meters + activity_distance
     usage_pct = None
@@ -235,9 +289,14 @@ async def list_gear(
     result = await db.execute(query)
     gears = result.scalars().all()
 
+    # Batch fetch stats for all gears in a single query (fixes N+1)
+    gear_ids = [g.id for g in gears]
+    stats = await get_gear_stats_batch(gear_ids, db)
+
     items = []
     for gear in gears:
-        summary = await get_gear_summary(gear, db)
+        activity_distance, activity_count = stats.get(gear.id, (0.0, 0))
+        summary = build_gear_summary(gear, activity_distance, activity_count)
         items.append(summary)
 
     return GearListResponse(items=items, total=len(items))
@@ -264,16 +323,19 @@ async def get_gear_stats(
     gears = result.scalars().all()
 
     total = len(gears)
-    active = sum(1 for g in gears if g.status == GearStatus.ACTIVE.value)
+    active_gears = [g for g in gears if g.status == GearStatus.ACTIVE.value]
     retired = sum(1 for g in gears if g.status == GearStatus.RETIRED.value)
 
-    # Find gears near retirement (>80% usage)
+    # Batch fetch stats for all active gears (fixes N+1)
+    active_gear_ids = [g.id for g in active_gears]
+    stats = await get_gear_stats_batch(active_gear_ids, db)
+
+    # Find gears near retirement (>= RETIREMENT_WARNING_THRESHOLD% usage)
     near_retirement = []
-    for gear in gears:
-        if gear.status != GearStatus.ACTIVE.value:
-            continue
-        summary = await get_gear_summary(gear, db)
-        if summary.usage_percentage and summary.usage_percentage >= 80:
+    for gear in active_gears:
+        activity_distance, activity_count = stats.get(gear.id, (0.0, 0))
+        summary = build_gear_summary(gear, activity_distance, activity_count)
+        if summary.usage_percentage and summary.usage_percentage >= RETIREMENT_WARNING_THRESHOLD:
             near_retirement.append(summary)
 
     # Sort by usage percentage descending
@@ -281,7 +343,7 @@ async def get_gear_stats(
 
     return GearStatsResponse(
         total_gears=total,
-        active_gears=active,
+        active_gears=len(active_gears),
         retired_gears=retired,
         gears_near_retirement=near_retirement,
     )
@@ -341,7 +403,7 @@ async def create_gear(
         gear_type=data.gear_type,
         purchase_date=data.purchase_date,
         initial_distance_meters=data.initial_distance_meters,
-        max_distance_meters=data.max_distance_meters,
+        max_distance_meters=data.max_distance_meters if data.max_distance_meters is not None else DEFAULT_MAX_DISTANCE_METERS,
         notes=data.notes,
     )
 
@@ -383,6 +445,18 @@ async def update_gear(
 
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
+
+    # Handle status changes with retired_date synchronization
+    if "status" in update_data:
+        new_status = update_data["status"]
+        if new_status == GearStatus.RETIRED.value and gear.status != GearStatus.RETIRED.value:
+            # Transitioning to retired: set retired_date if not already set
+            if gear.retired_date is None:
+                gear.retired_date = date.today()
+        elif new_status == GearStatus.ACTIVE.value and gear.status == GearStatus.RETIRED.value:
+            # Reactivating from retired: clear retired_date
+            gear.retired_date = None
+
     for field, value in update_data.items():
         setattr(gear, field, value)
 
@@ -569,15 +643,17 @@ async def get_gear_activities(
     gear_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    limit: int = Query(default=50, le=100),
+    limit: int = Query(default=50, ge=1, le=100, description="Max results to return"),
+    offset: int = Query(default=0, ge=0, description="Number of results to skip"),
 ) -> list[int]:
-    """Get activity IDs linked to gear.
+    """Get activity IDs linked to gear, ordered by activity start time (newest first).
 
     Args:
         gear_id: Gear ID.
         current_user: Authenticated user.
         db: Database session.
-        limit: Max results.
+        limit: Max results (default: 50, max: 100).
+        offset: Number of results to skip for pagination.
 
     Returns:
         List of activity IDs.
@@ -592,9 +668,13 @@ async def get_gear_activities(
             detail="Gear not found",
         )
 
+    # Join with Activity to enable sorting by start_time
     result = await db.execute(
         select(ActivityGear.activity_id)
+        .join(Activity, ActivityGear.activity_id == Activity.id)
         .where(ActivityGear.gear_id == gear_id)
+        .order_by(Activity.start_time.desc())
+        .offset(offset)
         .limit(limit)
     )
     return [row[0] for row in result.all()]

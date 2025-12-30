@@ -38,9 +38,6 @@ class SleepRecord(BaseModel):
     rem_seconds: int | None
     awake_seconds: int | None
 
-    class Config:
-        from_attributes = True
-
 
 class SleepListResponse(BaseModel):
     """Paginated sleep list."""
@@ -115,8 +112,25 @@ async def list_sleep_records(
     result = await db.execute(query)
     records = result.scalars().all()
 
+    # Convert Sleep models to SleepRecord, extracting stages from JSON
+    items = []
+    for r in records:
+        stages = r.stages or {}
+        items.append(
+            SleepRecord(
+                id=r.id,
+                date=r.date,
+                duration_seconds=r.duration_seconds,
+                score=r.score,
+                deep_seconds=stages.get("deep"),
+                light_seconds=stages.get("light"),
+                rem_seconds=stages.get("rem"),
+                awake_seconds=stages.get("awake"),
+            )
+        )
+
     return SleepListResponse(
-        items=[SleepRecord.model_validate(r) for r in records],
+        items=items,
         total=total,
         page=page,
         per_page=per_page,
@@ -153,22 +167,29 @@ async def get_sleep_by_date(
             detail=f"No sleep record found for {sleep_date}",
         )
 
+    # Extract sleep stages from JSON
+    stages = record.stages or {}
+    deep_seconds = stages.get("deep")
+    light_seconds = stages.get("light")
+    rem_seconds = stages.get("rem")
+    awake_seconds = stages.get("awake")
+
     # Calculate percentages
     total = record.duration_seconds or 0
-    deep_pct = (record.deep_seconds / total * 100) if total and record.deep_seconds else None
-    light_pct = (record.light_seconds / total * 100) if total and record.light_seconds else None
-    rem_pct = (record.rem_seconds / total * 100) if total and record.rem_seconds else None
-    awake_pct = (record.awake_seconds / total * 100) if total and record.awake_seconds else None
+    deep_pct = (deep_seconds / total * 100) if total and deep_seconds else None
+    light_pct = (light_seconds / total * 100) if total and light_seconds else None
+    rem_pct = (rem_seconds / total * 100) if total and rem_seconds else None
+    awake_pct = (awake_seconds / total * 100) if total and awake_seconds else None
 
     return SleepDetailResponse(
         id=record.id,
         date=record.date,
         duration_seconds=record.duration_seconds,
         score=record.score,
-        deep_seconds=record.deep_seconds,
-        light_seconds=record.light_seconds,
-        rem_seconds=record.rem_seconds,
-        awake_seconds=record.awake_seconds,
+        deep_seconds=deep_seconds,
+        light_seconds=light_seconds,
+        rem_seconds=rem_seconds,
+        awake_seconds=awake_seconds,
         deep_pct=round(deep_pct, 1) if deep_pct else None,
         light_pct=round(light_pct, 1) if light_pct else None,
         rem_pct=round(rem_pct, 1) if rem_pct else None,

@@ -289,36 +289,35 @@ export function useActivitySamples(id: number, downsample?: number) {
   });
 }
 
-// Mock 데이터를 위한 보조 훅들 (백엔드에서 제공하지 않는 데이터)
-export function useActivityHRZones(_id: number) {
+// HR Zones 훅 - 백엔드 API 연결
+export function useActivityHRZones(id: number, maxHr?: number) {
   return useQuery({
-    queryKey: ['activities', 'hr-zones', _id],
+    queryKey: ['activities', 'hr-zones', id, maxHr],
     queryFn: async () => {
       if (USE_MOCK_DATA) {
         await new Promise((resolve) => setTimeout(resolve, 100));
-        return mockHRZones;
+        return { zones: mockHRZones, activity_id: id, max_hr: 190, total_time_in_zones: 2760 };
       }
-      // 실제 백엔드에서는 샘플 데이터를 분석해서 HR 존을 계산해야 함
-      return [];
+      return activitiesApi.getHRZones(id, maxHr ? { max_hr: maxHr } : undefined);
     },
     staleTime: 1000 * 60 * 30,
-    enabled: !!_id,
+    enabled: !!id,
   });
 }
 
-export function useActivityLaps(_id: number) {
+// Laps 훅 - 백엔드 API 연결
+export function useActivityLaps(id: number, splitDistance?: number) {
   return useQuery({
-    queryKey: ['activities', 'laps', _id],
+    queryKey: ['activities', 'laps', id, splitDistance],
     queryFn: async () => {
       if (USE_MOCK_DATA) {
         await new Promise((resolve) => setTimeout(resolve, 100));
-        return mockLaps;
+        return { laps: mockLaps, activity_id: id, total_laps: mockLaps.length };
       }
-      // 실제 백엔드에서는 FIT 파일을 파싱해서 랩 데이터를 추출해야 함
-      return [];
+      return activitiesApi.getLaps(id, splitDistance ? { split_distance: splitDistance } : undefined);
     },
     staleTime: 1000 * 60 * 30,
-    enabled: !!_id,
+    enabled: !!id,
   });
 }
 

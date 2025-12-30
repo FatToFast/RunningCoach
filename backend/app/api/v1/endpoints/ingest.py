@@ -13,7 +13,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
@@ -21,12 +21,65 @@ from app.core.database import get_db, async_session_maker
 from app.models.garmin import GarminSession, GarminSyncState, GarminRawEvent
 from app.models.user import User
 from app.services.sync_service import GarminSyncService, create_sync_service
+from app.adapters.garmin_adapter import GarminConnectAdapter, GarminAuthError
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Track running sync jobs (in-memory for now)
 _running_jobs: dict[int, bool] = {}
+
+
+async def validate_garmin_session(
+    db: AsyncSession,
+    user_id: int,
+    validate_with_api: bool = True,
+) -> GarminSession:
+    """Validate Garmin session exists and is working.
+
+    Args:
+        db: Database session.
+        user_id: User ID to check.
+        validate_with_api: If True, make API call to verify session is not expired.
+
+    Returns:
+        Valid GarminSession.
+
+    Raises:
+        HTTPException: If session is missing or expired.
+    """
+    result = await db.execute(
+        select(GarminSession).where(GarminSession.user_id == user_id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session or not session.is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin account not connected",
+        )
+
+    if validate_with_api:
+        # Validate session is actually working (not just existing)
+        adapter = GarminConnectAdapter()
+        try:
+            loop = asyncio.get_event_loop()
+            is_valid = await loop.run_in_executor(
+                None,
+                lambda: adapter.validate_session(session.session_data),
+            )
+            if not is_valid:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Garmin session expired. Please reconnect via /auth/garmin/connect",
+                )
+        except GarminAuthError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Garmin session expired. Please reconnect via /auth/garmin/connect",
+            )
+
+    return session
 
 
 # -------------------------------------------------------------------------
@@ -189,17 +242,8 @@ async def run_ingest(
             endpoints=[],
         )
 
-    # Check Garmin connection
-    result = await db.execute(
-        select(GarminSession).where(GarminSession.user_id == current_user.id)
-    )
-    session = result.scalar_one_or_none()
-
-    if not session or not session.is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Garmin account not connected or session expired",
-        )
+    # Validate Garmin session (with API call to verify not expired)
+    await validate_garmin_session(db, current_user.id, validate_with_api=True)
 
     # Default endpoints
     all_endpoints = GarminSyncService.ENDPOINTS
@@ -250,17 +294,8 @@ async def run_ingest_sync(
     Returns:
         List of sync results for each endpoint.
     """
-    # Check Garmin connection
-    result = await db.execute(
-        select(GarminSession).where(GarminSession.user_id == current_user.id)
-    )
-    session = result.scalar_one_or_none()
-
-    if not session or not session.is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Garmin account not connected or session expired",
-        )
+    # Validate Garmin session (with API call to verify not expired)
+    await validate_garmin_session(db, current_user.id, validate_with_api=True)
 
     # Create sync service
     sync_service = await create_sync_service(db, current_user)
@@ -369,18 +404,18 @@ async def get_sync_history(
     Returns:
         Sync history based on raw events.
     """
-    # Build query
-    query = select(GarminRawEvent).where(GarminRawEvent.user_id == current_user.id)
-
+    # Build base filter
+    base_filter = GarminRawEvent.user_id == current_user.id
     if endpoint:
-        query = query.where(GarminRawEvent.endpoint == endpoint)
+        base_filter = base_filter & (GarminRawEvent.endpoint == endpoint)
 
-    # Get total count
-    count_query = select(GarminRawEvent.id).where(GarminRawEvent.user_id == current_user.id)
-    if endpoint:
-        count_query = count_query.where(GarminRawEvent.endpoint == endpoint)
+    # Get total count using COUNT(*) for O(1) instead of O(n)
+    count_query = select(func.count()).select_from(GarminRawEvent).where(base_filter)
     count_result = await db.execute(count_query)
-    total = len(count_result.all())
+    total = count_result.scalar() or 0
+
+    # Build query for paginated results
+    query = select(GarminRawEvent).where(base_filter)
 
     # Get paginated results
     query = query.order_by(desc(GarminRawEvent.fetched_at))

@@ -25,8 +25,12 @@ from app.models import (
     HRRecord,
     BodyComposition,
 )
+from app.models.activity import ActivitySample, ActivityLap
 from app.adapters.garmin_adapter import GarminConnectAdapter
+from app.core.config import get_settings
 from app.observability import get_metrics_backend
+
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +72,13 @@ class GarminSyncService:
         session: AsyncSession,
         adapter: GarminConnectAdapter,
         user: User,
-        fit_storage_path: str = "./data/fit_files",
+        fit_storage_path: Optional[str] = None,
     ):
         self.session = session
         self.adapter = adapter
         self.user = user
-        self.fit_storage_path = Path(fit_storage_path)
+        # Use settings.fit_storage_path if not explicitly provided
+        self.fit_storage_path = Path(fit_storage_path or settings.fit_storage_path)
         self.fit_storage_path.mkdir(parents=True, exist_ok=True)
         self.metrics = get_metrics_backend()
 
@@ -166,14 +171,25 @@ class GarminSyncService:
         """
         result = SyncResult(endpoint)
 
-        # Determine date range
+        # Determine date range based on settings
+        # garmin_safety_window_days: overlap period for incremental sync (default: 3)
+        # garmin_backfill_days: initial backfill period (0 = full history, default: 0)
+        safety_window = settings.garmin_safety_window_days
+        backfill_days = settings.garmin_backfill_days
+
         if not full_backfill:
             sync_state = await self._get_sync_state(endpoint)
             if sync_state and sync_state.last_success_at and not start_date:
-                start_date = sync_state.last_success_at.date() - timedelta(days=1)
+                # Use safety window from settings for incremental sync
+                start_date = sync_state.last_success_at.date() - timedelta(days=safety_window)
 
         if not start_date:
-            start_date = date.today() - timedelta(days=30)
+            # Use backfill_days from settings (0 means as far back as possible)
+            if backfill_days > 0:
+                start_date = date.today() - timedelta(days=backfill_days)
+            else:
+                # Full history: go back 10 years (practical limit)
+                start_date = date.today() - timedelta(days=365 * 10)
         if not end_date:
             end_date = date.today()
 
@@ -335,7 +351,7 @@ class GarminSyncService:
         activity.vo2max = data.get("vO2MaxValue") or activity.vo2max
 
     async def _download_fit_file(self, activity: Activity, garmin_id: int) -> None:
-        """Download and store FIT file for an activity."""
+        """Download, parse, and store FIT file for an activity."""
         import asyncio
 
         try:
@@ -370,10 +386,138 @@ class GarminSyncService:
             )
             self.session.add(raw_file)
 
-            logger.info(f"Downloaded FIT file for activity {garmin_id}")
+            # Parse FIT file and store samples/laps
+            try:
+                parsed_data = await loop.run_in_executor(
+                    None,
+                    lambda: self.adapter.parse_fit_file(fit_data),
+                )
+                await self._store_fit_data(activity, parsed_data)
+            except Exception as parse_error:
+                logger.warning(f"Failed to parse FIT file for activity {garmin_id}: {parse_error}")
+
+            logger.info(f"Downloaded and parsed FIT file for activity {garmin_id}")
 
         except Exception as e:
             logger.warning(f"Failed to download FIT file for activity {garmin_id}: {e}")
+
+    async def _store_fit_data(self, activity: Activity, parsed_data: dict[str, Any]) -> None:
+        """Store parsed FIT data as samples and laps.
+
+        Args:
+            activity: Activity to attach data to.
+            parsed_data: Parsed FIT data from adapter.parse_fit_file()
+        """
+        # Store records as ActivitySample
+        records = parsed_data.get("records", [])
+        if records:
+            samples_to_add = []
+            for record in records:
+                timestamp = record.get("timestamp")
+                if not timestamp:
+                    continue
+
+                # Parse timestamp if it's a string
+                if isinstance(timestamp, str):
+                    timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+                # Calculate pace from speed (m/s -> seconds per km)
+                pace_seconds = None
+                speed = record.get("enhanced_speed") or record.get("speed")
+                if speed and speed > 0:
+                    pace_seconds = int(1000 / speed)
+
+                # Convert semicircle coordinates to degrees if needed
+                latitude = record.get("position_lat")
+                longitude = record.get("position_long")
+                if latitude is not None and abs(latitude) > 180:
+                    latitude = latitude * (180 / 2**31)
+                if longitude is not None and abs(longitude) > 180:
+                    longitude = longitude * (180 / 2**31)
+
+                sample = ActivitySample(
+                    activity_id=activity.id,
+                    timestamp=timestamp,
+                    hr=record.get("heart_rate"),
+                    heart_rate=record.get("heart_rate"),
+                    pace_seconds=pace_seconds,
+                    speed=speed,
+                    cadence=record.get("cadence"),
+                    power=record.get("power"),
+                    latitude=latitude,
+                    longitude=longitude,
+                    altitude=record.get("enhanced_altitude") or record.get("altitude"),
+                    distance_meters=record.get("distance"),
+                    ground_contact_time=record.get("ground_contact_time") or record.get("stance_time"),
+                    vertical_oscillation=record.get("vertical_oscillation"),
+                    stride_length=record.get("step_length"),
+                )
+                samples_to_add.append(sample)
+
+            if samples_to_add:
+                self.session.add_all(samples_to_add)
+                logger.info(f"Stored {len(samples_to_add)} samples for activity {activity.id}")
+
+        # Store laps as ActivityLap
+        laps = parsed_data.get("laps", [])
+        if laps:
+            laps_to_add = []
+            for i, lap in enumerate(laps, 1):
+                start_time = lap.get("start_time") or lap.get("timestamp")
+                if isinstance(start_time, str):
+                    start_time = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+
+                # Calculate pace from speed
+                avg_pace_seconds = None
+                avg_speed = lap.get("enhanced_avg_speed") or lap.get("avg_speed")
+                if avg_speed and avg_speed > 0:
+                    avg_pace_seconds = int(1000 / avg_speed)
+
+                lap_record = ActivityLap(
+                    activity_id=activity.id,
+                    lap_number=i,
+                    start_time=start_time,
+                    duration_seconds=lap.get("total_timer_time") or lap.get("total_elapsed_time"),
+                    distance_meters=lap.get("total_distance"),
+                    avg_hr=lap.get("avg_heart_rate"),
+                    max_hr=lap.get("max_heart_rate"),
+                    avg_cadence=lap.get("avg_cadence"),
+                    max_cadence=lap.get("max_cadence"),
+                    avg_pace_seconds=avg_pace_seconds,
+                    total_ascent_meters=lap.get("total_ascent"),
+                    total_descent_meters=lap.get("total_descent"),
+                    calories=lap.get("total_calories"),
+                )
+                laps_to_add.append(lap_record)
+
+            if laps_to_add:
+                self.session.add_all(laps_to_add)
+                logger.info(f"Stored {len(laps_to_add)} laps for activity {activity.id}")
+
+        # Update activity with session-level data from FIT
+        session_data = parsed_data.get("session", {})
+        if session_data:
+            # Training metrics
+            if session_data.get("training_stress_score"):
+                activity.training_stress_score = session_data["training_stress_score"]
+            if session_data.get("intensity_factor"):
+                activity.intensity_factor = session_data["intensity_factor"]
+
+            # Running dynamics
+            if session_data.get("avg_ground_contact_time"):
+                activity.avg_ground_contact_time = int(session_data["avg_ground_contact_time"])
+            if session_data.get("avg_vertical_oscillation"):
+                activity.avg_vertical_oscillation = session_data["avg_vertical_oscillation"]
+            if session_data.get("avg_step_length"):
+                activity.avg_stride_length = session_data["avg_step_length"]
+
+            # Power
+            if session_data.get("normalized_power"):
+                activity.normalized_power = int(session_data["normalized_power"])
+            if session_data.get("avg_power"):
+                activity.avg_power = int(session_data["avg_power"])
+            if session_data.get("max_power"):
+                activity.max_power = int(session_data["max_power"])
 
     async def _sync_sleep(
         self,
@@ -462,9 +606,10 @@ class GarminSyncService:
         await self.session.commit()
 
     async def _store_heart_rate(self, data: dict[str, Any], hr_date: date) -> None:
-        """Store heart rate record."""
-        hr_record = HRRecord(
+        """Store or update heart rate record using upsert."""
+        stmt = insert(HRRecord).values(
             user_id=self.user.id,
+            date=hr_date,
             start_time=datetime.combine(hr_date, datetime.min.time()),
             end_time=datetime.combine(hr_date, datetime.max.time()),
             avg_hr=data.get("restingHeartRate"),
@@ -472,7 +617,17 @@ class GarminSyncService:
             resting_hr=data.get("restingHeartRate"),
             samples=data.get("heartRateValues"),
         )
-        self.session.add(hr_record)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_hr_record_user_date",
+            set_={
+                "avg_hr": stmt.excluded.avg_hr,
+                "max_hr": stmt.excluded.max_hr,
+                "resting_hr": stmt.excluded.resting_hr,
+                "samples": stmt.excluded.samples,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        )
+        await self.session.execute(stmt)
 
     async def _sync_body_composition(
         self,
@@ -574,14 +729,14 @@ class GarminSyncService:
 async def create_sync_service(
     session: AsyncSession,
     user: User,
-    fit_storage_path: str = "./data/fit_files",
+    fit_storage_path: Optional[str] = None,
 ) -> Optional[GarminSyncService]:
     """Factory function to create a sync service for a user.
 
     Args:
         session: Database session
         user: User to sync for
-        fit_storage_path: Path to store FIT files
+        fit_storage_path: Path to store FIT files (uses settings.fit_storage_path if None)
 
     Returns:
         GarminSyncService if user has valid Garmin session, None otherwise

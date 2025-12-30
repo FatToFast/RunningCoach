@@ -59,8 +59,9 @@ class WorkoutResponse(BaseModel):
     id: int
     name: str
     workout_type: str
-    structure: dict[str, Any] | None
+    structure: list[dict[str, Any]] | None  # List of workout steps
     target: dict[str, Any] | None
+    notes: str | None
     garmin_workout_id: int | None
     plan_week_id: int | None
     created_at: datetime
@@ -99,10 +100,12 @@ class ScheduleResponse(BaseModel):
 
 
 class ScheduleListResponse(BaseModel):
-    """Scheduled workouts list."""
+    """Paginated scheduled workouts list."""
 
     items: list[ScheduleResponse]
     total: int
+    page: int = 1
+    per_page: int = 20
 
 
 # -------------------------------------------------------------------------
@@ -177,6 +180,7 @@ async def create_workout(
         workout_type=request.workout_type,
         structure=[s.model_dump() for s in request.structure] if request.structure else None,
         target=request.target,
+        notes=request.notes,
     )
     db.add(workout)
     await db.commit()
@@ -258,6 +262,8 @@ async def update_workout(
         workout.structure = [s.model_dump() for s in request.structure]
     if request.target is not None:
         workout.target = request.target
+    if request.notes is not None:
+        workout.notes = request.notes
 
     workout.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -363,37 +369,53 @@ async def push_to_garmin(
 async def list_schedules(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
     start_date: date | None = None,
     end_date: date | None = None,
     status_filter: str | None = None,
 ) -> ScheduleListResponse:
-    """List scheduled workouts.
+    """List scheduled workouts with pagination.
 
     Args:
         current_user: Authenticated user.
         db: Database session.
+        page: Page number.
+        per_page: Items per page.
         start_date: Filter from date.
         end_date: Filter to date.
         status_filter: Filter by status.
 
     Returns:
-        Scheduled workouts.
+        Paginated scheduled workouts.
     """
-    query = (
+    base_query = (
         select(WorkoutSchedule)
         .join(Workout)
         .where(Workout.user_id == current_user.id)
-        .options(selectinload(WorkoutSchedule.workout))
     )
 
     if start_date:
-        query = query.where(WorkoutSchedule.scheduled_date >= start_date)
+        base_query = base_query.where(WorkoutSchedule.scheduled_date >= start_date)
     if end_date:
-        query = query.where(WorkoutSchedule.scheduled_date <= end_date)
+        base_query = base_query.where(WorkoutSchedule.scheduled_date <= end_date)
     if status_filter:
-        query = query.where(WorkoutSchedule.status == status_filter)
+        base_query = base_query.where(WorkoutSchedule.status == status_filter)
 
-    query = query.order_by(WorkoutSchedule.scheduled_date.asc())
+    # Count total
+    count_query = select(func.count()).select_from(base_query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Paginate
+    offset = (page - 1) * per_page
+    query = (
+        base_query
+        .options(selectinload(WorkoutSchedule.workout))
+        .order_by(WorkoutSchedule.scheduled_date.asc())
+        .offset(offset)
+        .limit(per_page)
+    )
 
     result = await db.execute(query)
     schedules = result.scalars().all()
@@ -410,7 +432,9 @@ async def list_schedules(
             )
             for s in schedules
         ],
-        total=len(schedules),
+        total=total,
+        page=page,
+        per_page=per_page,
     )
 
 
@@ -445,6 +469,20 @@ async def schedule_workout(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workout not found",
+        )
+
+    # Check for duplicate schedule (same workout on same date)
+    existing_result = await db.execute(
+        select(WorkoutSchedule).where(
+            WorkoutSchedule.workout_id == request.workout_id,
+            WorkoutSchedule.scheduled_date == request.scheduled_date,
+            WorkoutSchedule.status == "scheduled",
+        )
+    )
+    if existing_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Workout already scheduled for {request.scheduled_date}",
         )
 
     schedule = WorkoutSchedule(

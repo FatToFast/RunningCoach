@@ -289,6 +289,50 @@ class TestDashboardCalendar:
         has_activities = any(len(day["activities"]) > 0 for day in data["days"])
         assert has_activities
 
+    async def test_get_calendar_activity_schema(
+        self,
+        auth_client: AsyncClient,
+        test_user: User,
+        sample_activities: list[Activity],
+    ):
+        """Test that calendar activities use correct RecentActivity schema."""
+        today = date.today()
+        start_date = (today - timedelta(days=7)).isoformat()
+        end_date = today.isoformat()
+
+        response = await auth_client.get(
+            "/api/v1/dashboard/calendar",
+            params={"start_date": start_date, "end_date": end_date},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Find a day with activities
+        activities_day = next(
+            (day for day in data["days"] if len(day["activities"]) > 0),
+            None,
+        )
+        assert activities_day is not None, "No activities found in calendar"
+
+        activity = activities_day["activities"][0]
+
+        # Verify RecentActivity schema fields (not deprecated duration_minutes/avg_hr)
+        assert "id" in activity
+        assert "name" in activity
+        assert "activity_type" in activity
+        assert "start_time" in activity
+        assert "distance_km" in activity
+        assert "duration_seconds" in activity  # Not duration_minutes
+        assert "avg_pace_seconds" in activity
+        assert "avg_hr_percent" in activity  # Not avg_hr (raw value)
+        assert "elevation_gain" in activity
+        assert "calories" in activity
+
+        # Verify deprecated fields are NOT present
+        assert "duration_minutes" not in activity
+        assert "avg_hr" not in activity
+
     async def test_get_calendar_with_scheduled_workouts(
         self,
         auth_client: AsyncClient,

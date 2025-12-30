@@ -164,6 +164,28 @@ class GarminConnectAdapter:
         """
         return self.login_with_session(session_data)
 
+    def validate_session(self, session_data: dict[str, Any] | str) -> bool:
+        """Validate if stored session data is still usable.
+
+        This attempts to restore the session and make a lightweight API call
+        to verify the session is not expired.
+
+        Args:
+            session_data: Previously saved session data (dict or string).
+
+        Returns:
+            True if session is valid and working.
+        """
+        try:
+            self.restore_session(session_data)
+            # Make a lightweight API call to verify session
+            # get_user_summary is a simple endpoint that requires auth
+            self._client.get_user_summary(date.today().isoformat())
+            return True
+        except Exception as e:
+            logger.warning(f"Session validation failed: {e}")
+            return False
+
     def get_session_data(self) -> Optional[dict[str, Any]]:
         """Get current session data for persistence.
 

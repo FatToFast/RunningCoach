@@ -360,16 +360,21 @@ async def get_dashboard_summary(
         )
         user_max_hr = max_hr_result.scalar_one_or_none()
 
-    # Recent activities (최근 7일 이내, 최대 5건) - PRD FR-010
-    seven_days_ago = datetime.combine(
-        now.date() - timedelta(days=6), datetime.min.time()
+    # Recent activities (기준일 기준 최근 7일 이내, 최대 5건) - PRD FR-010
+    # target_date 기준으로 최근 활동을 조회 (과거 날짜 조회 시에도 일관성 유지)
+    recent_cutoff = datetime.combine(
+        today - timedelta(days=6), datetime.min.time()
+    ).replace(tzinfo=timezone.utc)
+    recent_limit = datetime.combine(
+        today, datetime.max.time()
     ).replace(tzinfo=timezone.utc)
     recent_result = await db.execute(
         select(Activity, ActivityMetric)
         .outerjoin(ActivityMetric, Activity.id == ActivityMetric.activity_id)
         .where(
             Activity.user_id == current_user.id,
-            Activity.start_time >= seven_days_ago,
+            Activity.start_time >= recent_cutoff,
+            Activity.start_time <= recent_limit,  # 기준일까지만 (미래 활동 제외)
         )
         .order_by(Activity.start_time.desc())
         .limit(5)
@@ -518,7 +523,7 @@ async def get_dashboard_summary(
             repetition_max=_parse_pace(runalyze_paces.get("repetition_max")) or 242,
         )
 
-    # Upcoming workouts (기준일 이후 예정된 운동)
+    # Upcoming workouts (기준일 이후 예정된 운동 - today 또는 target_date 기준)
     from app.models.workout import Workout
 
     upcoming_result = await db.execute(
@@ -526,7 +531,7 @@ async def get_dashboard_summary(
         .join(Workout)
         .where(
             Workout.user_id == current_user.id,
-            WorkoutSchedule.scheduled_date >= period_end,
+            WorkoutSchedule.scheduled_date >= today,  # 기준일(today) 이후 예정 운동
             WorkoutSchedule.status == "scheduled",
         )
         .order_by(WorkoutSchedule.scheduled_date.asc())
@@ -683,18 +688,35 @@ async def get_calendar(
         Calendar data.
     """
     from app.models.workout import Workout
+    from collections import defaultdict
 
-    # Get activities in range
+    # Convert to timezone-aware datetime for consistent filtering
+    start_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    end_dt = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+
+    # Get user's max HR for avg_hr_percent calculation
+    user_max_hr = current_user.max_hr
+    if not user_max_hr:
+        max_hr_result = await db.execute(
+            select(func.max(Activity.max_hr)).where(
+                Activity.user_id == current_user.id,
+                Activity.max_hr.isnot(None),
+            )
+        )
+        user_max_hr = max_hr_result.scalar_one_or_none()
+
+    # Get activities in range with ActivityMetric for extended fields
     activities_result = await db.execute(
-        select(Activity)
+        select(Activity, ActivityMetric)
+        .outerjoin(ActivityMetric, Activity.id == ActivityMetric.activity_id)
         .where(
             Activity.user_id == current_user.id,
-            Activity.start_time >= datetime.combine(start_date, datetime.min.time()),
-            Activity.start_time <= datetime.combine(end_date, datetime.max.time()),
+            Activity.start_time >= start_dt,
+            Activity.start_time <= end_dt,
         )
         .order_by(Activity.start_time.asc())
     )
-    activities = activities_result.scalars().all()
+    activities_with_metrics = activities_result.all()
 
     # Get scheduled workouts in range
     schedules_result = await db.execute(
@@ -709,40 +731,61 @@ async def get_calendar(
     )
     schedules = schedules_result.all()
 
-    # Build calendar days
-    days = []
-    current = start_date
-    while current <= end_date:
-        day_activities = [
+    # Pre-group activities by date for O(activities + days) instead of O(activities × days)
+    activities_by_date: dict[date, list[RecentActivity]] = defaultdict(list)
+    for a, m in activities_with_metrics:
+        activity_date = a.start_time.date()
+        # Calculate avg pace in seconds per km
+        activity_pace = None
+        if a.duration_seconds and a.distance_meters and a.distance_meters > 0:
+            activity_pace = int((a.duration_seconds / a.distance_meters) * 1000)
+
+        # Calculate avg HR as percentage of max HR (Runalyze style)
+        avg_hr_percent = None
+        if a.avg_hr and user_max_hr:
+            avg_hr_percent = int(round((a.avg_hr / user_max_hr) * 100))
+
+        activities_by_date[activity_date].append(
             RecentActivity(
                 id=a.id,
                 name=a.name,
                 activity_type=a.activity_type,
                 start_time=a.start_time,
                 distance_km=round(a.distance_meters / 1000, 2) if a.distance_meters else None,
-                duration_minutes=int(a.duration_seconds / 60) if a.duration_seconds else None,
-                avg_hr=a.avg_hr,
+                duration_seconds=a.duration_seconds,
+                avg_pace_seconds=activity_pace,
+                avg_hr_percent=avg_hr_percent,
+                elevation_gain=round(a.elevation_gain, 1) if a.elevation_gain else None,
+                calories=int(a.calories) if a.calories else None,
+                trimp=round(m.trimp, 1) if m and m.trimp else None,
+                vo2max_est=round(m.vo2max_est, 1) if m and m.vo2max_est else None,
+                avg_cadence=a.avg_cadence,
+                avg_ground_time=a.avg_ground_contact_time,
+                avg_vertical_oscillation=round(a.avg_vertical_oscillation, 1) if a.avg_vertical_oscillation else None,
             )
-            for a in activities
-            if a.start_time.date() == current
-        ]
+        )
 
-        day_workouts = [
+    # Pre-group workouts by date
+    workouts_by_date: dict[date, list[UpcomingWorkout]] = defaultdict(list)
+    for schedule, workout in schedules:
+        workouts_by_date[schedule.scheduled_date].append(
             UpcomingWorkout(
                 id=schedule.id,
                 workout_name=workout.name,
                 workout_type=workout.workout_type,
                 scheduled_date=schedule.scheduled_date,
             )
-            for schedule, workout in schedules
-            if schedule.scheduled_date == current
-        ]
+        )
 
+    # Build calendar days - now O(days) instead of O(days × items)
+    days = []
+    current = start_date
+    while current <= end_date:
         days.append(
             CalendarDay(
                 date=current,
-                activities=day_activities,
-                scheduled_workouts=day_workouts,
+                activities=activities_by_date.get(current, []),
+                scheduled_workouts=workouts_by_date.get(current, []),
             )
         )
         current += timedelta(days=1)

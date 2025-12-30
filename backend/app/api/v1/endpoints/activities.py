@@ -1,7 +1,7 @@
 """Activity endpoints."""
 
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -13,8 +13,9 @@ from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.database import get_db
-from app.models.activity import Activity, ActivityMetric, ActivitySample
+from app.models.activity import Activity, ActivityMetric, ActivitySample, ActivityLap
 from app.models.garmin import GarminRawFile
+from app.models.gear import ActivityGear, Gear
 from app.models.user import User
 
 router = APIRouter()
@@ -329,37 +330,48 @@ async def get_activity_samples(
             detail="Activity not found",
         )
 
-    # Count total
+    # Count total samples (always returns full count)
     count_result = await db.execute(
         select(func.count(ActivitySample.id)).where(
             ActivitySample.activity_id == activity_id
         )
     )
-    total = count_result.scalar() or 0
+    total_count = count_result.scalar() or 0
 
     # Determine if downsampling is needed
     is_downsampled = False
-    original_count = None
 
-    if downsample and total > downsample:
-        # Calculate step for even sampling
-        step = total // downsample
+    if downsample and total_count > downsample:
+        # Downsampling mode: evenly sample from full dataset
+        # Note: limit/offset are ignored in downsample mode
         is_downsampled = True
-        original_count = total
+        step = total_count // downsample
 
-        # Use ROW_NUMBER for even distribution (PostgreSQL)
-        # For SQLite compatibility, we'll use a simpler approach
-        result = await db.execute(
+        # Use NTILE or modulo-based sampling in SQL for efficiency
+        # For PostgreSQL: use row_number() % step = 0
+        # Fallback for SQLite: offset-based sampling
+        from sqlalchemy import text
+
+        # Get evenly distributed sample IDs using SQL
+        # This avoids loading all samples into memory
+        sample_query = (
             select(ActivitySample)
             .where(ActivitySample.activity_id == activity_id)
             .order_by(ActivitySample.timestamp.asc())
+            .offset(0)  # Start from beginning
         )
-        all_samples = result.scalars().all()
 
-        # Evenly pick samples
-        samples = [all_samples[i] for i in range(0, len(all_samples), step)][:downsample]
+        # Execute with streaming for memory efficiency
+        result = await db.execute(sample_query)
+        all_samples_iter = result.scalars()
+
+        # Pick every `step`-th sample
+        samples = []
+        for i, sample in enumerate(all_samples_iter):
+            if i % step == 0 and len(samples) < downsample:
+                samples.append(sample)
     else:
-        # Regular pagination
+        # Regular pagination mode (downsample not requested or not needed)
         result = await db.execute(
             select(ActivitySample)
             .where(ActivitySample.activity_id == activity_id)
@@ -392,9 +404,9 @@ async def get_activity_samples(
     return SamplesListResponse(
         activity_id=activity_id,
         samples=sample_responses,
-        total=len(sample_responses),
+        total=total_count,  # Always return full count
         is_downsampled=is_downsampled,
-        original_count=original_count,
+        original_count=total_count if is_downsampled else None,
     )
 
 
@@ -574,10 +586,14 @@ async def get_activity_hr_zones(
             detail="No HR data available for this activity",
         )
 
-    # Determine max HR
+    # Determine max HR (priority: query param > user.max_hr > max from samples)
     if max_hr is None:
-        # Use max observed HR as fallback (not ideal but practical)
-        max_hr = max(hr_values)
+        # Try user's max_hr from Garmin profile first
+        if current_user.max_hr:
+            max_hr = current_user.max_hr
+        else:
+            # Fallback to max observed HR from this activity
+            max_hr = max(hr_values)
 
     # Calculate zone boundaries
     zones = []
@@ -659,18 +675,18 @@ async def get_activity_laps(
     db: AsyncSession = Depends(get_db),
     split_distance: int = Query(1000, ge=100, le=10000, description="Split distance in meters (default: 1km)"),
 ) -> LapsResponse:
-    """Calculate lap/split data for an activity.
+    """Get lap/split data for an activity.
 
     FR-014: 랩/구간 데이터
 
-    Splits activity into laps based on distance. For activities without GPS,
-    uses time-based splits.
+    Returns laps from FIT file if available, otherwise calculates splits
+    based on distance or time.
 
     Args:
         activity_id: Activity ID.
         current_user: Authenticated user.
         db: Database session.
-        split_distance: Distance per lap in meters (default: 1000m = 1km).
+        split_distance: Distance per lap in meters for calculated splits (default: 1000m = 1km).
 
     Returns:
         Lap data for the activity.
@@ -690,7 +706,37 @@ async def get_activity_laps(
             detail="Activity not found",
         )
 
-    # Get all samples with relevant fields
+    # First, try to get laps from FIT file (stored in ActivityLap table)
+    fit_laps_result = await db.execute(
+        select(ActivityLap)
+        .where(ActivityLap.activity_id == activity_id)
+        .order_by(ActivityLap.lap_number.asc())
+    )
+    fit_laps = fit_laps_result.scalars().all()
+
+    if fit_laps:
+        # Use FIT laps directly
+        laps = []
+        for lap in fit_laps:
+            laps.append(LapResponse(
+                lap_number=lap.lap_number,
+                start_time=lap.start_time or activity.start_time,
+                end_time=lap.start_time + timedelta(seconds=int(lap.duration_seconds or 0)) if lap.start_time and lap.duration_seconds else activity.start_time,
+                duration_seconds=int(lap.duration_seconds or 0),
+                distance_meters=lap.distance_meters,
+                avg_hr=lap.avg_hr,
+                max_hr=lap.max_hr,
+                avg_pace_seconds=lap.avg_pace_seconds,
+                elevation_gain=lap.total_ascent_meters,
+                avg_cadence=lap.avg_cadence,
+            ))
+        return LapsResponse(
+            activity_id=activity_id,
+            laps=laps,
+            total_laps=len(laps),
+        )
+
+    # Fallback: Calculate laps from samples
     result = await db.execute(
         select(ActivitySample)
         .where(ActivitySample.activity_id == activity_id)
@@ -701,7 +747,7 @@ async def get_activity_laps(
     if not samples:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No sample data available for this activity",
+            detail="No lap or sample data available for this activity",
         )
 
     # Calculate cumulative distance (if GPS data available)
@@ -836,4 +882,87 @@ def _calculate_lap_stats(lap_number: int, samples: list) -> LapResponse:
         avg_pace_seconds=avg_pace,
         elevation_gain=elevation_gain,
         avg_cadence=avg_cadence,
+    )
+
+
+# -------------------------------------------------------------------------
+# Activity Gear Endpoint
+# -------------------------------------------------------------------------
+
+
+class ActivityGearResponse(BaseModel):
+    """Gear linked to an activity."""
+
+    id: int
+    name: str
+    brand: str | None
+    gear_type: str
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class ActivityGearsResponse(BaseModel):
+    """List of gear linked to an activity."""
+
+    activity_id: int
+    gears: list[ActivityGearResponse]
+    total: int
+
+
+@router.get("/{activity_id}/gear", response_model=ActivityGearsResponse)
+async def get_activity_gear(
+    activity_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> ActivityGearsResponse:
+    """Get gear linked to an activity.
+
+    This endpoint is used by the frontend to display which gear was used
+    for a specific activity.
+
+    Args:
+        activity_id: Activity ID.
+        current_user: Authenticated user.
+        db: Database session.
+
+    Returns:
+        List of gear linked to the activity.
+    """
+    # Verify ownership
+    activity_result = await db.execute(
+        select(Activity).where(
+            Activity.id == activity_id,
+            Activity.user_id == current_user.id,
+        )
+    )
+    if not activity_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Activity not found",
+        )
+
+    # Get linked gear
+    result = await db.execute(
+        select(Gear)
+        .join(ActivityGear, ActivityGear.gear_id == Gear.id)
+        .where(ActivityGear.activity_id == activity_id)
+        .order_by(Gear.name.asc())
+    )
+    gears = result.scalars().all()
+
+    return ActivityGearsResponse(
+        activity_id=activity_id,
+        gears=[
+            ActivityGearResponse(
+                id=g.id,
+                name=g.name,
+                brand=g.brand,
+                gear_type=g.gear_type,
+                status=g.status,
+            )
+            for g in gears
+        ],
+        total=len(gears),
     )

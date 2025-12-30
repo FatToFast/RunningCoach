@@ -24,8 +24,9 @@ export interface GarminConnectRequest {
 
 export interface GarminStatus {
   connected: boolean;
+  session_valid: boolean;
+  last_login: string | null;
   last_sync: string | null;
-  garmin_email: string | null;
 }
 
 export const authApi = {
@@ -60,7 +61,7 @@ export const authApi = {
   },
 
   disconnectGarmin: async (): Promise<{ message: string }> => {
-    const { data } = await apiClient.post('/auth/garmin/disconnect');
+    const { data } = await apiClient.delete('/auth/garmin/disconnect');
     return data;
   },
 };

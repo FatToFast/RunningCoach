@@ -9,6 +9,7 @@ import { Trends } from './pages/Trends';
 import { Records } from './pages/Records';
 import { Calendar } from './pages/Calendar';
 import { Gear } from './pages/Gear';
+import { Coach } from './pages/Coach';
 import { Settings } from './pages/Settings';
 
 const queryClient = new QueryClient({
@@ -46,7 +47,7 @@ function App() {
             <Route path="/calendar" element={<Calendar />} />
             <Route path="/gear" element={<Gear />} />
             <Route path="/workouts" element={<PlaceholderPage title="Workouts" />} />
-            <Route path="/ai" element={<PlaceholderPage title="AI Coach" />} />
+            <Route path="/ai" element={<Coach />} />
             <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>

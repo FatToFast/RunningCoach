@@ -127,8 +127,14 @@ export function Settings() {
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-muted mb-1">Garmin 계정</label>
-                <p className="text-[var(--color-text-primary)]">{garminStatus.garmin_email || '-'}</p>
+                <label className="block text-sm text-muted mb-1">세션 상태</label>
+                <p className="text-[var(--color-text-primary)]">
+                  {garminStatus.session_valid ? (
+                    <span className="text-green-400">활성</span>
+                  ) : (
+                    <span className="text-yellow-400">갱신 필요</span>
+                  )}
+                </p>
               </div>
               <div>
                 <label className="block text-sm text-muted mb-1">마지막 동기화</label>
@@ -192,7 +198,7 @@ export function Settings() {
             </button>
 
             <p className="text-xs text-muted">
-              * Garmin 계정 정보는 암호화되어 안전하게 저장됩니다.
+              * Garmin 세션 정보는 서버에 저장되어 자동 동기화에 사용됩니다.
             </p>
           </form>
         )}

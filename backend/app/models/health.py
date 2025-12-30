@@ -51,12 +51,18 @@ class HRRecord(BaseModel):
     """Heart rate record from Garmin (daily summary)."""
 
     __tablename__ = "hr_records"
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_hr_record_user_date"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
     )
+
+    # Date for unique constraint (derived from start_time)
+    date: Mapped[date] = mapped_column(Date, index=True)
 
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     end_time: Mapped[Optional[datetime]] = mapped_column(

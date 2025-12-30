@@ -32,11 +32,14 @@ class Workout(BaseModel):
     name: Mapped[str] = mapped_column(String(200))
     workout_type: Mapped[str] = mapped_column(String(50), index=True)
 
-    # Workout structure (warmup, main, cooldown)
-    structure: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    # Workout structure (list of steps: warmup, main, cooldown)
+    structure: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSONB, nullable=True)
 
     # Target metrics (pace zones, HR zones, etc.)
     target: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+
+    # Notes/description
+    notes: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
 
     # Garmin sync status
     garmin_workout_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

@@ -45,6 +45,8 @@ from app.models import (
     WorkoutSchedule,
     AnalyticsSummary,
 )
+from app.models.gear import Gear, ActivityGear
+from app.models.strava import StravaSession, StravaActivityMap, StravaSyncState
 
 
 # -------------------------------------------------------------------------
@@ -241,6 +243,7 @@ async def sample_health_data(db_session: AsyncSession, test_user: User):
     # HR record
     hr_record = HRRecord(
         user_id=test_user.id,
+        date=today,  # Required field for unique constraint
         start_time=now,
         resting_hr=52,
         avg_hr=65,

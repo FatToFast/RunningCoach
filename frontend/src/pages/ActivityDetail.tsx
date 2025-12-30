@@ -69,9 +69,13 @@ export function ActivityDetail() {
   const { data: activity, isLoading, error } = useActivityDetail(activityId);
   // 차트 성능을 위해 200개로 다운샘플링
   const { data: samplesData } = useActivitySamples(activityId, 200);
-  // 별도 훅으로 HR zones와 laps 조회 (mock 데이터)
-  const { data: hrZones } = useActivityHRZones(activityId);
-  const { data: laps } = useActivityLaps(activityId);
+  // 별도 훅으로 HR zones와 laps 조회 (백엔드 API)
+  const { data: hrZonesData } = useActivityHRZones(activityId);
+  const { data: lapsData } = useActivityLaps(activityId);
+
+  // API 응답에서 zones와 laps 배열 추출
+  const hrZones = hrZonesData?.zones || [];
+  const laps = lapsData?.laps || [];
   // 활동에 연결된 장비 (신발)
   const { data: activityGear } = useActivityGear(activityId);
 
@@ -107,15 +111,29 @@ export function ActivityDetail() {
   const distanceKm = (activity.distance_meters || 0) / 1000;
   const displayedLaps = showAllLaps ? (laps || []) : (laps || []).slice(0, 5);
 
-  // Convert samples for charts (백엔드 응답 구조에 맞춤)
-  const chartSamples =
-    samplesData?.samples.map((s, index) => ({
-      time: index * 10, // 타임스탬프 대신 인덱스 기반
-      hr: s.hr,
-      pace: s.pace_seconds ? s.pace_seconds / 60 : null,
-      elevation: s.altitude,
-      cadence: s.cadence,
-    })) || [];
+  // Convert samples for charts - use actual elapsed time from timestamp
+  const chartSamples = (() => {
+    const samples = samplesData?.samples || [];
+    if (samples.length === 0) return [];
+
+    // Get the first sample's timestamp as reference
+    const firstTimestamp = samples[0].timestamp ? new Date(samples[0].timestamp).getTime() : 0;
+
+    return samples.map((s) => {
+      // Calculate elapsed seconds from first sample
+      const elapsed = s.timestamp
+        ? Math.round((new Date(s.timestamp).getTime() - firstTimestamp) / 1000)
+        : 0;
+
+      return {
+        time: elapsed,
+        hr: s.hr,
+        pace: s.pace_seconds ? s.pace_seconds / 60 : null,
+        elevation: s.altitude,
+        cadence: s.cadence,
+      };
+    });
+  })();
 
   return (
     <div className="space-y-4 sm:space-y-6">

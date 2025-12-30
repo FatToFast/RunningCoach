@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.database import get_db
-from app.models.health import BodyComposition, FitnessMetricDaily
+from app.models.health import BodyComposition, FitnessMetricDaily, HealthMetric
 from app.models.user import User
 
 router = APIRouter()
@@ -64,18 +64,13 @@ class BodyCompositionListResponse(BaseModel):
 
 
 class FitnessMetricRecord(BaseModel):
-    """Fitness metric record."""
+    """Fitness metric record (daily CTL/ATL/TSB values)."""
 
     id: int
     date: date
-    ctl: float | None
-    atl: float | None
-    tsb: float | None
-    weekly_trimp: float | None
-    weekly_tss: float | None
-
-    class Config:
-        from_attributes = True
+    ctl: float | None  # Chronic Training Load (fitness)
+    atl: float | None  # Acute Training Load (fatigue)
+    tsb: float | None  # Training Stress Balance (form)
 
 
 class FitnessMetricListResponse(BaseModel):
@@ -124,8 +119,17 @@ async def get_metrics_summary(
     )
     latest_fitness = fitness_result.scalar_one_or_none()
 
-    # Get user's VO2max
-    vo2max = current_user.vo2max if hasattr(current_user, 'vo2max') else None
+    # Get VO2max from HealthMetric (metric_type="vo2max")
+    vo2max_result = await db.execute(
+        select(HealthMetric.value)
+        .where(
+            HealthMetric.user_id == current_user.id,
+            HealthMetric.metric_type == "vo2max",
+        )
+        .order_by(HealthMetric.metric_time.desc())
+        .limit(1)
+    )
+    latest_vo2max = vo2max_result.scalar_one_or_none()
 
     return MetricsSummary(
         has_body_composition=latest_body is not None,
@@ -135,7 +139,7 @@ async def get_metrics_summary(
         latest_ctl=latest_fitness.ctl if latest_fitness else None,
         latest_atl=latest_fitness.atl if latest_fitness else None,
         latest_tsb=latest_fitness.tsb if latest_fitness else None,
-        latest_vo2max=vo2max,
+        latest_vo2max=round(float(latest_vo2max), 1) if latest_vo2max else None,
     )
 
 
@@ -229,8 +233,20 @@ async def list_fitness_metrics(
     result = await db.execute(query)
     records = result.scalars().all()
 
+    # Convert to response model (only fields that exist in FitnessMetricDaily)
+    items = [
+        FitnessMetricRecord(
+            id=r.id,
+            date=r.date,
+            ctl=r.ctl,
+            atl=r.atl,
+            tsb=r.tsb,
+        )
+        for r in records
+    ]
+
     return FitnessMetricListResponse(
-        items=[FitnessMetricRecord.model_validate(r) for r in records],
+        items=items,
         total=total,
         page=page,
         per_page=per_page,

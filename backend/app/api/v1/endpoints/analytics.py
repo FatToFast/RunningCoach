@@ -5,6 +5,7 @@ Paths:
   GET /api/v1/analytics/personal-records - 개인 최고 기록 (PR)
 """
 
+import calendar
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
 
@@ -19,6 +20,20 @@ from app.models.activity import Activity, ActivityMetric
 from app.models.user import User
 
 router = APIRouter()
+
+
+# -------------------------------------------------------------------------
+# Constants
+# -------------------------------------------------------------------------
+
+# Distance categories for PR calculation (min_meters, max_meters)
+# Tolerance: +10% to allow for GPS variance
+DISTANCE_CATEGORIES = [
+    ("5K", 5000, 5500),
+    ("10K", 10000, 11000),
+    ("Half Marathon", 21097, 22000),
+    ("Marathon", 42195, 43000),
+]
 
 
 # -------------------------------------------------------------------------
@@ -40,6 +55,14 @@ class PeriodStats(BaseModel):
     total_calories: int | None
     total_trimp: float | None
     total_tss: float | None
+
+
+class PeriodStatsWithRaw(BaseModel):
+    """Period stats with raw values for internal calculations."""
+
+    stats: PeriodStats
+    raw_distance_meters: float
+    raw_duration_seconds: int
 
 
 class PeriodChange(BaseModel):
@@ -65,13 +88,13 @@ class PersonalRecord(BaseModel):
     """Single personal record entry."""
 
     category: str  # "5K", "10K", "half_marathon", "marathon", "longest_run", etc.
-    value: float  # 시간(초) 또는 거리(m)
-    unit: str  # "seconds", "meters", "min/km"
+    value: float  # 시간(초) 또는 거리(m) 또는 페이스(sec/km)
+    unit: str  # "seconds", "meters", "sec/km"
     activity_id: int
     activity_name: str | None
     achieved_date: date
     previous_best: float | None  # 이전 최고 기록
-    improvement_pct: float | None  # 개선율
+    improvement_pct: float | None  # 개선율 (음수 = 개선)
 
 
 class PersonalRecordsResponse(BaseModel):
@@ -120,8 +143,11 @@ async def _get_period_stats(
     end_dt: datetime,
     start_date: date,
     end_date: date,
-) -> PeriodStats:
-    """Get aggregated stats for a period."""
+) -> PeriodStatsWithRaw:
+    """Get aggregated stats for a period.
+
+    Returns PeriodStatsWithRaw which includes raw values for accurate pace calculation.
+    """
     # Activity stats
     result = await db.execute(
         select(
@@ -151,18 +177,27 @@ async def _get_period_stats(
     )
     trimp_tss = trimp_result.one()
 
-    return PeriodStats(
+    raw_distance = stats.distance or 0
+    raw_duration = stats.duration or 0
+
+    period_stats = PeriodStats(
         period_start=start_date,
         period_end=end_date,
-        total_distance_km=round((stats.distance or 0) / 1000, 2),
-        total_duration_hours=round((stats.duration or 0) / 3600, 2),
+        total_distance_km=round(raw_distance / 1000, 2),
+        total_duration_hours=round(raw_duration / 3600, 2),
         total_activities=stats.count or 0,
-        avg_pace_per_km=_calculate_pace(stats.duration, stats.distance),
+        avg_pace_per_km=_calculate_pace(raw_duration, raw_distance),
         avg_hr=int(stats.avg_hr) if stats.avg_hr else None,
         total_elevation_m=round(stats.elevation, 1) if stats.elevation else None,
         total_calories=int(stats.calories) if stats.calories else None,
         total_trimp=round(trimp_tss[0], 1) if trimp_tss[0] else None,
         total_tss=round(trimp_tss[1], 1) if trimp_tss[1] else None,
+    )
+
+    return PeriodStatsWithRaw(
+        stats=period_stats,
+        raw_distance_meters=raw_distance,
+        raw_duration_seconds=raw_duration,
     )
 
 
@@ -175,12 +210,15 @@ async def _get_period_stats(
 async def compare_periods(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    period: str = Query("week", regex="^(week|month)$", description="Period type"),
+    period: str = Query("week", pattern="^(week|month)$", description="Period type"),
     current_end: date | None = Query(None, description="End date for current period (defaults to today)"),
 ) -> CompareResponse:
     """Compare current period with previous period.
 
     기간 비교 분석: 현재 주/월과 이전 주/월 비교
+
+    - week: 월요일~일요일 기준 (ISO week)
+    - month: 달력 기준 월 (1일~말일)
 
     Examples:
         GET /analytics/compare → 현재 주 vs 지난 주
@@ -190,7 +228,7 @@ async def compare_periods(
     Args:
         current_user: Authenticated user.
         db: Database session.
-        period: Period type - "week" or "month".
+        period: Period type - "week" (Mon-Sun) or "month" (calendar month).
         current_end: End date for current period.
 
     Returns:
@@ -199,17 +237,27 @@ async def compare_periods(
     today = current_end or datetime.now(timezone.utc).date()
 
     if period == "month":
-        days = 30
+        # Calendar month: 1st to last day of month
+        current_end_date = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+        current_start_date = date(today.year, today.month, 1)
+
+        # Previous month
+        if today.month == 1:
+            prev_year, prev_month = today.year - 1, 12
+        else:
+            prev_year, prev_month = today.year, today.month - 1
+        previous_start_date = date(prev_year, prev_month, 1)
+        previous_end_date = date(prev_year, prev_month, calendar.monthrange(prev_year, prev_month)[1])
     else:
-        days = 7
+        # ISO week: Monday to Sunday
+        # Find Monday of current week
+        days_since_monday = today.weekday()
+        current_start_date = today - timedelta(days=days_since_monday)
+        current_end_date = current_start_date + timedelta(days=6)
 
-    # Current period
-    current_end_date = today
-    current_start_date = today - timedelta(days=days - 1)
-
-    # Previous period
-    previous_end_date = current_start_date - timedelta(days=1)
-    previous_start_date = previous_end_date - timedelta(days=days - 1)
+        # Previous week
+        previous_start_date = current_start_date - timedelta(days=7)
+        previous_end_date = previous_start_date + timedelta(days=6)
 
     # Convert to datetime
     current_start_dt = datetime.combine(current_start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
@@ -217,22 +265,22 @@ async def compare_periods(
     previous_start_dt = datetime.combine(previous_start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
     previous_end_dt = datetime.combine(previous_end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
 
-    # Get stats for both periods
-    current_stats = await _get_period_stats(
+    # Get stats for both periods (returns PeriodStatsWithRaw)
+    current_data = await _get_period_stats(
         db, current_user.id, current_start_dt, current_end_dt, current_start_date, current_end_date
     )
-    previous_stats = await _get_period_stats(
+    previous_data = await _get_period_stats(
         db, current_user.id, previous_start_dt, previous_end_dt, previous_start_date, previous_end_date
     )
 
-    # Calculate changes
+    # Calculate pace change using raw values for accuracy
     current_pace = _calculate_pace_seconds(
-        int(current_stats.total_duration_hours * 3600),
-        current_stats.total_distance_km * 1000,
+        current_data.raw_duration_seconds,
+        current_data.raw_distance_meters,
     )
     previous_pace = _calculate_pace_seconds(
-        int(previous_stats.total_duration_hours * 3600),
-        previous_stats.total_distance_km * 1000,
+        previous_data.raw_duration_seconds,
+        previous_data.raw_distance_meters,
     )
 
     pace_change = None
@@ -241,15 +289,15 @@ async def compare_periods(
 
     change = PeriodChange(
         distance_change_pct=_calculate_change_pct(
-            current_stats.total_distance_km, previous_stats.total_distance_km
+            current_data.stats.total_distance_km, previous_data.stats.total_distance_km
         ),
         duration_change_pct=_calculate_change_pct(
-            current_stats.total_duration_hours, previous_stats.total_duration_hours
+            current_data.stats.total_duration_hours, previous_data.stats.total_duration_hours
         ),
-        activities_change=current_stats.total_activities - previous_stats.total_activities,
+        activities_change=current_data.stats.total_activities - previous_data.stats.total_activities,
         pace_change_seconds=pace_change,
         elevation_change_pct=_calculate_change_pct(
-            current_stats.total_elevation_m, previous_stats.total_elevation_m
+            current_data.stats.total_elevation_m, previous_data.stats.total_elevation_m
         ),
     )
 
@@ -273,11 +321,78 @@ async def compare_periods(
     summary = ", ".join(improvements) if improvements else "변화 없음"
 
     return CompareResponse(
-        current_period=current_stats,
-        previous_period=previous_stats,
+        current_period=current_data.stats,
+        previous_period=previous_data.stats,
         change=change,
         improvement_summary=summary,
     )
+
+
+async def _find_previous_best(
+    db: AsyncSession,
+    user_id: int,
+    activity_type: str,
+    current_activity_id: int,
+    current_activity_date: datetime,
+    category: str,
+    min_dist: int | None = None,
+    max_dist: int | None = None,
+    order_by_field: str = "duration",  # "duration", "pace", "distance"
+) -> tuple[float | None, float | None]:
+    """Find previous best record before the current PR activity.
+
+    Returns:
+        (previous_best_value, improvement_pct) or (None, None) if no previous record.
+    """
+    base_filter = [
+        Activity.user_id == user_id,
+        Activity.activity_type == activity_type,
+        Activity.id != current_activity_id,
+        Activity.start_time < current_activity_date,
+    ]
+
+    if min_dist is not None and max_dist is not None:
+        base_filter.extend([
+            Activity.distance_meters >= min_dist,
+            Activity.distance_meters <= max_dist,
+        ])
+
+    if order_by_field == "duration":
+        base_filter.append(Activity.duration_seconds.isnot(None))
+        query = select(Activity).where(*base_filter).order_by(Activity.duration_seconds.asc()).limit(1)
+    elif order_by_field == "distance":
+        base_filter.append(Activity.distance_meters.isnot(None))
+        query = select(Activity).where(*base_filter).order_by(Activity.distance_meters.desc()).limit(1)
+    else:  # pace - need to calculate
+        base_filter.extend([
+            Activity.duration_seconds.isnot(None),
+            Activity.distance_meters.isnot(None),
+            Activity.distance_meters > 0,
+        ])
+        # For pace, we order by duration/distance (lower is better)
+        query = (
+            select(Activity)
+            .where(*base_filter)
+            .order_by((Activity.duration_seconds / Activity.distance_meters).asc())
+            .limit(1)
+        )
+
+    result = await db.execute(query)
+    prev_activity = result.scalar_one_or_none()
+
+    if not prev_activity:
+        return None, None
+
+    if order_by_field == "duration":
+        prev_value = prev_activity.duration_seconds
+    elif order_by_field == "distance":
+        prev_value = prev_activity.distance_meters
+    else:  # pace
+        prev_value = _calculate_pace_seconds(
+            prev_activity.duration_seconds, prev_activity.distance_meters
+        )
+
+    return prev_value, None  # improvement_pct calculated by caller
 
 
 @router.get("/personal-records", response_model=PersonalRecordsResponse)
@@ -291,8 +406,8 @@ async def get_personal_records(
     개인 최고 기록 조회
 
     Categories:
-        - Distance PRs: 5K, 10K, Half Marathon, Marathon 최고 기록
-        - Pace PRs: 각 거리별 최고 페이스
+        - Distance PRs: 5K, 10K, Half Marathon, Marathon 최고 기록 (시간 기준)
+        - Pace PRs: 각 거리별 최고 페이스 (sec/km 기준, 낮을수록 좋음)
         - Endurance PRs: 최장 거리, 최장 시간
 
     Args:
@@ -303,20 +418,14 @@ async def get_personal_records(
     Returns:
         Personal records across various categories.
     """
-    # Define distance categories (in meters)
-    distance_categories = [
-        ("5K", 5000, 5500),  # 5K with 10% tolerance
-        ("10K", 10000, 11000),
-        ("Half Marathon", 21097, 22000),
-        ("Marathon", 42195, 43000),
-    ]
-
     distance_records: list[PersonalRecord] = []
     pace_records: list[PersonalRecord] = []
+    recent_prs: list[PersonalRecord] = []
+    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
 
-    for category_name, min_dist, max_dist in distance_categories:
-        # Find best time for this distance
-        result = await db.execute(
+    for category_name, min_dist, max_dist in DISTANCE_CATEGORIES:
+        # Find best time for this distance (fastest completion)
+        time_result = await db.execute(
             select(Activity)
             .where(
                 Activity.user_id == current_user.id,
@@ -328,40 +437,88 @@ async def get_personal_records(
             .order_by(Activity.duration_seconds.asc())
             .limit(1)
         )
-        best_activity = result.scalar_one_or_none()
+        best_time_activity = time_result.scalar_one_or_none()
 
-        if best_activity:
-            # Calculate pace
-            pace_seconds = _calculate_pace_seconds(
-                best_activity.duration_seconds, best_activity.distance_meters
+        if best_time_activity:
+            # Find previous best time
+            prev_time, _ = await _find_previous_best(
+                db, current_user.id, activity_type,
+                best_time_activity.id, best_time_activity.start_time,
+                category_name, min_dist, max_dist, "duration"
+            )
+            improvement_pct = None
+            if prev_time and prev_time > 0:
+                # For time, lower is better, so improvement is negative
+                improvement_pct = round(
+                    ((best_time_activity.duration_seconds - prev_time) / prev_time) * 100, 1
+                )
+
+            distance_record = PersonalRecord(
+                category=category_name,
+                value=best_time_activity.duration_seconds,
+                unit="seconds",
+                activity_id=best_time_activity.id,
+                activity_name=best_time_activity.name,
+                achieved_date=best_time_activity.start_time.date(),
+                previous_best=prev_time,
+                improvement_pct=improvement_pct,
+            )
+            distance_records.append(distance_record)
+
+            # Check if this is a recent PR (within 30 days)
+            if best_time_activity.start_time >= thirty_days_ago and prev_time is not None:
+                recent_prs.append(distance_record)
+
+        # Find best pace for this distance (lowest sec/km)
+        # Use a subquery approach: order by duration/distance ratio
+        pace_result = await db.execute(
+            select(Activity)
+            .where(
+                Activity.user_id == current_user.id,
+                Activity.activity_type == activity_type,
+                Activity.distance_meters >= min_dist,
+                Activity.distance_meters <= max_dist,
+                Activity.duration_seconds.isnot(None),
+                Activity.distance_meters.isnot(None),
+                Activity.distance_meters > 0,
+            )
+            .order_by((Activity.duration_seconds / Activity.distance_meters).asc())
+            .limit(1)
+        )
+        best_pace_activity = pace_result.scalar_one_or_none()
+
+        if best_pace_activity:
+            current_pace = _calculate_pace_seconds(
+                best_pace_activity.duration_seconds, best_pace_activity.distance_meters
             )
 
-            distance_records.append(
-                PersonalRecord(
-                    category=category_name,
-                    value=best_activity.duration_seconds,
-                    unit="seconds",
-                    activity_id=best_activity.id,
-                    activity_name=best_activity.name,
-                    achieved_date=best_activity.start_time.date(),
-                    previous_best=None,
-                    improvement_pct=None,
+            if current_pace:
+                # Find previous best pace
+                prev_pace, _ = await _find_previous_best(
+                    db, current_user.id, activity_type,
+                    best_pace_activity.id, best_pace_activity.start_time,
+                    f"{category_name} Pace", min_dist, max_dist, "pace"
                 )
-            )
+                improvement_pct = None
+                if prev_pace and prev_pace > 0:
+                    # For pace, lower is better, so improvement is negative
+                    improvement_pct = round(((current_pace - prev_pace) / prev_pace) * 100, 1)
 
-            if pace_seconds:
-                pace_records.append(
-                    PersonalRecord(
-                        category=f"{category_name} Pace",
-                        value=pace_seconds,
-                        unit="sec/km",
-                        activity_id=best_activity.id,
-                        activity_name=best_activity.name,
-                        achieved_date=best_activity.start_time.date(),
-                        previous_best=None,
-                        improvement_pct=None,
-                    )
+                pace_record = PersonalRecord(
+                    category=f"{category_name} Pace",
+                    value=round(current_pace, 1),
+                    unit="sec/km",
+                    activity_id=best_pace_activity.id,
+                    activity_name=best_pace_activity.name,
+                    achieved_date=best_pace_activity.start_time.date(),
+                    previous_best=round(prev_pace, 1) if prev_pace else None,
+                    improvement_pct=improvement_pct,
                 )
+                pace_records.append(pace_record)
+
+                # Check if this is a recent PR
+                if best_pace_activity.start_time >= thirty_days_ago and prev_pace is not None:
+                    recent_prs.append(pace_record)
 
     # Endurance records: Longest distance
     longest_result = await db.execute(
@@ -378,18 +535,32 @@ async def get_personal_records(
 
     endurance_records: list[PersonalRecord] = []
     if longest_activity and longest_activity.distance_meters:
-        endurance_records.append(
-            PersonalRecord(
-                category="Longest Run",
-                value=longest_activity.distance_meters,
-                unit="meters",
-                activity_id=longest_activity.id,
-                activity_name=longest_activity.name,
-                achieved_date=longest_activity.start_time.date(),
-                previous_best=None,
-                improvement_pct=None,
-            )
+        prev_distance, _ = await _find_previous_best(
+            db, current_user.id, activity_type,
+            longest_activity.id, longest_activity.start_time,
+            "Longest Run", order_by_field="distance"
         )
+        improvement_pct = None
+        if prev_distance and prev_distance > 0:
+            # For distance, higher is better, so improvement is positive
+            improvement_pct = round(
+                ((longest_activity.distance_meters - prev_distance) / prev_distance) * 100, 1
+            )
+
+        longest_record = PersonalRecord(
+            category="Longest Run",
+            value=longest_activity.distance_meters,
+            unit="meters",
+            activity_id=longest_activity.id,
+            activity_name=longest_activity.name,
+            achieved_date=longest_activity.start_time.date(),
+            previous_best=prev_distance,
+            improvement_pct=improvement_pct,
+        )
+        endurance_records.append(longest_record)
+
+        if longest_activity.start_time >= thirty_days_ago and prev_distance is not None:
+            recent_prs.append(longest_record)
 
     # Endurance records: Longest duration
     duration_result = await db.execute(
@@ -405,23 +576,52 @@ async def get_personal_records(
     duration_activity = duration_result.scalar_one_or_none()
 
     if duration_activity and duration_activity.duration_seconds:
-        endurance_records.append(
-            PersonalRecord(
-                category="Longest Duration",
-                value=duration_activity.duration_seconds,
-                unit="seconds",
-                activity_id=duration_activity.id,
-                activity_name=duration_activity.name,
-                achieved_date=duration_activity.start_time.date(),
-                previous_best=None,
-                improvement_pct=None,
-            )
+        prev_duration, _ = await _find_previous_best(
+            db, current_user.id, activity_type,
+            duration_activity.id, duration_activity.start_time,
+            "Longest Duration", order_by_field="duration"
         )
+        # Note: For "longest duration" we want highest, but _find_previous_best
+        # orders by asc for duration. We need to fix this.
+        # Actually, for endurance (longest), higher is better.
+        # Let me reconsider the query...
 
-    # Recent PRs (activities in last 30 days that set new records)
-    # This is a simplified version - a full implementation would compare
-    # each activity against all previous activities
-    recent_prs: list[PersonalRecord] = []
+        # For longest duration, we need to find the previous longest (highest)
+        prev_result = await db.execute(
+            select(Activity)
+            .where(
+                Activity.user_id == current_user.id,
+                Activity.activity_type == activity_type,
+                Activity.id != duration_activity.id,
+                Activity.start_time < duration_activity.start_time,
+                Activity.duration_seconds.isnot(None),
+            )
+            .order_by(Activity.duration_seconds.desc())
+            .limit(1)
+        )
+        prev_activity = prev_result.scalar_one_or_none()
+        prev_duration = prev_activity.duration_seconds if prev_activity else None
+
+        improvement_pct = None
+        if prev_duration and prev_duration > 0:
+            improvement_pct = round(
+                ((duration_activity.duration_seconds - prev_duration) / prev_duration) * 100, 1
+            )
+
+        duration_record = PersonalRecord(
+            category="Longest Duration",
+            value=duration_activity.duration_seconds,
+            unit="seconds",
+            activity_id=duration_activity.id,
+            activity_name=duration_activity.name,
+            achieved_date=duration_activity.start_time.date(),
+            previous_best=prev_duration,
+            improvement_pct=improvement_pct,
+        )
+        endurance_records.append(duration_record)
+
+        if duration_activity.start_time >= thirty_days_ago and prev_duration is not None:
+            recent_prs.append(duration_record)
 
     return PersonalRecordsResponse(
         distance_records=distance_records,

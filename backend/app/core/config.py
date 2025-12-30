@@ -1,9 +1,13 @@
 """Application configuration settings."""
 
+import logging
+import warnings
 from functools import lru_cache
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -78,7 +82,34 @@ class Settings(BaseSettings):
     admin_display_name: Optional[str] = None
 
 
+_INSECURE_DEFAULT = "change-me-in-production"
+
+
 @lru_cache
 def get_settings() -> Settings:
-    """Get cached settings instance."""
-    return Settings()
+    """Get cached settings instance.
+
+    Warns if security-sensitive settings are using default values.
+    """
+    settings = Settings()
+
+    # Warn about insecure defaults in non-debug mode
+    if settings.session_secret == _INSECURE_DEFAULT:
+        msg = (
+            "session_secret is using the default value. "
+            "Set SESSION_SECRET environment variable for production."
+        )
+        if not settings.debug:
+            logger.warning(msg)
+        warnings.warn(msg, UserWarning, stacklevel=2)
+
+    if settings.secret_key == _INSECURE_DEFAULT:
+        msg = (
+            "secret_key is using the default value. "
+            "Set SECRET_KEY environment variable for production."
+        )
+        if not settings.debug:
+            logger.warning(msg)
+        warnings.warn(msg, UserWarning, stacklevel=2)
+
+    return settings
