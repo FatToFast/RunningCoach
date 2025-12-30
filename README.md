@@ -91,6 +91,28 @@ docker-compose up -d db redis
 uvicorn app.main:app --reload
 ```
 
+### HTTPS 로컬 개발 (권장)
+
+쿠키 기반 인증이 정상 작동하려면 HTTPS가 필요합니다.
+
+1. mkcert 설치 및 인증서 생성
+```bash
+brew install mkcert
+mkcert -install
+mkcert localhost 127.0.0.1 ::1
+```
+
+2. HTTPS로 서버 실행
+```bash
+uvicorn app.main:app --reload --ssl-keyfile=localhost+2-key.pem --ssl-certfile=localhost+2.pem
+```
+
+3. Frontend 환경변수 설정
+```bash
+# frontend/.env.local
+VITE_API_URL=https://localhost:8000/api/v1
+```
+
 ## Project Structure
 
 ```
@@ -123,9 +145,9 @@ RunningCoach/
 - `POST /api/v1/auth/garmin/connect` - Garmin 계정 연결
 - `GET /api/v1/auth/status` - 연결 상태 확인
 
-### Sync
-- `POST /api/v1/sync/run` - 수동 동기화
-- `GET /api/v1/sync/status` - 동기화 상태
+### Ingest (Data Sync)
+- `POST /api/v1/ingest/run` - 수동 동기화
+- `GET /api/v1/ingest/status` - 동기화 상태
 
 ### Activities
 - `GET /api/v1/activities` - 활동 목록

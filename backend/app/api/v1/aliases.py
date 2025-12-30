@@ -6,8 +6,8 @@ This module provides:
 3. Route documentation for deprecation timeline
 
 Deprecation Policy:
-- Deprecated routes return 301 redirect to canonical path
-- Deprecation warnings are included in response headers
+- Deprecated routes return 308 Permanent Redirect to canonical path
+- Deprecation warnings are included in response headers (X-API-Deprecation-Warning)
 - Legacy routes are maintained for 2 major versions before removal
 
 Usage:
@@ -20,6 +20,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+
+from app.core.config import get_settings
+
+settings = get_settings()
 
 # -------------------------------------------------------------------------
 # Alias Configuration
@@ -93,23 +97,25 @@ def create_redirect_handler(deprecated_path: str, canonical_path: str, removal_v
         response: Response,
     ) -> RedirectResponse:
         """Redirect deprecated route to canonical path with deprecation warning."""
-        # Build full canonical URL
-        full_canonical = f"/api/v1{canonical_path}"
+        # Build full canonical URL using settings.api_prefix
+        full_canonical = f"{settings.api_prefix}{canonical_path}"
 
         # Add query parameters if present
         if request.url.query:
             full_canonical = f"{full_canonical}?{request.url.query}"
 
-        # Set deprecation headers
-        response.headers[DEPRECATION_HEADER] = (
+        # Create redirect response with deprecation headers
+        # Note: Headers must be set on RedirectResponse itself, not the injected response
+        redirect = RedirectResponse(
+            url=full_canonical,
+            status_code=status.HTTP_308_PERMANENT_REDIRECT,
+        )
+        redirect.headers[DEPRECATION_HEADER] = (
             f"This endpoint is deprecated. Use {full_canonical} instead. "
             f"Will be removed in {removal_version}."
         )
 
-        return RedirectResponse(
-            url=full_canonical,
-            status_code=status.HTTP_308_PERMANENT_REDIRECT,
-        )
+        return redirect
 
     return redirect_handler
 
@@ -134,6 +140,29 @@ for deprecated, canonical, dep_date, removal_ver in ROUTE_ALIASES:
 # -------------------------------------------------------------------------
 
 
+def _get_current_api_version() -> str:
+    """Extract current API version from settings.api_prefix.
+
+    Examples:
+        "/api/v1" -> "v1"
+        "/api/v2" -> "v2"
+    """
+    prefix = settings.api_prefix
+    # Extract version from prefix like "/api/v1"
+    if prefix and "/" in prefix:
+        return prefix.rstrip("/").split("/")[-1]
+    return "v1"
+
+
+def _parse_version(version_str: str) -> tuple[int, int]:
+    """Parse version string like 'v2.0' into (major, minor) tuple."""
+    version_str = version_str.lstrip("v")
+    parts = version_str.split(".")
+    major = int(parts[0]) if parts else 0
+    minor = int(parts[1]) if len(parts) > 1 else 0
+    return (major, minor)
+
+
 @alias_router.get("/aliases", response_model=AliasListResponse)
 async def list_aliases() -> AliasListResponse:
     """List all route aliases and their deprecation status.
@@ -142,20 +171,29 @@ async def list_aliases() -> AliasListResponse:
         List of route aliases with deprecation information.
     """
     now = datetime.now()
+    current_version = _get_current_api_version()
+    current_ver_tuple = _parse_version(current_version)
     aliases = []
 
     for deprecated, canonical, dep_date, removal_ver in ROUTE_ALIASES:
-        # Determine status based on dates
+        # Determine status based on dates and version
         dep_datetime = datetime.fromisoformat(dep_date)
-        if now > dep_datetime:
+        removal_ver_tuple = _parse_version(removal_ver)
+
+        if current_ver_tuple >= removal_ver_tuple:
+            # Current version >= removal version: route is removed
+            alias_status = "removed"
+        elif now > dep_datetime:
+            # Past deprecation date but not yet removed
             alias_status = "deprecated"
         else:
+            # Before deprecation date
             alias_status = "active"
 
         aliases.append(
             AliasInfo(
                 deprecated_path=deprecated,
-                canonical_path=canonical,
+                canonical_path=f"{settings.api_prefix}{canonical}",
                 deprecation_date=dep_date,
                 removal_version=removal_ver,
                 status=alias_status,
@@ -164,7 +202,7 @@ async def list_aliases() -> AliasListResponse:
 
     return AliasListResponse(
         aliases=aliases,
-        current_version="v1",
+        current_version=current_version,
         deprecation_policy=(
             "Deprecated routes are maintained for 2 major versions. "
             "Use canonical paths for long-term stability."

@@ -85,9 +85,12 @@ Auth and Users:
 - `POST /api/v1/auth/garmin/connect` (store Garmin creds or token)
 - `POST /api/v1/auth/garmin/refresh`
 - `GET /api/v1/auth/me`
-- `POST /api/v1/auth/strava/connect`
-- `POST /api/v1/auth/strava/refresh`
-- `GET /api/v1/auth/strava/status`
+
+Strava (OAuth + Sync):
+- `GET /api/v1/strava/connect` (OAuth start)
+- `POST /api/v1/strava/callback` (OAuth callback)
+- `POST /api/v1/strava/refresh`
+- `GET /api/v1/strava/status`
 
 Garmin Data:
 - `POST /api/v1/ingest/run` (manual sync)

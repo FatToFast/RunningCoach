@@ -1,13 +1,14 @@
 """Strava integration endpoints."""
 
 import logging
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
@@ -18,9 +19,71 @@ from app.models.strava import StravaActivityMap, StravaSession, StravaSyncState
 from app.models.user import User
 from app.observability import get_metrics_backend
 
+# In-memory store for OAuth state tokens (use Redis in production)
+# Maps state_token -> user_id with expiration
+_oauth_states: dict[str, tuple[int, float]] = {}
+
 router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+# OAuth state token TTL (10 minutes)
+OAUTH_STATE_TTL = 600
+
+
+def _generate_oauth_state(user_id: int) -> str:
+    """Generate a secure OAuth state token for CSRF protection.
+
+    Args:
+        user_id: The user ID to associate with this state.
+
+    Returns:
+        A cryptographically secure state token.
+    """
+    # Clean up expired states
+    current_time = time.time()
+    expired = [k for k, (_, exp) in _oauth_states.items() if exp < current_time]
+    for k in expired:
+        del _oauth_states[k]
+
+    # Generate new state token
+    state_token = secrets.token_urlsafe(32)
+    _oauth_states[state_token] = (user_id, current_time + OAUTH_STATE_TTL)
+    return state_token
+
+
+def _validate_oauth_state(state: str | None, user_id: int) -> bool:
+    """Validate OAuth state token for CSRF protection.
+
+    Args:
+        state: The state token from the callback.
+        user_id: The authenticated user's ID.
+
+    Returns:
+        True if the state is valid for this user, False otherwise.
+    """
+    if not state:
+        return False
+
+    state_data = _oauth_states.get(state)
+    if not state_data:
+        return False
+
+    stored_user_id, expiration = state_data
+    current_time = time.time()
+
+    # Check expiration
+    if expiration < current_time:
+        del _oauth_states[state]
+        return False
+
+    # Check user ID matches
+    if stored_user_id != user_id:
+        return False
+
+    # Remove used state (one-time use)
+    del _oauth_states[state]
+    return True
 
 
 # -------------------------------------------------------------------------
@@ -85,6 +148,15 @@ class UploadStatusResponse(BaseModel):
     status: str  # pending, uploaded, failed
 
 
+class UploadStatusListResponse(BaseModel):
+    """Paginated activity upload status list."""
+
+    items: list[UploadStatusResponse]
+    total: int
+    page: int
+    per_page: int
+
+
 # -------------------------------------------------------------------------
 # OAuth Endpoints
 # -------------------------------------------------------------------------
@@ -103,7 +175,6 @@ async def initiate_strava_connect(
         OAuth authorization URL.
     """
     # Build OAuth URL
-    # Note: In production, use a proper OAuth library
     client_id = settings.strava_client_id
     redirect_uri = settings.strava_redirect_uri
 
@@ -113,13 +184,16 @@ async def initiate_strava_connect(
             detail="Strava OAuth not configured",
         )
 
+    # Generate secure state token for CSRF protection
+    state_token = _generate_oauth_state(current_user.id)
+
     auth_url = (
         f"https://www.strava.com/oauth/authorize"
         f"?client_id={client_id}"
         f"&redirect_uri={redirect_uri}"
         f"&response_type=code"
         f"&scope=activity:write,activity:read_all"
-        f"&state={current_user.id}"
+        f"&state={state_token}"
     )
 
     return StravaConnectResponse(
@@ -145,6 +219,13 @@ async def handle_strava_callback(
         Callback result.
     """
     import httpx
+
+    # Validate OAuth state for CSRF protection
+    if not _validate_oauth_state(request.state, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OAuth state. Please restart the authorization flow.",
+        )
 
     client_id = settings.strava_client_id
     client_secret = settings.strava_client_secret
@@ -203,9 +284,10 @@ async def handle_strava_callback(
         )
 
     except Exception as e:
+        logger.exception("OAuth exchange failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OAuth exchange failed: {str(e)}",
+            detail="OAuth exchange failed. Please try again.",
         )
     finally:
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -345,9 +427,10 @@ async def refresh_strava_tokens(
         )
 
     except Exception as e:
+        logger.exception("Token refresh failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Token refresh failed: {str(e)}",
+            detail="Token refresh failed. Please reconnect your Strava account.",
         )
     finally:
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -394,14 +477,16 @@ async def run_strava_sync(
             detail="Strava account not connected",
         )
 
-    # Count pending uploads
+    # Count pending uploads using SQL COUNT (efficient, doesn't load all records)
     if force:
         # All activities
-        pending_query = select(Activity).where(Activity.user_id == current_user.id)
+        count_query = select(func.count(Activity.id)).where(
+            Activity.user_id == current_user.id
+        )
     else:
         # Activities not yet uploaded
-        pending_query = (
-            select(Activity)
+        count_query = (
+            select(func.count(Activity.id))
             .outerjoin(StravaActivityMap)
             .where(
                 Activity.user_id == current_user.id,
@@ -409,8 +494,8 @@ async def run_strava_sync(
             )
         )
 
-    pending_result = await db.execute(pending_query)
-    pending_count = len(pending_result.scalars().all())
+    pending_result = await db.execute(count_query)
+    pending_count = pending_result.scalar() or 0
 
     # TODO: Queue Celery task for background sync
     # task = sync_to_strava.delay(user_id=current_user.id, force=force)
@@ -443,8 +528,6 @@ async def get_sync_status(
     sync_state = sync_result.scalar_one_or_none()
 
     # Count pending (not uploaded)
-    from sqlalchemy import func
-
     pending_result = await db.execute(
         select(func.count(Activity.id))
         .outerjoin(StravaActivityMap)
@@ -476,14 +559,14 @@ async def get_sync_status(
 # -------------------------------------------------------------------------
 
 
-@router.get("/activities", response_model=list[UploadStatusResponse])
+@router.get("/activities", response_model=UploadStatusListResponse)
 async def list_activity_uploads(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     status_filter: str | None = Query(None, regex="^(pending|uploaded|failed)$"),
-) -> list[UploadStatusResponse]:
+) -> UploadStatusListResponse:
     """List activity upload statuses.
 
     Args:
@@ -491,36 +574,42 @@ async def list_activity_uploads(
         db: Database session.
         page: Page number.
         per_page: Items per page.
-        status_filter: Filter by status.
+        status_filter: Filter by status (pending, uploaded, failed).
 
     Returns:
-        Upload statuses.
+        Paginated upload statuses.
     """
-    # Get activities with optional Strava map
-    query = (
+    # Build base query with user filter
+    base_query = (
         select(Activity, StravaActivityMap)
         .outerjoin(StravaActivityMap)
         .where(Activity.user_id == current_user.id)
-        .order_by(Activity.start_time.desc())
     )
 
+    # Apply status filter BEFORE pagination
+    if status_filter == "pending":
+        # Pending = no StravaActivityMap record
+        base_query = base_query.where(StravaActivityMap.id == None)
+    elif status_filter == "uploaded":
+        # Uploaded = has StravaActivityMap record
+        base_query = base_query.where(StravaActivityMap.id != None)
+    # Note: "failed" status would need a status column in StravaActivityMap
+
+    # Count total matching records
+    count_query = select(func.count()).select_from(base_query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Apply pagination
     offset = (page - 1) * per_page
-    query = query.offset(offset).limit(per_page)
+    query = base_query.order_by(Activity.start_time.desc()).offset(offset).limit(per_page)
 
     result = await db.execute(query)
     rows = result.all()
 
     uploads = []
     for activity, strava_map in rows:
-        if strava_map:
-            upload_status = "uploaded"
-        else:
-            upload_status = "pending"
-
-        # Apply filter
-        if status_filter and upload_status != status_filter:
-            continue
-
+        upload_status = "uploaded" if strava_map else "pending"
         uploads.append(
             UploadStatusResponse(
                 activity_id=activity.id,
@@ -531,7 +620,12 @@ async def list_activity_uploads(
             )
         )
 
-    return uploads
+    return UploadStatusListResponse(
+        items=uploads,
+        total=total,
+        page=page,
+        per_page=per_page,
+    )
 
 
 @router.post("/activities/{activity_id}/upload", response_model=UploadStatusResponse)

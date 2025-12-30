@@ -8,8 +8,11 @@ Paths:
 Note: Strava OAuth is handled by /api/v1/strava/* endpoints.
 """
 
+import logging
 from datetime import datetime, timezone as tz
 from typing import Annotated, Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr
@@ -303,19 +306,22 @@ async def connect_garmin(
         )
 
     except GarminAuthError as e:
+        logger.warning(f"Garmin authentication failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Garmin authentication failed: {str(e)}",
+            detail="Garmin authentication failed. Please check your credentials.",
         )
     except GarminAdapterError as e:
+        logger.error(f"Garmin API error: {e}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Garmin API error: {str(e)}",
+            detail="Garmin API is currently unavailable. Please try again later.",
         )
     except Exception as e:
+        logger.exception("Unexpected error during Garmin connect")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}",
+            detail="An unexpected error occurred. Please try again.",
         )
 
 
@@ -378,9 +384,10 @@ async def refresh_garmin_session(
             detail="Session expired. Please reconnect your Garmin account.",
         )
     except Exception as e:
+        logger.exception("Unexpected error during Garmin session refresh")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Session validation failed: {str(e)}",
+            detail="Session validation failed. Please try again.",
         )
 
 

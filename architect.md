@@ -79,16 +79,16 @@
 - Auth:
   - /api/v1/auth/login, /auth/logout, /auth/me
   - /api/v1/auth/garmin/connect|refresh|disconnect|status
-  - /api/v1/auth/strava/connect|callback|refresh|status
+  (Note: Strava OAuth는 /api/v1/strava/* 에서 처리)
 - Ingest:
-  - /api/v1/ingest/run, /ingest/status, /ingest/history
+  - /api/v1/ingest/run, /ingest/run/sync, /ingest/status, /ingest/history
 - Activities:
   - /api/v1/activities, /activities/{id},
     /activities/{id}/samples, /activities/{id}/fit, /activities/types/list
 - Health:
   - /api/v1/sleep, /api/v1/hr, /api/v1/metrics
 - Dashboard:
-  - /api/v1/dashboard/summary, /dashboard/trends, /dashboard/calendar
+  - /api/v1/dashboard/summary, /api/v1/dashboard/trends, /api/v1/dashboard/calendar
 - Analytics:
   - /api/v1/analytics/compare, /analytics/personal-records
 - AI:
@@ -147,8 +147,8 @@
 ## 보안
 - 로컬 로그인 + 서버 세션(HTTP-only 쿠키).
 - 비밀번호 bcrypt 해시 저장.
-- Garmin/Strava 토큰 암호화 저장.
-- HTTPS 필수.
+- Garmin/Strava 세션 토큰은 DB에 저장 (개인용 NAS 환경 기준, 암호화 미적용).
+- 로컬 개발 시 HTTPS 권장 (cookie_secure=true 기본값).
 - AI 로그 보관/삭제 정책 필요.
 
 ## 성능 목표
@@ -169,9 +169,12 @@
 - FIT 보관/압축/폐기 정책.
 - ⏳ 프론트 타입/백엔드 응답 정합성 정리 → HR존/랩 엔드포인트 구현 후 완료 예정.
 
-## 구현 예정 (Activity 확장 API)
-- `GET /api/v1/activities/{id}/hr-zones` - HR존별 시간 분포
-- `GET /api/v1/activities/{id}/laps` - 랩/구간 데이터
+## 구현 완료 (Activity 확장 API)
+- `GET /api/v1/activities/{id}/hr-zones` - HR존별 시간 분포 ✅
+- `GET /api/v1/activities/{id}/laps` - 랩/구간 데이터 ✅
+- `GET /api/v1/activities/types/list` - 활동 유형 목록 ✅
+
+## 구현 예정
 - `GET /api/v1/activities/{id}/weather` - 활동 시점 날씨 (선택)
 
 ## Runalyze 연동

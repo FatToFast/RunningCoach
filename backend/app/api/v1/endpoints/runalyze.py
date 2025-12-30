@@ -199,9 +199,10 @@ async def get_runalyze_status(
                 )
 
     except Exception as e:
+        logger.exception("Runalyze connection check failed")
         return RunalyzeStatusResponse(
             connected=False,
-            message=f"Connection failed: {str(e)}",
+            message="Connection failed. Please check your API token.",
         )
 
 
@@ -252,14 +253,16 @@ async def get_hrv_data(
             )
 
     except httpx.HTTPStatusError as e:
+        logger.exception("Runalyze API error fetching HRV data")
         raise HTTPException(
             status_code=e.response.status_code,
-            detail=f"Runalyze API error: {e.response.text}",
+            detail="Runalyze API error. Please try again later.",
         )
     except Exception as e:
+        logger.exception("Failed to fetch HRV data from Runalyze")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to fetch HRV data: {str(e)}",
+            detail="Failed to fetch HRV data. Please try again later.",
         )
 
 
@@ -312,14 +315,16 @@ async def get_sleep_data(
             )
 
     except httpx.HTTPStatusError as e:
+        logger.exception("Runalyze API error fetching sleep data")
         raise HTTPException(
             status_code=e.response.status_code,
-            detail=f"Runalyze API error: {e.response.text}",
+            detail="Runalyze API error. Please try again later.",
         )
     except Exception as e:
+        logger.exception("Failed to fetch sleep data from Runalyze")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to fetch sleep data: {str(e)}",
+            detail="Failed to fetch sleep data. Please try again later.",
         )
 
 

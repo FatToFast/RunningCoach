@@ -14,10 +14,8 @@ Authentication:
   POST   /api/v1/auth/garmin/refresh     - Garmin 세션 갱신
   DELETE /api/v1/auth/garmin/disconnect  - Garmin 연결 해제
   GET    /api/v1/auth/garmin/status      - Garmin 연결 상태
-  POST   /api/v1/auth/strava/connect     - Strava OAuth 시작
-  POST   /api/v1/auth/strava/callback    - Strava OAuth 콜백
-  POST   /api/v1/auth/strava/refresh     - Strava 세션 갱신
-  GET    /api/v1/auth/strava/status      - Strava 연결 상태
+
+Note: Strava OAuth endpoints are at /api/v1/strava/* (not /auth/strava/*)
 
 Data Ingestion:
   POST   /api/v1/ingest/run              - 수동 동기화 실행
