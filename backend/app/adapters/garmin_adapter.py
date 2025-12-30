@@ -8,6 +8,7 @@ download and parsing capabilities for Runalyze+ level data extraction.
 import hashlib
 import logging
 import os
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Protocol
@@ -15,6 +16,7 @@ from typing import Any, Optional, Protocol
 from garminconnect import Garmin, GarminConnectAuthenticationError
 
 from app.core.config import get_settings
+from app.observability import get_metrics_backend
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -77,6 +79,7 @@ class GarminConnectAdapter:
         """Initialize the adapter."""
         self._client: Optional[Garmin] = None
         self._session_data: Optional[dict[str, Any]] = None
+        self._metrics = get_metrics_backend()
 
     @property
     def is_authenticated(self) -> bool:
@@ -96,23 +99,32 @@ class GarminConnectAdapter:
         Raises:
             GarminAuthError: If authentication fails.
         """
+        start_time = time.perf_counter()
+        status_code = 500
         try:
             self._client = Garmin(email, password)
             self._client.login()
             logger.info("Successfully logged in to Garmin Connect")
+            status_code = 200
             return True
         except GarminConnectAuthenticationError as e:
+            status_code = 401
             logger.error(f"Garmin authentication failed: {e}")
             raise GarminAuthError(f"Authentication failed: {e}") from e
         except Exception as e:
+            status_code = 500
             logger.error(f"Unexpected error during Garmin login: {e}")
             raise GarminAdapterError(f"Login error: {e}") from e
+        finally:
+            self._observe_api_call("login", status_code, start_time)
 
-    def login_with_session(self, session_data: dict[str, Any]) -> bool:
+    def login_with_session(self, session_data: dict[str, Any] | str) -> bool:
         """Login using stored session data.
 
         Args:
             session_data: Previously saved session data.
+                - If dict (from JSONB): expects {"garth_session": "base64_string"}
+                - If str: expects base64 encoded garth session string
 
         Returns:
             True if login successful.
@@ -120,25 +132,51 @@ class GarminConnectAdapter:
         Raises:
             GarminAuthError: If session is invalid.
         """
+        start_time = time.perf_counter()
+        status_code = 500
         try:
             self._client = Garmin()
-            self._client.login(session_data)
-            self._session_data = session_data
+            # garminconnect 0.2.x uses garth library
+            # Extract base64 string from dict wrapper if needed
+            if isinstance(session_data, dict):
+                session_str = session_data.get("garth_session", "")
+            else:
+                session_str = session_data
+            self._client.garth.loads(session_str)
             logger.info("Successfully logged in with session data")
+            status_code = 200
             return True
         except Exception as e:
+            status_code = 401
             logger.error(f"Session login failed: {e}")
             raise GarminAuthError(f"Session invalid: {e}") from e
+        finally:
+            self._observe_api_call("login_with_session", status_code, start_time)
+
+    def restore_session(self, session_data: dict[str, Any] | str) -> bool:
+        """Restore session from stored data (alias for login_with_session).
+
+        Args:
+            session_data: Previously saved session data (dict or string).
+
+        Returns:
+            True if restore successful.
+        """
+        return self.login_with_session(session_data)
 
     def get_session_data(self) -> Optional[dict[str, Any]]:
         """Get current session data for persistence.
 
         Returns:
-            Session data dict or None if not authenticated.
+            Session data as dict (for JSONB storage) or None if not authenticated.
+            Format: {"garth_session": "base64_encoded_string"}
         """
         if self._client is None:
             return None
-        return self._client.session_data
+        # garminconnect 0.2.x uses garth library
+        # dumps() returns base64 encoded string, wrap in dict for JSONB
+        garth_str = self._client.garth.dumps()
+        return {"garth_session": garth_str} if garth_str else None
 
     def get_activities(
         self,
@@ -160,16 +198,22 @@ class GarminConnectAdapter:
             GarminAPIError: If API call fails.
         """
         self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
         try:
             activities = self._client.get_activities_by_date(
                 start_date.isoformat(),
                 end_date.isoformat(),
                 activity_type,
             )
+            status_code = 200
             return activities or []
         except Exception as e:
+            status_code = 500
             logger.error(f"Failed to get activities: {e}")
             raise GarminAPIError(f"Failed to get activities: {e}") from e
+        finally:
+            self._observe_api_call("get_activities_by_date", status_code, start_time)
 
     def get_activity_details(self, activity_id: int) -> dict[str, Any]:
         """Get detailed activity data.
@@ -184,11 +228,17 @@ class GarminConnectAdapter:
             GarminAPIError: If API call fails.
         """
         self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
         try:
+            status_code = 200
             return self._client.get_activity_details(activity_id)
         except Exception as e:
+            status_code = 500
             logger.error(f"Failed to get activity details: {e}")
             raise GarminAPIError(f"Failed to get activity {activity_id}: {e}") from e
+        finally:
+            self._observe_api_call("get_activity_details", status_code, start_time)
 
     def get_sleep_data(self, target_date: date) -> dict[str, Any]:
         """Get sleep data for a specific date.
@@ -203,11 +253,18 @@ class GarminConnectAdapter:
             GarminAPIError: If API call fails.
         """
         self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
         try:
-            return self._client.get_sleep_data(target_date.isoformat()) or {}
+            data = self._client.get_sleep_data(target_date.isoformat()) or {}
+            status_code = 200
+            return data
         except Exception as e:
+            status_code = 500
             logger.error(f"Failed to get sleep data: {e}")
             raise GarminAPIError(f"Failed to get sleep data: {e}") from e
+        finally:
+            self._observe_api_call("get_sleep_data", status_code, start_time)
 
     def get_heart_rate(self, target_date: date) -> dict[str, Any]:
         """Get heart rate data for a specific date.
@@ -222,11 +279,18 @@ class GarminConnectAdapter:
             GarminAPIError: If API call fails.
         """
         self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
         try:
-            return self._client.get_heart_rates(target_date.isoformat()) or {}
+            data = self._client.get_heart_rates(target_date.isoformat()) or {}
+            status_code = 200
+            return data
         except Exception as e:
+            status_code = 500
             logger.error(f"Failed to get heart rate data: {e}")
             raise GarminAPIError(f"Failed to get HR data: {e}") from e
+        finally:
+            self._observe_api_call("get_heart_rates", status_code, start_time)
 
     def get_stats(self, target_date: date) -> dict[str, Any]:
         """Get daily stats summary.
@@ -241,11 +305,42 @@ class GarminConnectAdapter:
             GarminAPIError: If API call fails.
         """
         self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
         try:
-            return self._client.get_stats(target_date.isoformat()) or {}
+            data = self._client.get_stats(target_date.isoformat()) or {}
+            status_code = 200
+            return data
         except Exception as e:
+            status_code = 500
             logger.error(f"Failed to get stats: {e}")
             raise GarminAPIError(f"Failed to get stats: {e}") from e
+        finally:
+            self._observe_api_call("get_stats", status_code, start_time)
+
+    def get_user_profile(self) -> dict[str, Any]:
+        """Get user profile including max HR settings.
+
+        Returns:
+            User profile data dict with maxHr if available.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            # garminconnect의 get_user_summary() 메서드 사용
+            data = self._client.get_user_summary(date.today().isoformat()) or {}
+            status_code = 200
+            return data
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get user profile: {e}")
+            raise GarminAPIError(f"Failed to get user profile: {e}") from e
+        finally:
+            self._observe_api_call("get_user_profile", status_code, start_time)
 
     def _ensure_authenticated(self) -> None:
         """Ensure client is authenticated.
@@ -255,6 +350,22 @@ class GarminConnectAdapter:
         """
         if self._client is None:
             raise GarminAuthError("Not authenticated. Call login() first.")
+
+    def _observe_api_call(self, operation: str, status_code: int, start_time: float) -> None:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        self._metrics.observe_external_api(
+            "garmin",
+            operation,
+            status_code,
+            duration_ms,
+        )
+        if settings.debug:
+            logger.info(
+                "Garmin API %s status=%s duration_ms=%.2f",
+                operation,
+                status_code,
+                duration_ms,
+            )
 
     # -------------------------------------------------------------------------
     # FIT File Download & Parsing (Runalyze+ level data extraction)
@@ -278,6 +389,8 @@ class GarminConnectAdapter:
             GarminAPIError: If download fails.
         """
         self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
 
         try:
             # Download FIT file bytes
@@ -304,13 +417,21 @@ class GarminConnectAdapter:
                 f.write(fit_data)
 
             logger.info(f"Downloaded FIT file for activity {activity_id}: {file_path}")
+            status_code = 200
+            self._metrics.observe_fit_download(len(fit_data), True)
             return fit_data, file_path, file_hash
 
         except GarminAPIError:
+            status_code = 500
+            self._metrics.observe_fit_download(0, False)
             raise
         except Exception as e:
+            status_code = 500
             logger.error(f"Failed to download FIT file for activity {activity_id}: {e}")
+            self._metrics.observe_fit_download(0, False)
             raise GarminAPIError(f"FIT download failed: {e}") from e
+        finally:
+            self._observe_api_call("download_fit_file", status_code, start_time)
 
     def parse_fit_file(self, fit_data: bytes) -> dict[str, Any]:
         """Parse FIT file and extract detailed data.

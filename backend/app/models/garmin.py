@@ -15,7 +15,11 @@ if TYPE_CHECKING:
 
 
 class GarminSession(BaseModel):
-    """Garmin session tokens for API authentication."""
+    """Garmin session tokens for API authentication.
+
+    Uses garminconnect library's session_data format which includes
+    OAuth tokens and session cookies. The session_data is stored as JSONB.
+    """
 
     __tablename__ = "garmin_sessions"
 
@@ -25,7 +29,11 @@ class GarminSession(BaseModel):
         unique=True,
     )
 
-    # OAuth tokens (encrypted at rest)
+    # garminconnect session_data (includes OAuth tokens, cookies, etc.)
+    # This is the complete session state from garminconnect library
+    session_data: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+
+    # Legacy OAuth fields (deprecated, will be removed in v2.0)
     oauth1_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     oauth2_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -41,6 +49,11 @@ class GarminSession(BaseModel):
     # Relationship
     user: Mapped["User"] = relationship("User", back_populates="garmin_session")
 
+    @property
+    def is_valid(self) -> bool:
+        """Check if session appears valid (has session_data)."""
+        return self.session_data is not None and bool(self.session_data)
+
     def __repr__(self) -> str:
         return f"<GarminSession(user_id={self.user_id})>"
 
@@ -48,7 +61,7 @@ class GarminSession(BaseModel):
 class GarminSyncState(BaseModel):
     """Sync state per endpoint for incremental sync."""
 
-    __tablename__ = "garmin_sync_state"
+    __tablename__ = "garmin_sync_states"
     __table_args__ = (
         UniqueConstraint("user_id", "endpoint", name="uq_garmin_sync_state_user_endpoint"),
     )

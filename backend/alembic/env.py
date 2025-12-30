@@ -12,18 +12,21 @@ from app.core.config import get_settings
 from app.core.database import Base
 from app.models import (  # noqa: F401 - Import all models for metadata
     Activity,
+    ActivityGear,
     ActivityMetric,
     ActivitySample,
     AIConversation,
     AIImport,
     AIMessage,
     AnalyticsSummary,
-    BodyComposition,
     FitnessMetricDaily,
+    GarminRawEvent,
     GarminRawFile,
     GarminSession,
     GarminSyncState,
-    HeartRateZone,
+    Gear,
+    HealthMetric,
+    HRRecord,
     Plan,
     PlanWeek,
     Sleep,
@@ -33,7 +36,6 @@ from app.models import (  # noqa: F401 - Import all models for metadata
     User,
     Workout,
     WorkoutSchedule,
-    WorkoutStep,
 )
 
 # this is the Alembic Config object, which provides

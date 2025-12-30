@@ -3,6 +3,8 @@ import type {
   CompareResponse,
   TrendsResponse,
   PersonalRecordsResponse,
+  CalendarResponse,
+  CalendarDay,
 } from '../types/api';
 
 export const mockDashboardSummary: DashboardSummary = {
@@ -14,6 +16,7 @@ export const mockDashboardSummary: DashboardSummary = {
     total_duration_hours: 4.2,
     total_activities: 5,
     avg_pace_per_km: '5:56/km',
+    avg_pace_seconds: 356, // 5분 56초 = 356초
     avg_hr: 152,
     total_elevation_m: 385,
     total_calories: 2850,
@@ -21,48 +24,88 @@ export const mockDashboardSummary: DashboardSummary = {
   recent_activities: [
     {
       id: 1,
-      name: 'Morning Easy Run',
+      name: '트레드밀 러닝',
       activity_type: 'running',
       start_time: '2024-12-29T07:30:00Z',
-      distance_km: 8.2,
-      duration_minutes: 48,
-      avg_hr: 145,
+      distance_km: 20.0,
+      duration_seconds: 7202, // 2:00:02
+      avg_pace_seconds: 360, // 6:00/km
+      avg_hr_percent: 72,
+      elevation_gain: null,
+      calories: 1248,
+      trimp: 153,
+      vo2max_est: null,
+      avg_cadence: 178,
+      avg_ground_time: 258,
+      avg_vertical_oscillation: 8.0,
     },
     {
       id: 2,
-      name: 'Tempo Run',
+      name: '템포 러닝',
       activity_type: 'running',
       start_time: '2024-12-27T18:00:00Z',
       distance_km: 10.0,
-      duration_minutes: 52,
-      avg_hr: 165,
+      duration_seconds: 3120, // 52:00
+      avg_pace_seconds: 312, // 5:12/km
+      avg_hr_percent: 87,
+      elevation_gain: 120,
+      calories: 680,
+      trimp: 115,
+      vo2max_est: 46.2,
+      avg_cadence: 182,
+      avg_ground_time: 245,
+      avg_vertical_oscillation: 7.5,
     },
     {
       id: 3,
-      name: 'Recovery Jog',
+      name: '회복 조깅',
       activity_type: 'running',
       start_time: '2024-12-26T07:00:00Z',
       distance_km: 5.5,
-      duration_minutes: 35,
-      avg_hr: 135,
+      duration_seconds: 2100, // 35:00
+      avg_pace_seconds: 382, // 6:22/km
+      avg_hr_percent: 71,
+      elevation_gain: 45,
+      calories: 320,
+      trimp: 42,
+      vo2max_est: 42.5,
+      avg_cadence: 170,
+      avg_ground_time: 268,
+      avg_vertical_oscillation: 8.5,
     },
     {
       id: 4,
-      name: 'Long Run',
+      name: '장거리 러닝',
       activity_type: 'running',
       start_time: '2024-12-24T08:00:00Z',
       distance_km: 15.0,
-      duration_minutes: 95,
-      avg_hr: 148,
+      duration_seconds: 5700, // 1:35:00
+      avg_pace_seconds: 380, // 6:20/km
+      avg_hr_percent: 78,
+      elevation_gain: 185,
+      calories: 980,
+      trimp: 145,
+      vo2max_est: 44.8,
+      avg_cadence: 175,
+      avg_ground_time: 262,
+      avg_vertical_oscillation: 8.2,
     },
     {
       id: 5,
-      name: 'Interval Training',
+      name: '인터벌 훈련',
       activity_type: 'running',
       start_time: '2024-12-23T18:30:00Z',
       distance_km: 6.8,
-      duration_minutes: 42,
-      avg_hr: 172,
+      duration_seconds: 2520, // 42:00
+      avg_pace_seconds: 371, // 6:11/km
+      avg_hr_percent: 91,
+      elevation_gain: 65,
+      calories: 520,
+      trimp: 111,
+      vo2max_est: 48.5,
+      avg_cadence: 185,
+      avg_ground_time: 235,
+      avg_vertical_oscillation: 7.0,
     },
   ],
   health_status: {
@@ -73,11 +116,18 @@ export const mockDashboardSummary: DashboardSummary = {
     vo2max: 52.4,
   },
   fitness_status: {
-    ctl: 58.2,
-    atl: 72.5,
-    tsb: -14.3,
+    ctl: 71,
+    atl: 70,
+    tsb: -27,
     weekly_trimp: 485,
     weekly_tss: 312,
+    // Runalyze-style extended metrics
+    effective_vo2max: 44.29,
+    marathon_shape: 92,
+    workload_ratio: 1.29,
+    rest_days: 1.1,
+    monotony: 54,
+    training_strain: 1073,
   },
   upcoming_workouts: [
     {
@@ -93,6 +143,20 @@ export const mockDashboardSummary: DashboardSummary = {
       scheduled_date: '2024-12-31',
     },
   ],
+  // Daniels Training Paces (VDOT ~44 기준)
+  training_paces: {
+    vdot: 44,
+    easy_min: 343, // 5:43/km
+    easy_max: 430, // 7:10/km
+    marathon_min: 302, // 5:02/km
+    marathon_max: 338, // 5:38/km
+    threshold_min: 276, // 4:36/km
+    threshold_max: 288, // 4:48/km
+    interval_min: 254, // 4:14/km
+    interval_max: 267, // 4:27/km
+    repetition_min: 231, // 3:51/km
+    repetition_max: 242, // 4:02/km
+  },
 };
 
 export const mockCompareResponse: CompareResponse = {
@@ -184,6 +248,78 @@ export const mockTrendsResponse: TrendsResponse = {
     { date: '2024-12-23', ctl: 58.2, atl: 72.5, tsb: -14.3 },
   ],
 };
+
+// Calendar mock data - 2024년 12월 기준 4주간 데이터
+export const mockCalendarResponse: CalendarResponse = {
+  start_date: '2024-12-01',
+  end_date: '2024-12-31',
+  days: generateMockCalendarDays(),
+};
+
+function generateMockCalendarDays(): CalendarDay[] {
+  const days: CalendarDay[] = [];
+
+  // 활동 데이터 (완료된 러닝)
+  const activityDates: Record<string, { id: number; name: string; distance_km: number; duration_minutes: number; avg_hr: number }[]> = {
+    '2024-12-29': [{ id: 1, name: '아침 이지런', distance_km: 8.2, duration_minutes: 48, avg_hr: 145 }],
+    '2024-12-27': [{ id: 2, name: '템포런', distance_km: 10.0, duration_minutes: 52, avg_hr: 165 }],
+    '2024-12-26': [{ id: 3, name: '회복 조깅', distance_km: 5.5, duration_minutes: 35, avg_hr: 135 }],
+    '2024-12-24': [{ id: 4, name: '장거리 러닝', distance_km: 15.0, duration_minutes: 95, avg_hr: 148 }],
+    '2024-12-23': [{ id: 5, name: '인터벌 훈련', distance_km: 6.8, duration_minutes: 42, avg_hr: 172 }],
+    '2024-12-21': [{ id: 6, name: '주말 롱런', distance_km: 18.5, duration_minutes: 108, avg_hr: 150 }],
+    '2024-12-19': [{ id: 7, name: '이지런', distance_km: 7.0, duration_minutes: 42, avg_hr: 140 }],
+    '2024-12-17': [{ id: 8, name: '파틀렉', distance_km: 8.0, duration_minutes: 45, avg_hr: 158 }],
+    '2024-12-15': [{ id: 9, name: '롱런', distance_km: 16.2, duration_minutes: 98, avg_hr: 145 }],
+    '2024-12-13': [{ id: 10, name: '회복 러닝', distance_km: 5.0, duration_minutes: 32, avg_hr: 138 }],
+    '2024-12-11': [{ id: 11, name: '템포런', distance_km: 10.5, duration_minutes: 54, avg_hr: 162 }],
+    '2024-12-09': [{ id: 12, name: '아침 러닝', distance_km: 7.5, duration_minutes: 44, avg_hr: 142 }],
+    '2024-12-07': [{ id: 13, name: '롱런', distance_km: 20.0, duration_minutes: 120, avg_hr: 148 }],
+    '2024-12-05': [{ id: 14, name: '이지런', distance_km: 6.0, duration_minutes: 36, avg_hr: 135 }],
+    '2024-12-03': [{ id: 15, name: '인터벌', distance_km: 8.2, duration_minutes: 46, avg_hr: 170 }],
+  };
+
+  // 예정된 운동
+  const workoutDates: Record<string, { id: number; workout_name: string; workout_type: string }[]> = {
+    '2024-12-30': [{ id: 1, workout_name: '회복 러닝', workout_type: 'easy' }],
+    '2024-12-31': [{ id: 2, workout_name: '역치 인터벌', workout_type: 'tempo' }],
+  };
+
+  // 12월 전체 날짜 생성
+  for (let day = 1; day <= 31; day++) {
+    const dateStr = `2024-12-${String(day).padStart(2, '0')}`;
+    const activities = activityDates[dateStr] || [];
+    const workouts = workoutDates[dateStr] || [];
+
+    days.push({
+      date: dateStr,
+      activities: activities.map(a => ({
+        id: a.id,
+        name: a.name,
+        activity_type: 'running',
+        start_time: `${dateStr}T07:00:00Z`,
+        distance_km: a.distance_km,
+        duration_seconds: a.duration_minutes * 60,
+        avg_pace_seconds: Math.round((a.duration_minutes * 60) / a.distance_km),
+        avg_hr_percent: Math.round((a.avg_hr / 190) * 100),
+        elevation_gain: 50,
+        calories: Math.round(a.distance_km * 60),
+        trimp: Math.round(a.duration_minutes * 1.5),
+        vo2max_est: null,
+        avg_cadence: 175,
+        avg_ground_time: 255,
+        avg_vertical_oscillation: 8.0,
+      })),
+      scheduled_workouts: workouts.map(w => ({
+        id: w.id,
+        workout_name: w.workout_name,
+        workout_type: w.workout_type,
+        scheduled_date: dateStr,
+      })),
+    });
+  }
+
+  return days;
+}
 
 export const mockPersonalRecords: PersonalRecordsResponse = {
   distance_records: [

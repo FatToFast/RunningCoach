@@ -116,6 +116,64 @@ class HealthMetric(BaseModel):
         return f"<HealthMetric(user_id={self.user_id}, type={self.metric_type})>"
 
 
+class HeartRateZone(BaseModel):
+    """Daily heart rate zone time distribution."""
+
+    __tablename__ = "heart_rate_zones"
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_heart_rate_zone_user_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    date: Mapped[date] = mapped_column(Date, index=True)
+    resting_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Time spent in each zone (seconds)
+    zone1_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    zone2_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    zone3_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    zone4_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    zone5_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="heart_rate_zones")
+
+    def __repr__(self) -> str:
+        return f"<HeartRateZone(user_id={self.user_id}, date={self.date})>"
+
+
+class BodyComposition(BaseModel):
+    """Body composition measurements (weight, body fat, etc.)."""
+
+    __tablename__ = "body_compositions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "date", name="uq_body_composition_user_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    date: Mapped[date] = mapped_column(Date, index=True)
+    weight_kg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    body_fat_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    muscle_mass_kg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bmi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Relationship
+    user: Mapped["User"] = relationship("User", back_populates="body_compositions")
+
+    def __repr__(self) -> str:
+        return f"<BodyComposition(user_id={self.user_id}, date={self.date})>"
+
+
 class FitnessMetricDaily(BaseModel):
     """Daily fitness metrics (CTL, ATL, TSB)."""
 

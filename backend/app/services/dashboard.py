@@ -11,8 +11,7 @@ from sqlalchemy import func, select, and_, desc
 from sqlalchemy.orm import Session
 
 from app.models.activity import Activity
-from app.models.health import SleepRecord, HeartRateRecord
-from app.models.analytics import WeeklyStats, FitnessMetrics
+from app.models.health import Sleep, HRRecord, FitnessMetricDaily
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +110,7 @@ class DashboardService:
 
         # Resting heart rate
         resting_hr = self._get_daily_metric(
-            start_date, end_date, HeartRateRecord, "resting_hr"
+            start_date, end_date, HRRecord, "resting_hr"
         )
 
         # CTL/ATL/TSB over time
@@ -263,7 +262,7 @@ class DashboardService:
 
         total_distance = sum(a.distance_meters or 0 for a in activities)
         total_duration = sum(a.duration_seconds or 0 for a in activities)
-        total_elevation = sum(a.total_ascent_meters or 0 for a in activities)
+        total_elevation = sum(a.elevation_gain or 0 for a in activities)
         total_calories = sum(a.calories or 0 for a in activities)
 
         # Average pace
@@ -302,29 +301,28 @@ class DashboardService:
         """Get latest health metrics."""
         # Get most recent sleep
         sleep = self.db.execute(
-            select(SleepRecord)
+            select(Sleep)
             .where(
-                SleepRecord.user_id == self.user_id,
-                SleepRecord.calendar_date <= target_date,
+                Sleep.user_id == self.user_id,
+                Sleep.date <= target_date,
             )
-            .order_by(SleepRecord.calendar_date.desc())
+            .order_by(Sleep.date.desc())
             .limit(1)
         ).scalar_one_or_none()
 
         # Get most recent HR
         hr = self.db.execute(
-            select(HeartRateRecord)
+            select(HRRecord)
             .where(
-                HeartRateRecord.user_id == self.user_id,
-                HeartRateRecord.calendar_date <= target_date,
+                HRRecord.user_id == self.user_id,
             )
-            .order_by(HeartRateRecord.calendar_date.desc())
+            .order_by(HRRecord.start_time.desc())
             .limit(1)
         ).scalar_one_or_none()
 
         return {
-            "latest_sleep_score": sleep.sleep_score if sleep else None,
-            "latest_sleep_hours": round(sleep.total_sleep_seconds / 3600, 1) if sleep and sleep.total_sleep_seconds else None,
+            "latest_sleep_score": sleep.score if sleep else None,
+            "latest_sleep_hours": round(sleep.duration_seconds / 3600, 1) if sleep and sleep.duration_seconds else None,
             "resting_hr": hr.resting_hr if hr else None,
             "body_battery": None,  # TODO: Add body battery tracking
             "vo2max": self._get_latest_vo2max(),
@@ -347,22 +345,22 @@ class DashboardService:
     def _get_fitness_status(self, target_date: date) -> dict:
         """Get fitness metrics (CTL/ATL/TSB)."""
         metrics = self.db.execute(
-            select(FitnessMetrics)
+            select(FitnessMetricDaily)
             .where(
-                FitnessMetrics.user_id == self.user_id,
-                FitnessMetrics.date <= target_date,
+                FitnessMetricDaily.user_id == self.user_id,
+                FitnessMetricDaily.date <= target_date,
             )
-            .order_by(FitnessMetrics.date.desc())
+            .order_by(FitnessMetricDaily.date.desc())
             .limit(1)
         ).scalar_one_or_none()
 
         if metrics:
             return {
-                "ctl": round(metrics.ctl, 1),
-                "atl": round(metrics.atl, 1),
-                "tsb": round(metrics.tsb, 1),
-                "weekly_trimp": metrics.weekly_trimp,
-                "weekly_tss": metrics.weekly_tss,
+                "ctl": round(metrics.ctl, 1) if metrics.ctl else 0,
+                "atl": round(metrics.atl, 1) if metrics.atl else 0,
+                "tsb": round(metrics.tsb, 1) if metrics.tsb else 0,
+                "weekly_trimp": None,
+                "weekly_tss": None,
             }
 
         # Calculate from recent activities if no stored metrics
@@ -516,28 +514,52 @@ class DashboardService:
         field: str,
     ) -> list[dict]:
         """Get daily metric from health records."""
-        # Sample weekly instead of daily for trends
-        query = (
-            select(model)
-            .where(
-                model.user_id == self.user_id,
-                model.calendar_date >= start_date,
-                model.calendar_date <= end_date,
+        # For HRRecord, use start_time instead of calendar_date
+        if model == HRRecord:
+            query = (
+                select(model)
+                .where(
+                    model.user_id == self.user_id,
+                    func.date(model.start_time) >= start_date,
+                    func.date(model.start_time) <= end_date,
+                )
+                .order_by(model.start_time)
             )
-            .order_by(model.calendar_date)
-        )
+            records = self.db.execute(query).scalars().all()
 
-        records = self.db.execute(query).scalars().all()
+            # Group by week
+            weeks = {}
+            for r in records:
+                record_date = r.start_time.date() if r.start_time else None
+                if record_date:
+                    week_start = record_date - timedelta(days=record_date.weekday())
+                    value = getattr(r, field, None)
+                    if value is not None:
+                        if week_start not in weeks:
+                            weeks[week_start] = []
+                        weeks[week_start].append(value)
+        else:
+            # For other models with date field
+            query = (
+                select(model)
+                .where(
+                    model.user_id == self.user_id,
+                    model.date >= start_date,
+                    model.date <= end_date,
+                )
+                .order_by(model.date)
+            )
+            records = self.db.execute(query).scalars().all()
 
-        # Group by week
-        weeks = {}
-        for r in records:
-            week_start = r.calendar_date - timedelta(days=r.calendar_date.weekday())
-            value = getattr(r, field, None)
-            if value is not None:
-                if week_start not in weeks:
-                    weeks[week_start] = []
-                weeks[week_start].append(value)
+            # Group by week
+            weeks = {}
+            for r in records:
+                week_start = r.date - timedelta(days=r.date.weekday())
+                value = getattr(r, field, None)
+                if value is not None:
+                    if week_start not in weeks:
+                        weeks[week_start] = []
+                    weeks[week_start].append(value)
 
         # Average per week
         result = []

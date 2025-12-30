@@ -59,8 +59,18 @@ class Settings(BaseSettings):
     strava_client_secret: Optional[str] = None
     strava_redirect_uri: Optional[str] = None
 
+    # Runalyze
+    runalyze_api_token: Optional[str] = None
+    runalyze_api_base_url: str = "https://runalyze.com/api/v1"
+
     # Sync
     sync_cron: Optional[str] = None  # e.g., "0 */6 * * *" for every 6 hours
+
+    # Observability
+    metrics_backend: str = "inmemory"  # "inmemory" | "prometheus"
+    otel_enabled: bool = False
+    otel_service_name: str = "runningcoach-api"
+    otel_exporter_otlp_endpoint: Optional[str] = None
 
     # Admin (initial seed account)
     admin_email: Optional[str] = None

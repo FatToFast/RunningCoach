@@ -24,13 +24,13 @@ export function StatCard({
   const isNegative = change && change < 0;
 
   return (
-    <div className="card">
-      <div className="flex items-start justify-between mb-4">
-        <span className="stat-label">{label}</span>
+    <div className="card p-3 sm:p-4">
+      <div className="flex items-start justify-between mb-2 sm:mb-4">
+        <span className="text-[10px] sm:text-xs text-muted uppercase tracking-wider">{label}</span>
         {Icon && (
           <Icon
             className={clsx(
-              'w-5 h-5',
+              'w-4 h-4 sm:w-5 sm:h-5',
               variant === 'accent' && 'text-cyan',
               variant === 'warning' && 'text-amber',
               variant === 'default' && 'text-muted'
@@ -39,25 +39,26 @@ export function StatCard({
         )}
       </div>
 
-      <div className="flex items-baseline gap-2">
+      <div className="flex items-baseline gap-1 sm:gap-2">
         <span
           className={clsx(
-            'stat-value',
-            variant === 'warning' && '!text-amber'
+            'font-mono text-xl sm:text-2xl lg:text-3xl font-bold',
+            variant === 'accent' && 'text-cyan',
+            variant === 'warning' && 'text-amber'
           )}
         >
           {value}
         </span>
-        {unit && <span className="text-muted text-sm">{unit}</span>}
+        {unit && <span className="text-muted text-xs sm:text-sm">{unit}</span>}
       </div>
 
       {change !== undefined && change !== null && (
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-2 sm:mt-3 flex items-center gap-1 sm:gap-2">
           <span
             className={clsx(
-              'text-xs font-medium',
-              isPositive && 'text-green',
-              isNegative && 'text-red',
+              'text-[10px] sm:text-xs font-medium',
+              isPositive && 'text-green-400',
+              isNegative && 'text-red-400',
               !isPositive && !isNegative && 'text-muted'
             )}
           >
@@ -65,7 +66,7 @@ export function StatCard({
             {change.toFixed(1)}%
           </span>
           {changeLabel && (
-            <span className="text-xs text-muted">{changeLabel}</span>
+            <span className="text-[10px] sm:text-xs text-muted">{changeLabel}</span>
           )}
         </div>
       )}

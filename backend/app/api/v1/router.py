@@ -83,6 +83,24 @@ Strava Sync:
   GET    /api/v1/strava/activities       - 업로드 상태 목록
   POST   /api/v1/strava/activities/{id}/upload - 단일 활동 업로드
 
+Gear Management:
+  GET    /api/v1/gear                    - 장비 목록 (필터: status, gear_type)
+  GET    /api/v1/gear/stats              - 장비 통계 (대시보드용)
+  GET    /api/v1/gear/{id}               - 장비 상세
+  POST   /api/v1/gear                    - 장비 생성
+  PATCH  /api/v1/gear/{id}               - 장비 수정
+  POST   /api/v1/gear/{id}/retire        - 장비 은퇴
+  DELETE /api/v1/gear/{id}               - 장비 삭제
+  POST   /api/v1/gear/{id}/activities/{activity_id} - 활동에 장비 연결
+  DELETE /api/v1/gear/{id}/activities/{activity_id} - 활동-장비 연결 해제
+  GET    /api/v1/gear/{id}/activities    - 장비에 연결된 활동 목록
+
+Runalyze Integration:
+  GET    /api/v1/runalyze/status         - Runalyze 연결 상태
+  GET    /api/v1/runalyze/hrv            - HRV(심박변이도) 데이터
+  GET    /api/v1/runalyze/sleep          - 수면 데이터
+  GET    /api/v1/runalyze/summary        - 건강 지표 요약
+
 Aliases:
   GET    /api/v1/aliases                 - 레거시 경로 목록
 
@@ -101,10 +119,12 @@ from app.api.v1.endpoints import (
     analytics,
     auth,
     dashboard,
+    gear,
     hr,
     ingest,
     metrics,
     plans,
+    runalyze,
     sleep,
     strava,
     workouts,
@@ -163,6 +183,16 @@ api_router.include_router(plans.router, prefix="/plans", tags=["plans"])
 # Strava Sync (separate from auth connection)
 # -------------------------------------------------------------------------
 api_router.include_router(strava.router, prefix="/strava", tags=["strava"])
+
+# -------------------------------------------------------------------------
+# Gear Management (shoes, equipment tracking)
+# -------------------------------------------------------------------------
+api_router.include_router(gear.router, prefix="/gear", tags=["gear"])
+
+# -------------------------------------------------------------------------
+# Runalyze Integration (HRV, Sleep metrics)
+# -------------------------------------------------------------------------
+api_router.include_router(runalyze.router, prefix="/runalyze", tags=["runalyze"])
 
 # -------------------------------------------------------------------------
 # Legacy/Alias Routes (backward compatibility)

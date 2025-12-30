@@ -122,8 +122,10 @@ export function Trends() {
   // Calculate trend
   const calculateTrend = () => {
     if (selectedMetric === 'fitness') {
+      if (trends.ctl_atl.length === 0) return 0;
       const first = trends.ctl_atl[0]?.ctl ?? 0;
       const last = trends.ctl_atl[trends.ctl_atl.length - 1]?.ctl ?? 0;
+      if (first === 0) return 0;
       return ((last - first) / first) * 100;
     }
 
@@ -136,8 +138,10 @@ export function Trends() {
         ? trends.avg_pace
         : trends.resting_hr;
 
+    if (dataArray.length === 0) return 0;
     const first = dataArray[0]?.value ?? 0;
     const last = dataArray[dataArray.length - 1]?.value ?? 0;
+    if (first === 0) return 0;
     return ((last - first) / first) * 100;
   };
 
@@ -342,7 +346,9 @@ export function Trends() {
             <span className="stat-label">Lowest RHR</span>
           </div>
           <div className="stat-value text-xl !text-red">
-            {Math.min(...trends.resting_hr.map((d) => d.value))}
+            {trends.resting_hr.length > 0
+              ? Math.min(...trends.resting_hr.map((d) => d.value))
+              : '--'}
           </div>
           <div className="text-muted text-sm">bpm</div>
         </div>

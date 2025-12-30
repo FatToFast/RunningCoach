@@ -1,11 +1,15 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from './components/layout/Layout';
+import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { Activities } from './pages/Activities';
+import { ActivityDetail } from './pages/ActivityDetail';
 import { Trends } from './pages/Trends';
 import { Records } from './pages/Records';
 import { Calendar } from './pages/Calendar';
+import { Gear } from './pages/Gear';
+import { Settings } from './pages/Settings';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,15 +33,21 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
+          {/* Public routes */}
+          <Route path="/login" element={<Login />} />
+
+          {/* Protected routes */}
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/activities" element={<Activities />} />
-            <Route path="/activities/:id" element={<PlaceholderPage title="Activity Detail" />} />
+            <Route path="/activities/:id" element={<ActivityDetail />} />
             <Route path="/trends" element={<Trends />} />
             <Route path="/records" element={<Records />} />
             <Route path="/calendar" element={<Calendar />} />
+            <Route path="/gear" element={<Gear />} />
             <Route path="/workouts" element={<PlaceholderPage title="Workouts" />} />
             <Route path="/ai" element={<PlaceholderPage title="AI Coach" />} />
+            <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>
       </BrowserRouter>

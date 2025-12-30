@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import BaseModel
@@ -11,12 +11,13 @@ from app.models.base import BaseModel
 if TYPE_CHECKING:
     from app.models.garmin import GarminSession, GarminSyncState
     from app.models.activity import Activity
-    from app.models.health import Sleep, HRRecord, HealthMetric, FitnessMetricDaily
+    from app.models.health import Sleep, HRRecord, HealthMetric, FitnessMetricDaily, HeartRateZone, BodyComposition
     from app.models.workout import Workout
     from app.models.plan import Plan
     from app.models.analytics import AnalyticsSummary
     from app.models.ai import AIConversation, AIImport
     from app.models.strava import StravaSession, StravaSyncState
+    from app.models.gear import Gear
 
 
 class User(BaseModel):
@@ -33,6 +34,9 @@ class User(BaseModel):
         DateTime(timezone=True),
         nullable=True,
     )
+
+    # Garmin 연동 최대 심박수 (Garmin Connect에서 설정된 값)
+    max_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Relationships
     garmin_session: Mapped[Optional["GarminSession"]] = relationship(
@@ -64,6 +68,14 @@ class User(BaseModel):
         "FitnessMetricDaily",
         back_populates="user",
     )
+    heart_rate_zones: Mapped[list["HeartRateZone"]] = relationship(
+        "HeartRateZone",
+        back_populates="user",
+    )
+    body_compositions: Mapped[list["BodyComposition"]] = relationship(
+        "BodyComposition",
+        back_populates="user",
+    )
     workouts: Mapped[list["Workout"]] = relationship(
         "Workout",
         back_populates="user",
@@ -93,6 +105,11 @@ class User(BaseModel):
         "StravaSyncState",
         back_populates="user",
         uselist=False,
+    )
+    gears: Mapped[list["Gear"]] = relationship(
+        "Gear",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

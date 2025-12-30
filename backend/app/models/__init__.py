@@ -2,13 +2,14 @@
 
 from app.models.user import User
 from app.models.garmin import GarminSession, GarminSyncState, GarminRawEvent, GarminRawFile
-from app.models.activity import Activity, ActivitySample, ActivityMetric
-from app.models.health import Sleep, HRRecord, HealthMetric, FitnessMetricDaily
+from app.models.activity import Activity, ActivitySample, ActivityLap, ActivityMetric
+from app.models.health import Sleep, HRRecord, HealthMetric, FitnessMetricDaily, HeartRateZone, BodyComposition
 from app.models.workout import Workout, WorkoutSchedule
 from app.models.plan import Plan, PlanWeek
 from app.models.analytics import AnalyticsSummary
 from app.models.ai import AIConversation, AIMessage, AIImport
 from app.models.strava import StravaSession, StravaSyncState, StravaActivityMap
+from app.models.gear import Gear, ActivityGear, GearType, GearStatus
 
 __all__ = [
     # User
@@ -21,12 +22,15 @@ __all__ = [
     # Activity
     "Activity",
     "ActivitySample",
+    "ActivityLap",
     "ActivityMetric",
     # Health
     "Sleep",
     "HRRecord",
     "HealthMetric",
     "FitnessMetricDaily",
+    "HeartRateZone",
+    "BodyComposition",
     # Workout
     "Workout",
     "WorkoutSchedule",
@@ -43,4 +47,9 @@ __all__ = [
     "StravaSession",
     "StravaSyncState",
     "StravaActivityMap",
+    # Gear
+    "Gear",
+    "ActivityGear",
+    "GearType",
+    "GearStatus",
 ]

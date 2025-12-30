@@ -1,10 +1,11 @@
 """Authentication endpoints.
 
-Includes local auth, Garmin connection, and Strava OAuth.
+Includes local auth and Garmin connection.
 Paths:
   /api/v1/auth/login, /logout, /me
   /api/v1/auth/garmin/connect, /refresh, /disconnect, /status
-  /api/v1/auth/strava/connect, /callback, /refresh, /status
+
+Note: Strava OAuth is handled by /api/v1/strava/* endpoints.
 """
 
 from datetime import datetime, timezone as tz
@@ -15,13 +16,16 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.garmin_adapter import GarminAdapter
+from app.adapters.garmin_adapter import (
+    GarminAdapterError,
+    GarminAuthError,
+    GarminConnectAdapter,
+)
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import verify_password
 from app.core.session import create_session, delete_session, get_session
 from app.models.garmin import GarminSession, GarminSyncState
-from app.models.strava import StravaSession, StravaSyncState
 from app.models.user import User
 
 settings = get_settings()
@@ -81,28 +85,6 @@ class GarminStatusResponse(BaseModel):
     connected: bool
     session_valid: bool = False
     last_login: datetime | None = None
-    last_sync: datetime | None = None
-
-
-class StravaConnectResponse(BaseModel):
-    """Response for Strava OAuth initiation."""
-
-    auth_url: str
-    message: str
-
-
-class StravaCallbackRequest(BaseModel):
-    """OAuth callback data."""
-
-    code: str
-    state: str | None = None
-
-
-class StravaStatusResponse(BaseModel):
-    """Response for Strava connection status."""
-
-    connected: bool
-    expires_at: datetime | None = None
     last_sync: datetime | None = None
 
 
@@ -270,11 +252,29 @@ async def connect_garmin(
 ) -> GarminConnectResponse:
     """Connect Garmin account with email/password.
 
-    FR-001: Garmin 계정 연결 - 2FA 지원, 세션 만료 시 자동 갱신
+    FR-001: Garmin 계정 연결
+
+    Note: garminconnect library uses synchronous login. For production,
+    consider running in a thread pool to avoid blocking the event loop.
+
+    TODO: 2FA support requires additional endpoint for challenge/response flow.
     """
+    import asyncio
+
     try:
-        adapter = GarminAdapter()
-        tokens = await adapter.login(request.email, request.password)
+        adapter = GarminConnectAdapter()
+
+        # Run synchronous login in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            adapter.login,
+            request.email,
+            request.password,
+        )
+
+        # Get session data from adapter
+        garmin_session_data = adapter.get_session_data()
 
         result = await db.execute(
             select(GarminSession).where(GarminSession.user_id == current_user.id)
@@ -284,16 +284,12 @@ async def connect_garmin(
         now = datetime.now(tz.utc)
 
         if session:
-            session.oauth1_token = tokens.get("oauth1_token")
-            session.oauth2_token = tokens.get("oauth2_token")
-            session.expires_at = tokens.get("expires_at")
+            session.session_data = garmin_session_data
             session.last_login = now
         else:
             session = GarminSession(
                 user_id=current_user.id,
-                oauth1_token=tokens.get("oauth1_token"),
-                oauth2_token=tokens.get("oauth2_token"),
-                expires_at=tokens.get("expires_at"),
+                session_data=garmin_session_data,
                 last_login=now,
             )
             db.add(session)
@@ -306,10 +302,20 @@ async def connect_garmin(
             last_login=now,
         )
 
-    except Exception as e:
+    except GarminAuthError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Garmin authentication failed: {str(e)}",
+        )
+    except GarminAdapterError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Garmin API error: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}",
         )
 
 
@@ -318,7 +324,17 @@ async def refresh_garmin_session(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Refresh Garmin session tokens."""
+    """Validate and refresh Garmin session.
+
+    Note: garminconnect library does not support explicit token refresh.
+    This endpoint validates the stored session by attempting to use it.
+    If the session is invalid, the user must re-connect via /garmin/connect.
+
+    Returns:
+        Success if session is valid, error if session needs re-authentication.
+    """
+    import asyncio
+
     result = await db.execute(
         select(GarminSession).where(GarminSession.user_id == current_user.id)
     )
@@ -330,22 +346,41 @@ async def refresh_garmin_session(
             detail="Garmin account not connected",
         )
 
-    try:
-        adapter = GarminAdapter()
-        new_tokens = await adapter.refresh_session(session.oauth2_token)
+    if not session.session_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid session data. Please reconnect your Garmin account.",
+        )
 
-        session.oauth2_token = new_tokens.get("oauth2_token")
-        session.expires_at = new_tokens.get("expires_at")
+    try:
+        adapter = GarminConnectAdapter()
+
+        # Attempt to login with stored session data
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            adapter.login_with_session,
+            session.session_data,
+        )
+
+        # If successful, update session data (may have refreshed internally)
+        new_session_data = adapter.get_session_data()
+        session.session_data = new_session_data
         session.last_login = datetime.now(tz.utc)
 
         await db.commit()
 
-        return {"success": True, "message": "Session refreshed successfully"}
+        return {"success": True, "message": "Session validated successfully"}
 
-    except Exception as e:
+    except GarminAuthError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Session refresh failed: {str(e)}",
+            detail="Session expired. Please reconnect your Garmin account.",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Session validation failed: {str(e)}",
         )
 
 
@@ -379,9 +414,8 @@ async def get_garmin_status(
     if not session:
         return GarminStatusResponse(connected=False)
 
-    session_valid = False
-    if session.expires_at:
-        session_valid = session.expires_at > datetime.now(tz.utc)
+    # Check if session_data exists and appears valid
+    session_valid = session.is_valid
 
     sync_result = await db.execute(
         select(GarminSyncState)
@@ -395,179 +429,5 @@ async def get_garmin_status(
         connected=True,
         session_valid=session_valid,
         last_login=session.last_login,
-        last_sync=sync_state.last_success_at if sync_state else None,
-    )
-
-
-# -------------------------------------------------------------------------
-# Strava Endpoints (/auth/strava/*)
-# -------------------------------------------------------------------------
-
-
-@router.post("/strava/connect", response_model=StravaConnectResponse)
-async def connect_strava(
-    current_user: Annotated[User, Depends(get_current_user)],
-) -> StravaConnectResponse:
-    """Initiate Strava OAuth connection."""
-    client_id = settings.strava_client_id
-    redirect_uri = settings.strava_redirect_uri
-
-    if not client_id or not redirect_uri:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Strava OAuth not configured",
-        )
-
-    auth_url = (
-        f"https://www.strava.com/oauth/authorize"
-        f"?client_id={client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&response_type=code"
-        f"&scope=activity:write,activity:read_all"
-        f"&state={current_user.id}"
-    )
-
-    return StravaConnectResponse(
-        auth_url=auth_url,
-        message="Redirect user to auth_url to authorize Strava access",
-    )
-
-
-@router.post("/strava/callback")
-async def strava_callback(
-    request: StravaCallbackRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """Handle Strava OAuth callback."""
-    import httpx
-
-    client_id = settings.strava_client_id
-    client_secret = settings.strava_client_secret
-
-    if not client_id or not client_secret:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Strava OAuth not configured",
-        )
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://www.strava.com/oauth/token",
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "code": request.code,
-                    "grant_type": "authorization_code",
-                },
-            )
-            response.raise_for_status()
-            tokens = response.json()
-
-        result = await db.execute(
-            select(StravaSession).where(StravaSession.user_id == current_user.id)
-        )
-        session = result.scalar_one_or_none()
-
-        expires_at = datetime.fromtimestamp(tokens["expires_at"], tz=tz.utc)
-
-        if session:
-            session.access_token = tokens["access_token"]
-            session.refresh_token = tokens["refresh_token"]
-            session.expires_at = expires_at
-        else:
-            session = StravaSession(
-                user_id=current_user.id,
-                access_token=tokens["access_token"],
-                refresh_token=tokens["refresh_token"],
-                expires_at=expires_at,
-            )
-            db.add(session)
-
-        await db.commit()
-
-        return {"success": True, "message": "Strava account connected successfully"}
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OAuth exchange failed: {str(e)}",
-        )
-
-
-@router.post("/strava/refresh")
-async def refresh_strava_session(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """Refresh Strava session tokens."""
-    import httpx
-
-    result = await db.execute(
-        select(StravaSession).where(StravaSession.user_id == current_user.id)
-    )
-    session = result.scalar_one_or_none()
-
-    if not session or not session.refresh_token:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Strava account not connected",
-        )
-
-    client_id = settings.strava_client_id
-    client_secret = settings.strava_client_secret
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://www.strava.com/oauth/token",
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": session.refresh_token,
-                    "grant_type": "refresh_token",
-                },
-            )
-            response.raise_for_status()
-            tokens = response.json()
-
-        session.access_token = tokens["access_token"]
-        session.refresh_token = tokens["refresh_token"]
-        session.expires_at = datetime.fromtimestamp(tokens["expires_at"], tz=tz.utc)
-
-        await db.commit()
-
-        return {"success": True, "message": "Strava session refreshed successfully"}
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Token refresh failed: {str(e)}",
-        )
-
-
-@router.get("/strava/status", response_model=StravaStatusResponse)
-async def get_strava_status(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: AsyncSession = Depends(get_db),
-) -> StravaStatusResponse:
-    """Get current Strava connection status."""
-    session_result = await db.execute(
-        select(StravaSession).where(StravaSession.user_id == current_user.id)
-    )
-    session = session_result.scalar_one_or_none()
-
-    if not session:
-        return StravaStatusResponse(connected=False)
-
-    sync_result = await db.execute(
-        select(StravaSyncState).where(StravaSyncState.user_id == current_user.id)
-    )
-    sync_state = sync_result.scalar_one_or_none()
-
-    return StravaStatusResponse(
-        connected=session.access_token is not None,
-        expires_at=session.expires_at,
         last_sync=sync_state.last_success_at if sync_state else None,
     )

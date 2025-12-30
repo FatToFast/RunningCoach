@@ -24,14 +24,11 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from argon2 import PasswordHasher
 from sqlalchemy import select
 
 from app.core.database import async_session_maker
+from app.core.security import get_password_hash
 from app.models.user import User
-
-
-ph = PasswordHasher()
 
 
 async def create_user(
@@ -64,8 +61,8 @@ async def create_user(
         if existing:
             raise ValueError(f"User with email '{email}' already exists")
 
-        # Hash password with Argon2
-        password_hash = ph.hash(password)
+        # Hash password with bcrypt
+        password_hash = get_password_hash(password)
 
         # Create user
         user = User(

@@ -1,5 +1,7 @@
 """Strava integration endpoints."""
 
+import logging
+import time
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -14,9 +16,11 @@ from app.core.database import get_db
 from app.models.activity import Activity
 from app.models.strava import StravaActivityMap, StravaSession, StravaSyncState
 from app.models.user import User
+from app.observability import get_metrics_backend
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 # -------------------------------------------------------------------------
@@ -151,6 +155,9 @@ async def handle_strava_callback(
             detail="Strava OAuth not configured",
         )
 
+    metrics = get_metrics_backend()
+    start_time = time.perf_counter()
+    status_code = 500
     try:
         # Exchange code for tokens
         async with httpx.AsyncClient() as client:
@@ -163,6 +170,7 @@ async def handle_strava_callback(
                     "grant_type": "authorization_code",
                 },
             )
+            status_code = response.status_code
             response.raise_for_status()
             tokens = response.json()
 
@@ -198,6 +206,14 @@ async def handle_strava_callback(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"OAuth exchange failed: {str(e)}",
+        )
+    finally:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        metrics.observe_external_api("strava", "oauth_token", status_code, duration_ms)
+        logger.info(
+            "Strava API oauth_token status=%s duration_ms=%.2f",
+            status_code,
+            duration_ms,
         )
 
 
@@ -252,6 +268,95 @@ async def disconnect_strava(
     if session:
         await db.delete(session)
         await db.commit()
+
+
+class RefreshResponse(BaseModel):
+    """Token refresh response."""
+
+    success: bool
+    message: str
+    expires_at: datetime | None = None
+
+
+@router.post("/refresh", response_model=RefreshResponse)
+async def refresh_strava_tokens(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> RefreshResponse:
+    """Refresh Strava OAuth tokens.
+
+    Args:
+        current_user: Authenticated user.
+        db: Database session.
+
+    Returns:
+        Refresh result.
+    """
+    import httpx
+
+    result = await db.execute(
+        select(StravaSession).where(StravaSession.user_id == current_user.id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session or not session.refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Strava account not connected",
+        )
+
+    client_id = settings.strava_client_id
+    client_secret = settings.strava_client_secret
+
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Strava OAuth not configured",
+        )
+
+    metrics = get_metrics_backend()
+    start_time = time.perf_counter()
+    status_code = 500
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://www.strava.com/oauth/token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": session.refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+            status_code = response.status_code
+            response.raise_for_status()
+            tokens = response.json()
+
+        session.access_token = tokens["access_token"]
+        session.refresh_token = tokens["refresh_token"]
+        session.expires_at = datetime.fromtimestamp(tokens["expires_at"], tz=timezone.utc)
+
+        await db.commit()
+
+        return RefreshResponse(
+            success=True,
+            message="Strava tokens refreshed successfully",
+            expires_at=session.expires_at,
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Token refresh failed: {str(e)}",
+        )
+    finally:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        metrics.observe_external_api("strava", "oauth_refresh", status_code, duration_ms)
+        logger.info(
+            "Strava API oauth_refresh status=%s duration_ms=%.2f",
+            status_code,
+            duration_ms,
+        )
 
 
 # -------------------------------------------------------------------------

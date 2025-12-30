@@ -1,5 +1,6 @@
 """Activity endpoints."""
 
+import math
 from datetime import datetime
 from typing import Annotated
 
@@ -477,3 +478,362 @@ async def list_activity_types(
         .distinct()
     )
     return [row[0] for row in result.all()]
+
+
+# -------------------------------------------------------------------------
+# HR Zones Endpoint
+# -------------------------------------------------------------------------
+
+
+class HRZoneResponse(BaseModel):
+    """HR zone time distribution."""
+
+    zone: int
+    name: str
+    min_hr: int
+    max_hr: int
+    time_seconds: int
+    percentage: float
+
+
+class HRZonesResponse(BaseModel):
+    """HR zones for an activity."""
+
+    activity_id: int
+    max_hr: int
+    zones: list[HRZoneResponse]
+    total_time_in_zones: int
+
+
+# Standard HR zone definitions (percentage of max HR)
+HR_ZONE_DEFINITIONS = [
+    {"zone": 1, "name": "Recovery", "min_pct": 0.50, "max_pct": 0.60},
+    {"zone": 2, "name": "Aerobic", "min_pct": 0.60, "max_pct": 0.70},
+    {"zone": 3, "name": "Tempo", "min_pct": 0.70, "max_pct": 0.80},
+    {"zone": 4, "name": "Threshold", "min_pct": 0.80, "max_pct": 0.90},
+    {"zone": 5, "name": "VO2max", "min_pct": 0.90, "max_pct": 1.00},
+]
+
+
+@router.get("/{activity_id}/hr-zones", response_model=HRZonesResponse)
+async def get_activity_hr_zones(
+    activity_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    max_hr: int | None = Query(None, ge=100, le=250, description="User's max HR. Default: 220 - age or max from samples"),
+) -> HRZonesResponse:
+    """Calculate HR zone distribution for an activity.
+
+    FR-013: HR존별 시간 분포
+
+    Zones are calculated based on percentage of max HR:
+    - Zone 1 (Recovery): 50-60%
+    - Zone 2 (Aerobic): 60-70%
+    - Zone 3 (Tempo): 70-80%
+    - Zone 4 (Threshold): 80-90%
+    - Zone 5 (VO2max): 90-100%
+
+    Args:
+        activity_id: Activity ID.
+        current_user: Authenticated user.
+        db: Database session.
+        max_hr: User's max heart rate (optional).
+
+    Returns:
+        HR zone distribution.
+    """
+    # Verify ownership
+    activity_result = await db.execute(
+        select(Activity).where(
+            Activity.id == activity_id,
+            Activity.user_id == current_user.id,
+        )
+    )
+    activity = activity_result.scalar_one_or_none()
+
+    if not activity:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Activity not found",
+        )
+
+    # Get all HR samples
+    result = await db.execute(
+        select(ActivitySample.hr)
+        .where(
+            ActivitySample.activity_id == activity_id,
+            ActivitySample.hr.isnot(None),
+        )
+        .order_by(ActivitySample.timestamp.asc())
+    )
+    hr_values = [row[0] for row in result.all() if row[0]]
+
+    if not hr_values:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No HR data available for this activity",
+        )
+
+    # Determine max HR
+    if max_hr is None:
+        # Use max observed HR as fallback (not ideal but practical)
+        max_hr = max(hr_values)
+
+    # Calculate zone boundaries
+    zones = []
+    for zone_def in HR_ZONE_DEFINITIONS:
+        zone_min = int(max_hr * zone_def["min_pct"])
+        zone_max = int(max_hr * zone_def["max_pct"])
+        zones.append({
+            "zone": zone_def["zone"],
+            "name": zone_def["name"],
+            "min_hr": zone_min,
+            "max_hr": zone_max,
+            "count": 0,
+        })
+
+    # Count samples in each zone (assume 1 sample = 1 second)
+    for hr in hr_values:
+        for zone in zones:
+            if zone["min_hr"] <= hr < zone["max_hr"]:
+                zone["count"] += 1
+                break
+            # Handle values at or above max zone
+            if hr >= zones[-1]["max_hr"]:
+                zones[-1]["count"] += 1
+                break
+
+    # Calculate percentages and build response
+    total_time = sum(z["count"] for z in zones)
+    zone_responses = []
+    for z in zones:
+        zone_responses.append(HRZoneResponse(
+            zone=z["zone"],
+            name=z["name"],
+            min_hr=z["min_hr"],
+            max_hr=z["max_hr"],
+            time_seconds=z["count"],
+            percentage=round((z["count"] / total_time * 100) if total_time > 0 else 0, 1),
+        ))
+
+    return HRZonesResponse(
+        activity_id=activity_id,
+        max_hr=max_hr,
+        zones=zone_responses,
+        total_time_in_zones=total_time,
+    )
+
+
+# -------------------------------------------------------------------------
+# Laps Endpoint
+# -------------------------------------------------------------------------
+
+
+class LapResponse(BaseModel):
+    """Activity lap/segment data."""
+
+    lap_number: int
+    start_time: datetime
+    end_time: datetime
+    duration_seconds: int
+    distance_meters: float | None
+    avg_hr: int | None
+    max_hr: int | None
+    avg_pace_seconds: int | None
+    elevation_gain: float | None
+    avg_cadence: int | None
+
+
+class LapsResponse(BaseModel):
+    """Laps for an activity."""
+
+    activity_id: int
+    laps: list[LapResponse]
+    total_laps: int
+
+
+@router.get("/{activity_id}/laps", response_model=LapsResponse)
+async def get_activity_laps(
+    activity_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    split_distance: int = Query(1000, ge=100, le=10000, description="Split distance in meters (default: 1km)"),
+) -> LapsResponse:
+    """Calculate lap/split data for an activity.
+
+    FR-014: 랩/구간 데이터
+
+    Splits activity into laps based on distance. For activities without GPS,
+    uses time-based splits.
+
+    Args:
+        activity_id: Activity ID.
+        current_user: Authenticated user.
+        db: Database session.
+        split_distance: Distance per lap in meters (default: 1000m = 1km).
+
+    Returns:
+        Lap data for the activity.
+    """
+    # Verify ownership
+    activity_result = await db.execute(
+        select(Activity).where(
+            Activity.id == activity_id,
+            Activity.user_id == current_user.id,
+        )
+    )
+    activity = activity_result.scalar_one_or_none()
+
+    if not activity:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Activity not found",
+        )
+
+    # Get all samples with relevant fields
+    result = await db.execute(
+        select(ActivitySample)
+        .where(ActivitySample.activity_id == activity_id)
+        .order_by(ActivitySample.timestamp.asc())
+    )
+    samples = result.scalars().all()
+
+    if not samples:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No sample data available for this activity",
+        )
+
+    # Calculate cumulative distance (if GPS data available)
+    has_gps = any(s.latitude is not None and s.longitude is not None for s in samples)
+
+    laps: list[LapResponse] = []
+
+    if has_gps and activity.distance_meters:
+        # Distance-based splits
+        total_distance = activity.distance_meters
+        num_full_laps = int(total_distance // split_distance)
+
+        # Group samples by lap
+        current_lap_samples: list = []
+        current_distance = 0.0
+        lap_number = 1
+        prev_sample = None
+
+        for sample in samples:
+            if prev_sample and sample.latitude and sample.longitude and prev_sample.latitude and prev_sample.longitude:
+                # Calculate distance between points (simplified haversine)
+                lat1, lon1 = math.radians(prev_sample.latitude), math.radians(prev_sample.longitude)
+                lat2, lon2 = math.radians(sample.latitude), math.radians(sample.longitude)
+                dlat = lat2 - lat1
+                dlon = lon2 - lon1
+                a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+                c = 2 * math.asin(math.sqrt(a))
+                distance = 6371000 * c  # Earth radius in meters
+                current_distance += distance
+
+            current_lap_samples.append(sample)
+            prev_sample = sample
+
+            # Check if we've completed a lap
+            if current_distance >= split_distance and current_lap_samples:
+                lap = _calculate_lap_stats(lap_number, current_lap_samples)
+                laps.append(lap)
+                lap_number += 1
+                current_lap_samples = []
+                current_distance = current_distance - split_distance
+
+        # Add remaining samples as final lap
+        if current_lap_samples:
+            lap = _calculate_lap_stats(lap_number, current_lap_samples)
+            laps.append(lap)
+    else:
+        # Time-based splits (every 5 minutes)
+        time_split_seconds = 300  # 5 minutes
+        current_lap_samples = []
+        lap_number = 1
+        lap_start_time = samples[0].timestamp
+
+        for sample in samples:
+            current_lap_samples.append(sample)
+            elapsed = (sample.timestamp - lap_start_time).total_seconds()
+
+            if elapsed >= time_split_seconds:
+                lap = _calculate_lap_stats(lap_number, current_lap_samples)
+                laps.append(lap)
+                lap_number += 1
+                current_lap_samples = []
+                lap_start_time = sample.timestamp
+
+        # Add remaining samples
+        if current_lap_samples:
+            lap = _calculate_lap_stats(lap_number, current_lap_samples)
+            laps.append(lap)
+
+    return LapsResponse(
+        activity_id=activity_id,
+        laps=laps,
+        total_laps=len(laps),
+    )
+
+
+def _calculate_lap_stats(lap_number: int, samples: list) -> LapResponse:
+    """Calculate statistics for a lap from samples.
+
+    Args:
+        lap_number: Lap number.
+        samples: List of ActivitySample objects.
+
+    Returns:
+        LapResponse with calculated stats.
+    """
+    if not samples:
+        raise ValueError("No samples provided for lap calculation")
+
+    start_time = samples[0].timestamp
+    end_time = samples[-1].timestamp
+    duration = int((end_time - start_time).total_seconds())
+
+    # HR stats
+    hr_values = [s.hr for s in samples if s.hr is not None]
+    avg_hr = int(sum(hr_values) / len(hr_values)) if hr_values else None
+    max_hr = max(hr_values) if hr_values else None
+
+    # Pace stats
+    pace_values = [s.pace_seconds for s in samples if s.pace_seconds is not None]
+    avg_pace = int(sum(pace_values) / len(pace_values)) if pace_values else None
+
+    # Cadence stats
+    cadence_values = [s.cadence for s in samples if s.cadence is not None]
+    avg_cadence = int(sum(cadence_values) / len(cadence_values)) if cadence_values else None
+
+    # Elevation (simple difference between first and last with altitude)
+    altitude_values = [s.altitude for s in samples if s.altitude is not None]
+    elevation_gain = None
+    if len(altitude_values) >= 2:
+        gain = 0.0
+        for i in range(1, len(altitude_values)):
+            diff = altitude_values[i] - altitude_values[i-1]
+            if diff > 0:
+                gain += diff
+        elevation_gain = round(gain, 1)
+
+    # Distance (estimate from pace and time if available)
+    distance = None
+    if avg_pace and duration > 0:
+        # pace_seconds is seconds per km
+        # distance = duration / (pace_seconds / 1000) = duration * 1000 / pace_seconds
+        distance = round(duration * 1000 / avg_pace, 1)
+
+    return LapResponse(
+        lap_number=lap_number,
+        start_time=start_time,
+        end_time=end_time,
+        duration_seconds=duration,
+        distance_meters=distance,
+        avg_hr=avg_hr,
+        max_hr=max_hr,
+        avg_pace_seconds=avg_pace,
+        elevation_gain=elevation_gain,
+        avg_cadence=avg_cadence,
+    )

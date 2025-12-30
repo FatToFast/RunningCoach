@@ -1,5 +1,7 @@
 """AI conversation endpoints for interactive training plan generation."""
 
+import logging
+import time
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
@@ -13,9 +15,11 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.ai import AIConversation, AIImport, AIMessage
 from app.models.user import User
+from app.observability import get_metrics_backend
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 # -------------------------------------------------------------------------
@@ -508,6 +512,7 @@ async def _get_ai_response(
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
+    metrics = get_metrics_backend()
 
     # Build message history
     msg_result = await db.execute(
@@ -549,12 +554,27 @@ async def _get_ai_response(
     messages.append({"role": "user", "content": user_message})
 
     # Call OpenAI API
-    response = await client.chat.completions.create(
-        model=settings.openai_model,
-        messages=messages,
-        max_tokens=2000,
-        temperature=0.7,
-    )
+    start_time = time.perf_counter()
+    status_code = 500
+    try:
+        response = await client.chat.completions.create(
+            model=settings.openai_model,
+            messages=messages,
+            max_tokens=2000,
+            temperature=0.7,
+        )
+        status_code = 200
+    except Exception:
+        status_code = 500
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        metrics.observe_external_api("openai", "chat.completions", status_code, duration_ms)
+        logger.info(
+            "OpenAI API chat.completions status=%s duration_ms=%.2f",
+            status_code,
+            duration_ms,
+        )
 
     return {
         "content": response.choices[0].message.content,

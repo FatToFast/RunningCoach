@@ -4,6 +4,7 @@ import type {
   TrendsResponse,
   CompareResponse,
   PersonalRecordsResponse,
+  CalendarResponse,
 } from '../types/api';
 
 export interface DashboardParams {
@@ -14,6 +15,11 @@ export interface DashboardParams {
 export interface CompareParams {
   period?: 'week' | 'month';
   current_end?: string;
+}
+
+export interface CalendarParams {
+  start_date: string; // YYYY-MM-DD
+  end_date: string; // YYYY-MM-DD
 }
 
 export const dashboardApi = {
@@ -40,6 +46,14 @@ export const dashboardApi = {
     const { data } = await apiClient.get('/analytics/personal-records', {
       params: { activity_type: activityType },
     });
+    return data;
+  },
+
+  /**
+   * Get calendar view with activities and scheduled workouts.
+   */
+  getCalendar: async (params: CalendarParams): Promise<CalendarResponse> => {
+    const { data } = await apiClient.get('/dashboard/calendar', { params });
     return data;
   },
 };

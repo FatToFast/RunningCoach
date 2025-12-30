@@ -1,24 +1,62 @@
-import { Settings, User, RefreshCw } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Settings, User as UserIcon, RefreshCw, Menu, LogOut } from 'lucide-react';
+import { useLogout } from '../../hooks/useAuth';
+import type { User } from '../../api/auth';
 
-interface HeaderProps {
+export interface HeaderProps {
   lastSync?: string | null;
   isConnected?: boolean;
+  onMenuToggle?: () => void;
+  user?: User;
 }
 
-export function Header({ lastSync, isConnected = false }: HeaderProps) {
-  return (
-    <header className="sticky top-0 z-50 bg-[var(--color-bg-secondary)] border-b border-[var(--color-border)]">
-      <div className="max-w-[1920px] mx-auto px-6 h-16 flex items-center justify-between">
-        {/* Logo & Title */}
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <h1 className="font-display text-xl font-bold tracking-tight">
-              RUNNING<span className="text-cyan">COACH</span>
-            </h1>
-          </div>
+export function Header({ lastSync, isConnected = false, onMenuToggle, user }: HeaderProps) {
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+  const logout = useLogout();
 
-          {/* Connection Status */}
-          <div className="flex items-center gap-3 ml-6 pl-6 border-l border-[var(--color-border)]">
+  // Close menu on outside click
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setShowUserMenu(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await logout.mutateAsync();
+      navigate('/login');
+    } catch (err) {
+      console.error('Logout failed:', err);
+    }
+  };
+
+  return (
+    <header className="fixed top-0 left-0 right-0 z-50 bg-[var(--color-bg-secondary)] border-b border-[var(--color-border)]">
+      <div className="h-16 px-4 lg:px-6 flex items-center justify-between">
+        {/* Mobile Menu & Logo */}
+        <div className="flex items-center gap-3">
+          {/* Mobile menu button */}
+          <button
+            className="lg:hidden btn btn-secondary p-2"
+            onClick={onMenuToggle}
+            title="Menu"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+
+          <h1 className="font-display text-xl font-bold tracking-tight">
+            RUNNING<span className="text-cyan">COACH</span>
+          </h1>
+
+          {/* Connection Status - hidden on mobile */}
+          <div className="hidden md:flex items-center gap-3 ml-6 pl-6 border-l border-[var(--color-border)]">
             {isConnected && (
               <span className="badge badge-live">LIVE</span>
             )}
@@ -33,12 +71,46 @@ export function Header({ lastSync, isConnected = false }: HeaderProps) {
 
         {/* Right Actions */}
         <div className="flex items-center gap-2">
-          <button className="btn btn-secondary p-2" title="Settings">
+          <Link to="/settings" className="btn btn-secondary p-2" title="Settings">
             <Settings className="w-5 h-5" />
-          </button>
-          <button className="btn btn-secondary p-2" title="Profile">
-            <User className="w-5 h-5" />
-          </button>
+          </Link>
+
+          {/* User Menu */}
+          <div className="relative" ref={menuRef}>
+            <button
+              className="btn btn-secondary p-2 flex items-center gap-2"
+              onClick={() => setShowUserMenu(!showUserMenu)}
+              title="Profile"
+            >
+              <UserIcon className="w-5 h-5" />
+              {user && (
+                <span className="hidden sm:inline text-sm max-w-[100px] truncate">
+                  {user.display_name || user.email.split('@')[0]}
+                </span>
+              )}
+            </button>
+
+            {/* Dropdown */}
+            {showUserMenu && (
+              <div className="absolute right-0 mt-2 w-48 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-lg shadow-lg overflow-hidden">
+                {user && (
+                  <div className="px-4 py-3 border-b border-[var(--color-border)]">
+                    <p className="text-sm font-medium truncate">
+                      {user.display_name || 'User'}
+                    </p>
+                    <p className="text-xs text-muted truncate">{user.email}</p>
+                  </div>
+                )}
+                <button
+                  onClick={handleLogout}
+                  className="w-full px-4 py-2.5 text-left text-sm text-red-400 hover:bg-[var(--color-bg-tertiary)] flex items-center gap-2 transition-colors"
+                >
+                  <LogOut className="w-4 h-4" />
+                  로그아웃
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </header>
