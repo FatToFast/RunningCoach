@@ -10,7 +10,8 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useCalendar } from '../hooks/useDashboard';
-import type { CalendarDay, RecentActivity, UpcomingWorkout } from '../types/api';
+import { useStrengthCalendar, getSessionTypeLabel, getSessionTypeColor } from '../hooks/useStrength';
+import type { CalendarDay, RecentActivity, UpcomingWorkout, StrengthSessionSummary } from '../types/api';
 
 const WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일'];
 const WEEKDAYS_SHORT = ['월', '화', '수', '목', '금', '토', '일'];
@@ -86,6 +87,9 @@ export function Calendar() {
     end_date: endDate,
   });
 
+  // 보강운동 데이터 호출
+  const { data: strengthData, isLoading: strengthLoading } = useStrengthCalendar(year, month + 1);
+
   // 날짜 데이터를 맵으로 변환
   const dateDataMap = useMemo(() => {
     const map = new Map<string, CalendarDay>();
@@ -94,6 +98,17 @@ export function Calendar() {
     });
     return map;
   }, [calendarData]);
+
+  // 보강운동 데이터를 날짜별 맵으로 변환
+  const strengthDataMap = useMemo(() => {
+    const map = new Map<string, StrengthSessionSummary[]>();
+    strengthData?.forEach(session => {
+      const existing = map.get(session.session_date) || [];
+      existing.push(session);
+      map.set(session.session_date, existing);
+    });
+    return map;
+  }, [strengthData]);
 
   // 첫째 날과 마지막 날 정보
   const firstDayOfMonth = new Date(year, month, 1);
@@ -135,6 +150,12 @@ export function Calendar() {
     return dateDataMap.get(dateStr) || null;
   };
 
+  // 날짜별 보강운동 데이터 가져오기
+  const getStrengthData = (day: number): StrengthSessionSummary[] => {
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    return strengthDataMap.get(dateStr) || [];
+  };
+
   // 오늘 확인
   const isToday = (day: number) => {
     const today = new Date();
@@ -147,6 +168,7 @@ export function Calendar() {
 
   // 선택된 날짜 데이터
   const selectedDateData = selectedDate ? dateDataMap.get(selectedDate) : null;
+  const selectedStrengthData = selectedDate ? strengthDataMap.get(selectedDate) || [] : [];
 
   // 예정된 운동 필터링
   const upcomingWorkouts = useMemo(() => {
@@ -213,7 +235,7 @@ export function Calendar() {
           </div>
 
           {/* 로딩 상태 */}
-          {isLoading ? (
+          {isLoading || strengthLoading ? (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="w-8 h-8 text-cyan animate-spin" />
             </div>
@@ -245,8 +267,10 @@ export function Calendar() {
 
                   const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                   const data = getDateData(day);
+                  const strengthSessions = getStrengthData(day);
                   const hasActivity = data && data.activities.length > 0;
                   const hasWorkout = data && data.scheduled_workouts.length > 0;
+                  const hasStrength = strengthSessions.length > 0;
                   const isSelected = selectedDate === dateStr;
                   const dayOfWeek = (startDay + day - 1) % 7;
                   const isSaturday = dayOfWeek === 5;
@@ -280,6 +304,9 @@ export function Calendar() {
                           {hasActivity && (
                             <div className="w-1.5 h-1.5 rounded-full bg-cyan" />
                           )}
+                          {hasStrength && (
+                            <div className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                          )}
                           {hasWorkout && (
                             <div className="w-1.5 h-1.5 rounded-full bg-amber" />
                           )}
@@ -288,6 +315,9 @@ export function Calendar() {
                         <div className="hidden md:flex gap-1">
                           {hasActivity && (
                             <div className="w-2 h-2 rounded-full bg-cyan" />
+                          )}
+                          {hasStrength && (
+                            <div className="w-2 h-2 rounded-full bg-purple-500" />
                           )}
                           {hasWorkout && (
                             <div className="w-2 h-2 rounded-full bg-amber" />
@@ -304,6 +334,15 @@ export function Calendar() {
                           >
                             <Activity className="w-3 h-3 flex-shrink-0" />
                             {activity.distance_km}km
+                          </div>
+                        ))}
+                        {strengthSessions.slice(0, 1).map((session) => (
+                          <div
+                            key={session.id}
+                            className="text-xs truncate text-purple-400/80 flex items-center gap-1"
+                          >
+                            <Dumbbell className="w-3 h-3 flex-shrink-0" />
+                            {getSessionTypeLabel(session.session_type)}
                           </div>
                         ))}
                         {data?.scheduled_workouts.slice(0, 1).map((workout) => (
@@ -324,10 +363,14 @@ export function Calendar() {
               </div>
 
               {/* 범례 */}
-              <div className="flex items-center gap-4 md:gap-6 mt-4 md:mt-6 pt-3 md:pt-4 border-t border-[var(--color-border)]">
+              <div className="flex items-center gap-4 md:gap-6 mt-4 md:mt-6 pt-3 md:pt-4 border-t border-[var(--color-border)] flex-wrap">
                 <div className="flex items-center gap-2 text-xs md:text-sm text-muted">
                   <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-cyan" />
-                  <span>완료한 활동</span>
+                  <span>러닝</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs md:text-sm text-muted">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-purple-500" />
+                  <span>보강운동</span>
                 </div>
                 <div className="flex items-center gap-2 text-xs md:text-sm text-muted">
                   <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-full bg-amber" />
@@ -390,6 +433,44 @@ export function Calendar() {
                 </div>
               )}
 
+              {/* 보강운동 */}
+              {selectedStrengthData.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-medium text-muted uppercase tracking-wider mb-2">
+                    보강운동
+                  </h4>
+                  {selectedStrengthData.map((session: StrengthSessionSummary) => (
+                    <div
+                      key={session.id}
+                      className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/30"
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <Dumbbell className="w-4 h-4 text-purple-400" />
+                        <span className="font-medium text-sm text-purple-400">
+                          {getSessionTypeLabel(session.session_type)}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs md:text-sm">
+                        <div>
+                          <span className="text-muted">종목:</span>{' '}
+                          <span className="font-mono">{session.exercise_count}</span>
+                        </div>
+                        <div>
+                          <span className="text-muted">세트:</span>{' '}
+                          <span className="font-mono">{session.total_sets}</span>
+                        </div>
+                        {session.duration_minutes && (
+                          <div className="col-span-2">
+                            <span className="text-muted">시간:</span>{' '}
+                            <span className="font-mono">{session.duration_minutes}분</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* 예정된 운동 */}
               {selectedDateData.scheduled_workouts.length > 0 && (
                 <div>
@@ -418,7 +499,8 @@ export function Calendar() {
 
               {/* 데이터 없음 */}
               {selectedDateData.activities.length === 0 &&
-                selectedDateData.scheduled_workouts.length === 0 && (
+                selectedDateData.scheduled_workouts.length === 0 &&
+                selectedStrengthData.length === 0 && (
                   <div className="text-center py-6 md:py-8 text-muted">
                     <p className="text-sm">활동이나 운동이 없습니다</p>
                     <button className="btn btn-secondary mt-4 text-sm">

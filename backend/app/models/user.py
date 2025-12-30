@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from app.models.ai import AIConversation, AIImport
     from app.models.strava import StravaSession, StravaSyncState
     from app.models.gear import Gear
+    from app.models.strength import StrengthSession
 
 
 class User(BaseModel):
@@ -108,6 +109,11 @@ class User(BaseModel):
     )
     gears: Mapped[list["Gear"]] = relationship(
         "Gear",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    strength_sessions: Mapped[list["StrengthSession"]] = relationship(
+        "StrengthSession",
         back_populates="user",
         cascade="all, delete-orphan",
     )

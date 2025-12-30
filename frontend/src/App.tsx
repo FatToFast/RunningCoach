@@ -9,6 +9,7 @@ import { Trends } from './pages/Trends';
 import { Records } from './pages/Records';
 import { Calendar } from './pages/Calendar';
 import { Gear } from './pages/Gear';
+import { Strength } from './pages/Strength';
 import { Coach } from './pages/Coach';
 import { Settings } from './pages/Settings';
 
@@ -46,6 +47,7 @@ function App() {
             <Route path="/records" element={<Records />} />
             <Route path="/calendar" element={<Calendar />} />
             <Route path="/gear" element={<Gear />} />
+            <Route path="/strength" element={<Strength />} />
             <Route path="/workouts" element={<PlaceholderPage title="Workouts" />} />
             <Route path="/ai" element={<Coach />} />
             <Route path="/settings" element={<Settings />} />

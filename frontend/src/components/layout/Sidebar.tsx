@@ -9,6 +9,7 @@ import {
   Dumbbell,
   Footprints,
   X,
+  ClipboardList,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -19,7 +20,8 @@ const navItems = [
   { to: '/records', icon: Trophy, label: '기록' },
   { to: '/calendar', icon: Calendar, label: '캘린더' },
   { to: '/gear', icon: Footprints, label: '신발 관리' },
-  { to: '/workouts', icon: Dumbbell, label: '워크아웃' },
+  { to: '/strength', icon: Dumbbell, label: '보강운동' },
+  { to: '/workouts', icon: ClipboardList, label: '워크아웃' },
   { to: '/ai', icon: MessageSquare, label: 'AI 코치' },
 ];
 

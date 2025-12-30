@@ -450,3 +450,77 @@ export interface RunalyzeSummary {
   latest_sleep_date: string | null;
   avg_sleep_quality_7d: number | null;
 }
+
+// -------------------------------------------------------------------------
+// Strength Training Types (보강운동)
+// -------------------------------------------------------------------------
+
+export type SessionType = 'upper' | 'lower' | 'core' | 'full_body';
+export type SessionPurpose = 'strength' | 'flexibility' | 'balance' | 'injury_prevention';
+
+export interface ExerciseSet {
+  weight_kg: number | null;
+  reps: number;
+  rest_seconds: number | null;
+}
+
+export interface StrengthExercise {
+  id: number;
+  exercise_name: string;
+  is_custom: boolean;
+  order: number;
+  sets: ExerciseSet[];
+  notes: string | null;
+}
+
+export interface StrengthSession {
+  id: number;
+  session_date: string;
+  session_type: SessionType;
+  session_purpose: SessionPurpose | null;
+  duration_minutes: number | null;
+  notes: string | null;
+  rating: number | null;
+  exercises: StrengthExercise[];
+  total_sets: number;
+  total_exercises: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrengthSessionSummary {
+  id: number;
+  session_date: string;
+  session_type: SessionType;
+  session_purpose: SessionPurpose | null;
+  duration_minutes: number | null;
+  rating: number | null;
+  exercise_count: number;
+  total_sets: number;
+}
+
+export interface StrengthSessionListResponse {
+  items: StrengthSessionSummary[];
+  total: number;
+}
+
+export interface SessionTypeInfo {
+  value: string;
+  label: string;
+  label_en: string;
+}
+
+export interface SessionTypesResponse {
+  types: SessionTypeInfo[];
+  purposes: SessionTypeInfo[];
+}
+
+export interface ExercisePreset {
+  name: string;
+  name_en: string;
+  category: string;
+}
+
+export interface ExercisePresetsResponse {
+  exercises: ExercisePreset[];
+}

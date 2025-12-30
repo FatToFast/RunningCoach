@@ -125,6 +125,7 @@ from app.api.v1.endpoints import (
     runalyze,
     sleep,
     strava,
+    strength,
     workouts,
 )
 
@@ -191,6 +192,11 @@ api_router.include_router(gear.router, prefix="/gear", tags=["gear"])
 # Runalyze Integration (HRV, Sleep metrics)
 # -------------------------------------------------------------------------
 api_router.include_router(runalyze.router, prefix="/runalyze", tags=["runalyze"])
+
+# -------------------------------------------------------------------------
+# Strength Training (보강운동)
+# -------------------------------------------------------------------------
+api_router.include_router(strength.router, prefix="/strength", tags=["strength"])
 
 # -------------------------------------------------------------------------
 # Legacy/Alias Routes (backward compatibility)
