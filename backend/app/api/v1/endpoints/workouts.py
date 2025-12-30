@@ -506,7 +506,7 @@ async def schedule_workout(
 @router.patch("/schedules/{schedule_id}/status")
 async def update_schedule_status(
     schedule_id: int,
-    new_status: str = Query(..., regex="^(scheduled|completed|skipped|cancelled)$"),
+    new_status: str = Query(..., pattern="^(scheduled|completed|skipped|cancelled)$"),
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ScheduleResponse:

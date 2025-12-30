@@ -1,7 +1,7 @@
 """Session management with Redis."""
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Any, Optional
 import json
 
@@ -47,7 +47,7 @@ async def create_session(user_id: int, user_data: dict[str, Any]) -> str:
 
     session_data = {
         "user_id": user_id,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         **user_data,
     }
 

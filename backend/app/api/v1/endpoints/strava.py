@@ -565,7 +565,7 @@ async def list_activity_uploads(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    status_filter: str | None = Query(None, regex="^(pending|uploaded|failed)$"),
+    status_filter: str | None = Query(None, pattern="^(pending|uploaded|failed)$"),
 ) -> UploadStatusListResponse:
     """List activity upload statuses.
 

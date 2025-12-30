@@ -264,7 +264,7 @@ async def get_dashboard_summary(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     target_date: date | None = Query(None, description="Target date for summary (defaults to today)"),
-    period: str = Query("week", regex="^(week|month)$", description="Period type: week or month"),
+    period: str = Query("week", pattern="^(week|month)$", description="Period type: week or month"),
 ) -> DashboardSummaryResponse:
     """Get main dashboard summary for a specific date range.
 

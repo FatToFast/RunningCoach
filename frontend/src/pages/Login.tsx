@@ -23,8 +23,10 @@ export function Login() {
     try {
       await login.mutateAsync({ email, password });
       navigate('/');
-    } catch (err: any) {
-      const message = err?.response?.data?.detail || '로그인에 실패했습니다.';
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        '로그인에 실패했습니다.';
       setError(message);
     }
   };

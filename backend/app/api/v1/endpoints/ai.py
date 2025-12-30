@@ -729,7 +729,7 @@ async def import_plan(
 async def export_summary(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    format: str = Query("markdown", regex="^(markdown|json)$"),
+    format: str = Query("markdown", pattern="^(markdown|json)$"),
     include_sensitive: bool = Query(False, description="Include potentially sensitive data"),
 ) -> ExportSummaryResponse:
     """Generate training summary for ChatGPT analysis.

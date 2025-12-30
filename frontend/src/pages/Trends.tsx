@@ -60,6 +60,37 @@ function formatPace(seconds: number) {
   return `${min}:${sec.toString().padStart(2, '0')}`;
 }
 
+interface TooltipPayloadEntry {
+  name: string;
+  value: number;
+  color: string;
+}
+
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: TooltipPayloadEntry[];
+  label?: string;
+  selectedMetric: MetricType;
+  unit: string;
+}
+
+function CustomTooltip({ active, payload, label, selectedMetric, unit }: CustomTooltipProps) {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-lg p-3 shadow-lg">
+        <p className="text-sm text-muted mb-1">{label}</p>
+        {payload.map((entry, index) => (
+          <p key={index} className="text-sm font-mono" style={{ color: entry.color }}>
+            {entry.name}: {selectedMetric === 'pace' ? formatPace(entry.value) : entry.value}
+            {unit && ` ${unit}`}
+          </p>
+        ))}
+      </div>
+    );
+  }
+  return null;
+}
+
 export function Trends() {
   const [selectedMetric, setSelectedMetric] = useState<MetricType>('distance');
   const { data: trends, isLoading, error } = useTrends(12);
@@ -150,22 +181,9 @@ export function Trends() {
   const isPositiveTrend =
     selectedMetric === 'pace' || selectedMetric === 'hr' ? trend < 0 : trend > 0;
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-lg p-3 shadow-lg">
-          <p className="text-sm text-muted mb-1">{label}</p>
-          {payload.map((entry: any, index: number) => (
-            <p key={index} className="text-sm font-mono" style={{ color: entry.color }}>
-              {entry.name}: {selectedMetric === 'pace' ? formatPace(entry.value) : entry.value}
-              {config.unit && ` ${config.unit}`}
-            </p>
-          ))}
-        </div>
-      );
-    }
-    return null;
-  };
+  const renderTooltip = (props: { active?: boolean; payload?: TooltipPayloadEntry[]; label?: string }) => (
+    <CustomTooltip {...props} selectedMetric={selectedMetric} unit={config.unit} />
+  );
 
   return (
     <div className="space-y-6">
@@ -233,7 +251,7 @@ export function Trends() {
                   stroke="var(--color-text-muted)"
                   tick={{ fill: 'var(--color-text-secondary)', fontSize: 12 }}
                 />
-                <Tooltip content={<CustomTooltip />} />
+                <Tooltip content={renderTooltip} />
                 <Legend />
                 <Line
                   type="monotone"
@@ -282,7 +300,7 @@ export function Trends() {
                   tick={{ fill: 'var(--color-text-secondary)', fontSize: 12 }}
                   tickFormatter={selectedMetric === 'pace' ? formatPace : undefined}
                 />
-                <Tooltip content={<CustomTooltip />} />
+                <Tooltip content={renderTooltip} />
                 <Area
                   type="monotone"
                   dataKey="value"

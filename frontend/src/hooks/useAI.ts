@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { aiApi, ChatRequest, ConversationCreateRequest } from '../api/ai';
+import { aiApi } from '../api/ai';
+import type { ChatRequest, ConversationCreateRequest } from '../api/ai';
 
 export function useConversations(page = 1, perPage = 20) {
   return useQuery({

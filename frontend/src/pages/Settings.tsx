@@ -31,8 +31,10 @@ export function Settings() {
       setSuccess('Garmin Connect 연동이 완료되었습니다.');
       setGarminEmail('');
       setGarminPassword('');
-    } catch (err: any) {
-      const message = err?.response?.data?.detail || 'Garmin 연동에 실패했습니다.';
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Garmin 연동에 실패했습니다.';
       setError(message);
     }
   };
@@ -46,8 +48,10 @@ export function Settings() {
     try {
       await disconnectGarmin.mutateAsync();
       setSuccess('Garmin 연동이 해제되었습니다.');
-    } catch (err: any) {
-      const message = err?.response?.data?.detail || '연동 해제에 실패했습니다.';
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        '연동 해제에 실패했습니다.';
       setError(message);
     }
   };

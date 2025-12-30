@@ -133,8 +133,8 @@ async def list_activities(
     activity_type: str | None = Query(None, description="Filter by activity type"),
     start_date: datetime | None = Query(None, description="Filter start date (from)"),
     end_date: datetime | None = Query(None, description="Filter end date (to)"),
-    sort_by: str = Query("start_time", regex="^(start_time|distance|duration)$"),
-    sort_order: str = Query("desc", regex="^(asc|desc)$"),
+    sort_by: str = Query("start_time", pattern="^(start_time|distance|duration)$"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> ActivityListResponse:
     """List activities with filtering and pagination.
 

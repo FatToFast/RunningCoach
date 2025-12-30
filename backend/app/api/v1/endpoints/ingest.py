@@ -8,7 +8,7 @@ Paths:
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -271,7 +271,7 @@ async def run_ingest(
         started=True,
         message="Sync started in background",
         endpoints=endpoints,
-        sync_id=f"sync_{current_user.id}_{datetime.utcnow().timestamp():.0f}",
+        sync_id=f"sync_{current_user.id}_{datetime.now(timezone.utc).timestamp():.0f}",
     )
 
 
