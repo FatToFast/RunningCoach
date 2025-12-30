@@ -145,6 +145,7 @@ class RecentActivity(BaseModel):
     distance_km: float | None
     duration_seconds: int | None  # Duration in seconds (for hh:mm:ss format)
     avg_pace_seconds: int | None  # 페이스 (초/km)
+    avg_hr: int | None  # 평균 심박수 (bpm)
     avg_hr_percent: int | None  # 최대심박 대비 % (Runalyze: 72%)
     elevation_gain: float | None  # 고도 상승 (m)
     calories: int | None  # 에너지 (kcal)
@@ -401,6 +402,7 @@ async def get_dashboard_summary(
                 distance_km=round(a.distance_meters / 1000, 2) if a.distance_meters else None,
                 duration_seconds=a.duration_seconds,
                 avg_pace_seconds=activity_pace,
+                avg_hr=a.avg_hr,
                 avg_hr_percent=avg_hr_percent,
                 elevation_gain=round(a.elevation_gain, 1) if a.elevation_gain else None,
                 calories=int(a.calories) if a.calories else None,
@@ -490,38 +492,57 @@ async def get_dashboard_summary(
     runalyze_calc, runalyze_paces = await _fetch_runalyze_data()
 
     # Build fitness status with Runalyze extended metrics
+    # Note: Proper None-safe access - check runalyze_calc first before calling .get()
     fitness_status = FitnessStatus(
         # Use Runalyze data if available, otherwise fall back to local DB
-        ctl=runalyze_calc.get("ctl") if runalyze_calc else (latest_fitness.ctl if latest_fitness else None),
-        atl=runalyze_calc.get("atl") if runalyze_calc else (latest_fitness.atl if latest_fitness else None),
-        tsb=runalyze_calc.get("tsb") if runalyze_calc else (latest_fitness.tsb if latest_fitness else None),
+        ctl=(runalyze_calc.get("ctl") if runalyze_calc else None) or (latest_fitness.ctl if latest_fitness else None),
+        atl=(runalyze_calc.get("atl") if runalyze_calc else None) or (latest_fitness.atl if latest_fitness else None),
+        tsb=(runalyze_calc.get("tsb") if runalyze_calc else None) or (latest_fitness.tsb if latest_fitness else None),
         weekly_trimp=round(trimp_tss[0], 1) if trimp_tss[0] else None,
         weekly_tss=round(trimp_tss[1], 1) if trimp_tss[1] else None,
-        # Extended Runalyze-style metrics
-        effective_vo2max=runalyze_calc.get("effective_vo2max") or runalyze_calc.get("vo2max") if runalyze_calc else None,
+        # Extended Runalyze-style metrics (only from Runalyze)
+        effective_vo2max=(runalyze_calc.get("effective_vo2max") or runalyze_calc.get("vo2max")) if runalyze_calc else None,
         marathon_shape=runalyze_calc.get("marathon_shape") if runalyze_calc else None,
-        workload_ratio=runalyze_calc.get("workload_ratio") or runalyze_calc.get("ac_ratio") if runalyze_calc else None,
+        workload_ratio=(runalyze_calc.get("workload_ratio") or runalyze_calc.get("ac_ratio")) if runalyze_calc else None,
         rest_days=runalyze_calc.get("rest_days") if runalyze_calc else None,
         monotony=runalyze_calc.get("monotony") if runalyze_calc else None,
         training_strain=runalyze_calc.get("training_strain") if runalyze_calc else None,
     )
 
     # Build training paces from Runalyze
+    # Note: Only create TrainingPaces if Runalyze provides valid data
+    # Returning null is more honest than hardcoded defaults when data is unavailable
     training_paces = None
     if runalyze_paces and runalyze_paces.get("vdot"):
-        training_paces = TrainingPaces(
-            vdot=float(runalyze_paces.get("vdot")),
-            easy_min=_parse_pace(runalyze_paces.get("easy_min")) or 343,
-            easy_max=_parse_pace(runalyze_paces.get("easy_max")) or 430,
-            marathon_min=_parse_pace(runalyze_paces.get("marathon_min")) or 302,
-            marathon_max=_parse_pace(runalyze_paces.get("marathon_max")) or 338,
-            threshold_min=_parse_pace(runalyze_paces.get("threshold_min")) or 276,
-            threshold_max=_parse_pace(runalyze_paces.get("threshold_max")) or 288,
-            interval_min=_parse_pace(runalyze_paces.get("interval_min")) or 254,
-            interval_max=_parse_pace(runalyze_paces.get("interval_max")) or 267,
-            repetition_min=_parse_pace(runalyze_paces.get("repetition_min")) or 231,
-            repetition_max=_parse_pace(runalyze_paces.get("repetition_max")) or 242,
-        )
+        # All pace fields must be present for a valid TrainingPaces response
+        easy_min = _parse_pace(runalyze_paces.get("easy_min"))
+        easy_max = _parse_pace(runalyze_paces.get("easy_max"))
+        marathon_min = _parse_pace(runalyze_paces.get("marathon_min"))
+        marathon_max = _parse_pace(runalyze_paces.get("marathon_max"))
+        threshold_min = _parse_pace(runalyze_paces.get("threshold_min"))
+        threshold_max = _parse_pace(runalyze_paces.get("threshold_max"))
+        interval_min = _parse_pace(runalyze_paces.get("interval_min"))
+        interval_max = _parse_pace(runalyze_paces.get("interval_max"))
+        repetition_min = _parse_pace(runalyze_paces.get("repetition_min"))
+        repetition_max = _parse_pace(runalyze_paces.get("repetition_max"))
+
+        # Only build TrainingPaces if all required fields are available
+        if all([easy_min, easy_max, marathon_min, marathon_max,
+                threshold_min, threshold_max, interval_min, interval_max,
+                repetition_min, repetition_max]):
+            training_paces = TrainingPaces(
+                vdot=float(runalyze_paces.get("vdot")),
+                easy_min=easy_min,
+                easy_max=easy_max,
+                marathon_min=marathon_min,
+                marathon_max=marathon_max,
+                threshold_min=threshold_min,
+                threshold_max=threshold_max,
+                interval_min=interval_min,
+                interval_max=interval_max,
+                repetition_min=repetition_min,
+                repetition_max=repetition_max,
+            )
 
     # Upcoming workouts (기준일 이후 예정된 운동 - today 또는 target_date 기준)
     from app.models.workout import Workout
@@ -754,6 +775,7 @@ async def get_calendar(
                 distance_km=round(a.distance_meters / 1000, 2) if a.distance_meters else None,
                 duration_seconds=a.duration_seconds,
                 avg_pace_seconds=activity_pace,
+                avg_hr=a.avg_hr,
                 avg_hr_percent=avg_hr_percent,
                 elevation_gain=round(a.elevation_gain, 1) if a.elevation_gain else None,
                 calories=int(a.calories) if a.calories else None,

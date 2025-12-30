@@ -32,7 +32,7 @@ function formatDate(dateStr: string): string {
 export function Strength() {
   const [showForm, setShowForm] = useState(false);
   const [typeFilter, setTypeFilter] = useState<string>('all');
-  const [editingSession, setEditingSession] = useState<StrengthSessionSummary | null>(null);
+  const [_editingSession, setEditingSession] = useState<StrengthSessionSummary | null>(null);
 
   const { data: sessions, isLoading, refetch } = useStrengthSessions({
     session_type: typeFilter !== 'all' ? typeFilter : undefined,

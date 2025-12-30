@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -33,9 +33,25 @@ class PlanCreate(BaseModel):
     end_date: date
     description: str | None = None
 
+    @model_validator(mode="after")
+    def validate_dates(self) -> "PlanCreate":
+        """Validate date constraints."""
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must be >= start_date")
+        if self.goal_date is not None:
+            if self.goal_date < self.start_date:
+                raise ValueError("goal_date must be >= start_date")
+            if self.goal_date > self.end_date:
+                raise ValueError("goal_date must be <= end_date")
+        return self
+
 
 class PlanUpdate(BaseModel):
-    """Request to update a plan."""
+    """Request to update a plan.
+
+    Note: status cannot be changed directly via update.
+    Use dedicated endpoints: /approve, /activate, /complete, /archive
+    """
 
     goal_type: str | None = None
     goal_date: date | None = None
@@ -43,7 +59,7 @@ class PlanUpdate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     description: str | None = None
-    status: str | None = None
+    # status removed - use dedicated state transition endpoints
 
 
 class WorkoutSummary(BaseModel):
@@ -302,8 +318,7 @@ async def update_plan(
         plan.end_date = request.end_date
     if request.description is not None:
         plan.description = request.description
-    if request.status is not None:
-        plan.status = request.status
+    # status is not updatable directly - use /approve, /activate, /complete endpoints
 
     plan.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -476,13 +491,20 @@ async def add_week(
 
     Returns:
         Created week.
+
+    Raises:
+        404: Plan not found.
+        400: Plan is active (cannot modify), week_index duplicate,
+             or week_index out of plan range.
     """
-    # Verify plan ownership
+    # Verify plan ownership and load existing weeks
     result = await db.execute(
-        select(Plan).where(
+        select(Plan)
+        .where(
             Plan.id == plan_id,
             Plan.user_id == current_user.id,
         )
+        .options(selectinload(Plan.weeks))
     )
     plan = result.scalar_one_or_none()
 
@@ -490,6 +512,38 @@ async def add_week(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Plan not found",
+        )
+
+    # Cannot modify active plans
+    if plan.status == "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot add weeks to an active plan",
+        )
+
+    # Calculate max allowed week_index based on plan duration
+    plan_duration_days = (plan.end_date - plan.start_date).days + 1
+    max_week_index = (plan_duration_days + 6) // 7  # Round up to include partial weeks
+
+    # Validate week_index range
+    if request.week_index < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="week_index must be >= 1",
+        )
+    if request.week_index > max_week_index:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"week_index {request.week_index} exceeds plan duration "
+                   f"(max {max_week_index} weeks for {plan_duration_days} days)",
+        )
+
+    # Check for duplicate week_index
+    existing_indices = {w.week_index for w in plan.weeks}
+    if request.week_index in existing_indices:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"week_index {request.week_index} already exists in this plan",
         )
 
     week = PlanWeek(

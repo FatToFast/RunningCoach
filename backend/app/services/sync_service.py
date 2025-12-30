@@ -5,10 +5,11 @@ for fetching and storing Garmin data.
 """
 
 import logging
+import math
 import time
 from datetime import datetime, timedelta, date, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +26,7 @@ from app.models import (
     HRRecord,
     BodyComposition,
 )
-from app.models.activity import ActivitySample, ActivityLap
+from app.models.activity import ActivitySample, ActivityLap, ActivityMetric
 from app.adapters.garmin_adapter import GarminConnectAdapter
 from app.core.config import get_settings
 from app.observability import get_metrics_backend
@@ -64,6 +65,17 @@ class GarminSyncService:
         "activities",
         "sleep",
         "heart_rate",
+        "body_battery",
+        "stress",
+        "hrv",
+        "respiration",
+        "spo2",
+        "training_status",
+        "max_metrics",
+        "stats",
+        "race_predictions",
+        "personal_records",
+        "goals",
         # "body_composition",  # Not available in current garminconnect library
     ]
 
@@ -96,6 +108,9 @@ class GarminSyncService:
                 None,
                 self.adapter.get_user_profile,
             )
+
+            if profile_data:
+                await self._store_raw_event("user_profile", profile_data, flush=False)
 
             # Garmin user summary에서 maxHr 추출
             max_hr = profile_data.get("userDailySummary", {}).get("maxHeartRate")
@@ -161,7 +176,9 @@ class GarminSyncService:
         """Sync a single endpoint.
 
         Args:
-            endpoint: The endpoint to sync (activities, sleep, heart_rate, body_composition)
+            endpoint: The endpoint to sync (activities, sleep, heart_rate, body_battery, stress,
+                hrv, respiration, spo2, training_status, max_metrics, stats, race_predictions,
+                personal_records, goals, body_composition)
             start_date: Start date for sync
             end_date: End date for sync
             full_backfill: If True, ignore last sync state
@@ -204,6 +221,28 @@ class GarminSyncService:
                 await self._sync_sleep(result, start_date, end_date)
             elif endpoint == "heart_rate":
                 await self._sync_heart_rate(result, start_date, end_date)
+            elif endpoint == "body_battery":
+                await self._sync_body_battery(result, start_date, end_date)
+            elif endpoint == "stress":
+                await self._sync_stress(result, start_date, end_date)
+            elif endpoint == "hrv":
+                await self._sync_hrv(result, start_date, end_date)
+            elif endpoint == "respiration":
+                await self._sync_respiration(result, start_date, end_date)
+            elif endpoint == "spo2":
+                await self._sync_spo2(result, start_date, end_date)
+            elif endpoint == "training_status":
+                await self._sync_training_status(result, start_date, end_date)
+            elif endpoint == "max_metrics":
+                await self._sync_max_metrics(result, start_date, end_date)
+            elif endpoint == "stats":
+                await self._sync_stats(result, start_date, end_date)
+            elif endpoint == "race_predictions":
+                await self._sync_race_predictions(result, start_date, end_date)
+            elif endpoint == "personal_records":
+                await self._sync_personal_records(result)
+            elif endpoint == "goals":
+                await self._sync_goals(result)
             elif endpoint == "body_composition":
                 await self._sync_body_composition(result, start_date, end_date)
             else:
@@ -268,6 +307,16 @@ class GarminSyncService:
             if not garmin_id:
                 continue
 
+            try:
+                details = await loop.run_in_executor(
+                    None,
+                    lambda act_id=garmin_id: self.adapter.get_activity_details(act_id),
+                )
+                if details:
+                    await self._store_raw_event("activity_details", details, flush=False)
+            except Exception as e:
+                logger.warning(f"Failed to fetch activity details for {garmin_id}: {e}")
+
             # Check if activity exists
             existing = await self.session.execute(
                 select(Activity).where(
@@ -293,6 +342,207 @@ class GarminSyncService:
                 await self._download_fit_file(activity, garmin_id)
 
         await self.session.commit()
+
+    async def _sync_daily_raw(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+        endpoint: str,
+        fetcher: Callable[[date], Any],
+    ) -> None:
+        """Sync daily Garmin endpoints and store raw data only."""
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        current_date = start_date
+
+        while current_date <= end_date:
+            try:
+                data = await loop.run_in_executor(
+                    None,
+                    lambda d=current_date: fetcher(d),
+                )
+                if data:
+                    result.items_fetched += 1
+                    await self._store_raw_event(endpoint, data, flush=False)
+                    result.items_created += 1
+            except Exception as e:
+                logger.warning(f"Failed to fetch {endpoint} for {current_date}: {e}")
+
+            current_date += timedelta(days=1)
+
+        await self.session.commit()
+
+    async def _sync_single_raw(
+        self,
+        result: SyncResult,
+        endpoint: str,
+        fetcher: Callable[[], Any],
+    ) -> None:
+        """Sync single-call Garmin endpoints and store raw data only."""
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(
+            None,
+            fetcher,
+        )
+        if not data:
+            return
+
+        if isinstance(data, list):
+            result.items_fetched = len(data)
+        else:
+            result.items_fetched = 1
+
+        await self._store_raw_event(endpoint, data, flush=False)
+        result.items_created = 1
+        await self.session.commit()
+
+    async def _sync_body_battery(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_daily_raw(
+            result,
+            start_date,
+            end_date,
+            "body_battery",
+            self.adapter.get_body_battery,
+        )
+
+    async def _sync_stress(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_daily_raw(
+            result,
+            start_date,
+            end_date,
+            "stress",
+            self.adapter.get_stress_data,
+        )
+
+    async def _sync_hrv(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_daily_raw(
+            result,
+            start_date,
+            end_date,
+            "hrv",
+            self.adapter.get_hrv_data,
+        )
+
+    async def _sync_respiration(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_daily_raw(
+            result,
+            start_date,
+            end_date,
+            "respiration",
+            self.adapter.get_respiration_data,
+        )
+
+    async def _sync_spo2(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_daily_raw(
+            result,
+            start_date,
+            end_date,
+            "spo2",
+            self.adapter.get_spo2_data,
+        )
+
+    async def _sync_training_status(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_daily_raw(
+            result,
+            start_date,
+            end_date,
+            "training_status",
+            self.adapter.get_training_status,
+        )
+
+    async def _sync_max_metrics(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_daily_raw(
+            result,
+            start_date,
+            end_date,
+            "max_metrics",
+            self.adapter.get_max_metrics,
+        )
+
+    async def _sync_stats(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_daily_raw(
+            result,
+            start_date,
+            end_date,
+            "stats",
+            self.adapter.get_stats,
+        )
+
+    async def _sync_race_predictions(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        await self._sync_single_raw(
+            result,
+            "race_predictions",
+            lambda: self.adapter.get_race_predictions(start_date, end_date),
+        )
+
+    async def _sync_personal_records(
+        self,
+        result: SyncResult,
+    ) -> None:
+        await self._sync_single_raw(
+            result,
+            "personal_records",
+            self.adapter.get_personal_records,
+        )
+
+    async def _sync_goals(
+        self,
+        result: SyncResult,
+    ) -> None:
+        await self._sync_single_raw(
+            result,
+            "goals",
+            self.adapter.get_goals,
+        )
 
     async def _create_activity(
         self,
@@ -519,6 +769,101 @@ class GarminSyncService:
             if session_data.get("max_power"):
                 activity.max_power = int(session_data["max_power"])
 
+        # Calculate and store derived metrics (TRIMP, EF, etc.)
+        await self._calculate_and_store_metrics(activity, records)
+
+    async def _calculate_and_store_metrics(
+        self,
+        activity: Activity,
+        records: list[dict[str, Any]],
+    ) -> None:
+        """Calculate TRIMP, Efficiency Factor, and other derived metrics.
+
+        TRIMP (Training Impulse) = duration (min) * HR ratio * 0.64 * e^(1.92 * HR ratio)
+        where HR ratio = (avgHR - restHR) / (maxHR - restHR)
+
+        Efficiency Factor = normalized speed / avg HR
+
+        Args:
+            activity: Activity to calculate metrics for.
+            records: Parsed FIT records with HR data.
+        """
+        try:
+            # Get user's max HR (from profile or estimate)
+            max_hr = self.user.max_hr or 220 - (self.user.age or 30)
+            rest_hr = self.user.resting_hr or 60  # Default resting HR
+
+            # Calculate TRIMP using HR data from records
+            trimp = None
+            if records and activity.duration_seconds:
+                hr_values = [
+                    r.get("heart_rate")
+                    for r in records
+                    if r.get("heart_rate") and r["heart_rate"] > 0
+                ]
+                if hr_values:
+                    avg_hr = sum(hr_values) / len(hr_values)
+                    hr_reserve = max_hr - rest_hr
+                    if hr_reserve > 0:
+                        hr_ratio = (avg_hr - rest_hr) / hr_reserve
+                        hr_ratio = max(0, min(1, hr_ratio))  # Clamp 0-1
+                        duration_min = activity.duration_seconds / 60
+                        # Banister's TRIMP formula (gender factor 1.92 for male, 1.67 for female)
+                        gender_factor = 1.92  # Default to male
+                        trimp = duration_min * hr_ratio * 0.64 * math.exp(gender_factor * hr_ratio)
+                        trimp = round(trimp, 1)
+
+            # Calculate Efficiency Factor (EF)
+            # EF = Normalized Pace / Avg HR (or Normalized Power / Avg HR for cycling)
+            efficiency_factor = None
+            if activity.avg_hr and activity.avg_hr > 0:
+                if activity.normalized_power:
+                    # Power-based EF
+                    efficiency_factor = round(activity.normalized_power / activity.avg_hr, 3)
+                elif activity.distance_meters and activity.duration_seconds:
+                    # Speed-based EF (m/min / bpm)
+                    speed_m_min = (activity.distance_meters / activity.duration_seconds) * 60
+                    efficiency_factor = round(speed_m_min / activity.avg_hr, 3)
+
+            # Get TSS from activity (already calculated from FIT)
+            tss = activity.training_stress_score
+
+            # Get training effect (average of aerobic and anaerobic)
+            training_effect = None
+            if activity.training_effect_aerobic:
+                training_effect = activity.training_effect_aerobic
+                if activity.training_effect_anaerobic:
+                    training_effect = (training_effect + activity.training_effect_anaerobic) / 2
+
+            # Upsert ActivityMetric
+            stmt = insert(ActivityMetric).values(
+                activity_id=activity.id,
+                trimp=trimp,
+                tss=tss,
+                training_effect=training_effect,
+                vo2max_est=activity.vo2max,
+                efficiency_factor=efficiency_factor,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["activity_id"],
+                set_={
+                    "trimp": stmt.excluded.trimp,
+                    "tss": stmt.excluded.tss,
+                    "training_effect": stmt.excluded.training_effect,
+                    "vo2max_est": stmt.excluded.vo2max_est,
+                    "efficiency_factor": stmt.excluded.efficiency_factor,
+                    "updated_at": datetime.now(timezone.utc),
+                },
+            )
+            await self.session.execute(stmt)
+            logger.info(
+                f"Stored metrics for activity {activity.id}: "
+                f"TRIMP={trimp}, TSS={tss}, EF={efficiency_factor}"
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate metrics for activity {activity.id}: {e}")
+
     async def _sync_sleep(
         self,
         result: SyncResult,
@@ -540,7 +885,12 @@ class GarminSyncService:
                 )
                 if sleep_data:
                     result.items_fetched += 1
-                    await self._store_sleep(sleep_data, current_date)
+                    raw_event = await self._store_raw_event("sleep", sleep_data)
+                    await self._store_sleep(
+                        sleep_data,
+                        current_date,
+                        raw_event_id=raw_event.id,
+                    )
                     result.items_created += 1
             except Exception as e:
                 logger.warning(f"Failed to fetch sleep for {current_date}: {e}")
@@ -549,7 +899,12 @@ class GarminSyncService:
 
         await self.session.commit()
 
-    async def _store_sleep(self, data: dict[str, Any], sleep_date: date) -> None:
+    async def _store_sleep(
+        self,
+        data: dict[str, Any],
+        sleep_date: date,
+        raw_event_id: Optional[int] = None,
+    ) -> None:
         """Store or update sleep record."""
         # Use upsert pattern
         stmt = insert(Sleep).values(
@@ -563,15 +918,19 @@ class GarminSyncService:
                 "rem": data.get("remSleepSeconds"),
                 "awake": data.get("awakeSleepSeconds"),
             },
+            raw_event_id=raw_event_id,
         )
+        update_values = {
+            "duration_seconds": stmt.excluded.duration_seconds,
+            "score": stmt.excluded.score,
+            "stages": stmt.excluded.stages,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if raw_event_id is not None:
+            update_values["raw_event_id"] = stmt.excluded.raw_event_id
         stmt = stmt.on_conflict_do_update(
             constraint="uq_sleep_user_date",
-            set_={
-                "duration_seconds": stmt.excluded.duration_seconds,
-                "score": stmt.excluded.score,
-                "stages": stmt.excluded.stages,
-                "updated_at": datetime.now(timezone.utc),
-            },
+            set_=update_values,
         )
         await self.session.execute(stmt)
 
@@ -596,7 +955,12 @@ class GarminSyncService:
                 )
                 if hr_data:
                     result.items_fetched += 1
-                    await self._store_heart_rate(hr_data, current_date)
+                    raw_event = await self._store_raw_event("heart_rate", hr_data)
+                    await self._store_heart_rate(
+                        hr_data,
+                        current_date,
+                        raw_event_id=raw_event.id,
+                    )
                     result.items_created += 1
             except Exception as e:
                 logger.warning(f"Failed to fetch heart rate for {current_date}: {e}")
@@ -605,7 +969,12 @@ class GarminSyncService:
 
         await self.session.commit()
 
-    async def _store_heart_rate(self, data: dict[str, Any], hr_date: date) -> None:
+    async def _store_heart_rate(
+        self,
+        data: dict[str, Any],
+        hr_date: date,
+        raw_event_id: Optional[int] = None,
+    ) -> None:
         """Store or update heart rate record using upsert."""
         stmt = insert(HRRecord).values(
             user_id=self.user.id,
@@ -616,16 +985,20 @@ class GarminSyncService:
             max_hr=data.get("maxHeartRate"),
             resting_hr=data.get("restingHeartRate"),
             samples=data.get("heartRateValues"),
+            raw_event_id=raw_event_id,
         )
+        update_values = {
+            "avg_hr": stmt.excluded.avg_hr,
+            "max_hr": stmt.excluded.max_hr,
+            "resting_hr": stmt.excluded.resting_hr,
+            "samples": stmt.excluded.samples,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if raw_event_id is not None:
+            update_values["raw_event_id"] = stmt.excluded.raw_event_id
         stmt = stmt.on_conflict_do_update(
             constraint="uq_hr_record_user_date",
-            set_={
-                "avg_hr": stmt.excluded.avg_hr,
-                "max_hr": stmt.excluded.max_hr,
-                "resting_hr": stmt.excluded.resting_hr,
-                "samples": stmt.excluded.samples,
-                "updated_at": datetime.now(timezone.utc),
-            },
+            set_=update_values,
         )
         await self.session.execute(stmt)
 
@@ -681,6 +1054,7 @@ class GarminSyncService:
         self,
         endpoint: str,
         payload: Any,
+        flush: bool = True,
     ) -> GarminRawEvent:
         """Store raw API response."""
         raw_event = GarminRawEvent(
@@ -690,7 +1064,8 @@ class GarminSyncService:
             payload=payload if isinstance(payload, dict) else {"data": payload},
         )
         self.session.add(raw_event)
-        await self.session.flush()
+        if flush:
+            await self.session.flush()
         return raw_event
 
     async def _get_sync_state(self, endpoint: str) -> Optional[GarminSyncState]:

@@ -116,12 +116,14 @@ from app.api.v1.endpoints import (
     ai,
     analytics,
     auth,
+    calendar_notes,
     dashboard,
     gear,
     hr,
     ingest,
     metrics,
     plans,
+    races,
     runalyze,
     sleep,
     strava,
@@ -197,6 +199,16 @@ api_router.include_router(runalyze.router, prefix="/runalyze", tags=["runalyze"]
 # Strength Training (보강운동)
 # -------------------------------------------------------------------------
 api_router.include_router(strength.router, prefix="/strength", tags=["strength"])
+
+# -------------------------------------------------------------------------
+# Calendar Notes (personal memos)
+# -------------------------------------------------------------------------
+api_router.include_router(calendar_notes.router, prefix="/calendar-notes", tags=["calendar-notes"])
+
+# -------------------------------------------------------------------------
+# Races (대회 일정)
+# -------------------------------------------------------------------------
+api_router.include_router(races.router, prefix="/races", tags=["races"])
 
 # -------------------------------------------------------------------------
 # Legacy/Alias Routes (backward compatibility)

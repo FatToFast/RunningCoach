@@ -274,7 +274,7 @@ export function ActivityDetail() {
           <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-cyan" />
           <h3 className="font-display font-semibold text-sm sm:text-base">훈련 지표</h3>
         </div>
-        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2 sm:gap-3">
+        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3">
           {/* Calories */}
           <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
             <MetricTooltip description={metricDescriptions.calories} />
@@ -283,6 +283,17 @@ export function ActivityDetail() {
             </div>
             <div className="text-[10px] sm:text-xs text-muted">칼로리</div>
           </div>
+
+          {/* Best Pace */}
+          {activity.best_pace_seconds && (
+            <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
+              <MetricTooltip description="활동 중 가장 빠른 구간의 페이스입니다." />
+              <div className="font-mono text-lg sm:text-xl font-bold text-green-400">
+                {formatPace(activity.best_pace_seconds)}
+              </div>
+              <div className="text-[10px] sm:text-xs text-muted">최고 페이스</div>
+            </div>
+          )}
 
           {/* Elevation Gain */}
           <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
@@ -302,14 +313,36 @@ export function ActivityDetail() {
             <div className="text-[10px] sm:text-xs text-muted">고도 하강</div>
           </div>
 
-          {/* Training Effect */}
-          {activity.metrics?.training_effect && (
+          {/* Training Effect Aerobic (from Garmin directly) */}
+          {activity.training_effect_aerobic && (
             <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
               <MetricTooltip description={metricDescriptions.training_effect} />
               <div className="font-mono text-lg sm:text-xl font-bold text-cyan">
-                {activity.metrics.training_effect.toFixed(1)}
+                {activity.training_effect_aerobic.toFixed(1)}
               </div>
               <div className="text-[10px] sm:text-xs text-muted">유산소 TE</div>
+            </div>
+          )}
+
+          {/* Training Effect Anaerobic */}
+          {activity.training_effect_anaerobic && (
+            <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
+              <MetricTooltip description="무산소 운동 효과입니다. 고강도 인터벌 훈련의 효과를 측정합니다." />
+              <div className="font-mono text-lg sm:text-xl font-bold text-purple-400">
+                {activity.training_effect_anaerobic.toFixed(1)}
+              </div>
+              <div className="text-[10px] sm:text-xs text-muted">무산소 TE</div>
+            </div>
+          )}
+
+          {/* VO2max from Garmin */}
+          {activity.vo2max && (
+            <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
+              <MetricTooltip description={metricDescriptions.vo2max} />
+              <div className="font-mono text-lg sm:text-xl font-bold text-green-400">
+                {activity.vo2max.toFixed(1)}
+              </div>
+              <div className="text-[10px] sm:text-xs text-muted">VO2max</div>
             </div>
           )}
 
@@ -345,6 +378,17 @@ export function ActivityDetail() {
               <div className="text-[10px] sm:text-xs text-muted">IF</div>
             </div>
           )}
+
+          {/* Efficiency Factor */}
+          {activity.metrics?.efficiency_factor && (
+            <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
+              <MetricTooltip description="효율 계수 (EF)입니다. 같은 심박수에서 더 빠르게 달릴수록 높아집니다." />
+              <div className="font-mono text-lg sm:text-xl font-bold text-cyan">
+                {activity.metrics.efficiency_factor.toFixed(2)}
+              </div>
+              <div className="text-[10px] sm:text-xs text-muted">EF</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -358,24 +402,35 @@ export function ActivityDetail() {
               {activity.sensors.power_meter_name || 'Power Meter'}
             </span>
           </div>
-          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 sm:gap-3">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
             {/* Avg Power */}
             <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
               <MetricTooltip description={metricDescriptions.avg_power} />
               <div className="font-mono text-lg sm:text-xl font-bold text-purple-400">
-                {activity.metrics.avg_power}
+                {activity.metrics.avg_power}W
               </div>
-              <div className="text-[10px] sm:text-xs text-muted">평균 파워 (W)</div>
+              <div className="text-[10px] sm:text-xs text-muted">평균 파워</div>
             </div>
+
+            {/* Max Power */}
+            {activity.metrics.max_power && (
+              <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
+                <MetricTooltip description="활동 중 최대 출력 파워입니다." />
+                <div className="font-mono text-lg sm:text-xl font-bold text-red-400">
+                  {activity.metrics.max_power}W
+                </div>
+                <div className="text-[10px] sm:text-xs text-muted">최대 파워</div>
+              </div>
+            )}
 
             {/* Normalized Power */}
             {activity.metrics.normalized_power && (
               <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
                 <MetricTooltip description={metricDescriptions.normalized_power} />
                 <div className="font-mono text-lg sm:text-xl font-bold">
-                  {activity.metrics.normalized_power}
+                  {activity.metrics.normalized_power}W
                 </div>
-                <div className="text-[10px] sm:text-xs text-muted">NP (W)</div>
+                <div className="text-[10px] sm:text-xs text-muted">NP</div>
               </div>
             )}
 
@@ -386,7 +441,7 @@ export function ActivityDetail() {
                 <div className="font-mono text-lg sm:text-xl font-bold text-cyan">
                   {activity.metrics.power_to_hr.toFixed(2)}
                 </div>
-                <div className="text-[10px] sm:text-xs text-muted">Pa:Hr (W/bpm)</div>
+                <div className="text-[10px] sm:text-xs text-muted">Pa:Hr</div>
               </div>
             )}
 
@@ -415,14 +470,14 @@ export function ActivityDetail() {
         </div>
       )}
 
-      {/* Running Form - 러닝 폼 (파워미터가 있을 때만 표시) */}
-      {activity.sensors?.has_power_meter && (activity.avg_cadence || activity.metrics?.ground_time) && (
+      {/* Running Form - 러닝 폼 (케이던스나 러닝 다이나믹스가 있을 때 표시) */}
+      {(activity.avg_cadence || activity.metrics?.ground_time || activity.metrics?.stride_length) && (
         <div className="card p-3 sm:p-4">
           <div className="flex items-center gap-2 mb-3 sm:mb-4">
             <Footprints className="w-4 h-4 sm:w-5 sm:h-5 text-amber" />
             <h3 className="font-display font-semibold text-sm sm:text-base">러닝 폼</h3>
           </div>
-          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 sm:gap-3">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
             {/* Cadence */}
             <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
               <MetricTooltip description={metricDescriptions.cadence} />
@@ -432,14 +487,36 @@ export function ActivityDetail() {
               <div className="text-[10px] sm:text-xs text-muted">케이던스 (spm)</div>
             </div>
 
+            {/* Max Cadence */}
+            {activity.max_cadence && (
+              <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
+                <MetricTooltip description="활동 중 최대 케이던스입니다." />
+                <div className="font-mono text-lg sm:text-xl font-bold text-cyan">
+                  {activity.max_cadence}
+                </div>
+                <div className="text-[10px] sm:text-xs text-muted">최대 케이던스</div>
+              </div>
+            )}
+
+            {/* Stride Length */}
+            {activity.metrics?.stride_length && (
+              <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
+                <MetricTooltip description="한 걸음의 평균 보폭입니다. 케이던스와 함께 페이스를 결정합니다." />
+                <div className="font-mono text-lg sm:text-xl font-bold text-amber">
+                  {activity.metrics.stride_length.toFixed(2)}m
+                </div>
+                <div className="text-[10px] sm:text-xs text-muted">보폭</div>
+              </div>
+            )}
+
             {/* Ground Contact Time */}
             {activity.metrics?.ground_time && (
               <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
                 <MetricTooltip description={metricDescriptions.ground_time} />
                 <div className="font-mono text-lg sm:text-xl font-bold">
-                  {activity.metrics.ground_time}
+                  {activity.metrics.ground_time}ms
                 </div>
-                <div className="text-[10px] sm:text-xs text-muted">GCT (ms)</div>
+                <div className="text-[10px] sm:text-xs text-muted">GCT</div>
               </div>
             )}
 
@@ -448,9 +525,9 @@ export function ActivityDetail() {
               <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
                 <MetricTooltip description={metricDescriptions.vertical_oscillation} />
                 <div className="font-mono text-lg sm:text-xl font-bold text-green-400">
-                  {activity.metrics.vertical_oscillation.toFixed(1)}
+                  {activity.metrics.vertical_oscillation.toFixed(1)}cm
                 </div>
-                <div className="text-[10px] sm:text-xs text-muted">VO (cm)</div>
+                <div className="text-[10px] sm:text-xs text-muted">수직진동</div>
               </div>
             )}
 

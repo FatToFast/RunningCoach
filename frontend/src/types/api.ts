@@ -23,6 +23,7 @@ export interface RecentActivity {
   distance_km: number | null;
   duration_seconds: number | null; // Duration in seconds (hh:mm:ss 포맷용)
   avg_pace_seconds: number | null; // 페이스 (초/km)
+  avg_hr: number | null; // 평균 심박수 (bpm)
   avg_hr_percent: number | null; // 최대심박 대비 % (Runalyze: 72%)
   elevation_gain: number | null; // 고도 상승 (m)
   calories: number | null; // 에너지 (kcal)
@@ -204,21 +205,26 @@ export interface ActivityListResponse {
 
 // Activity Metrics (백엔드: ActivityMetricResponse)
 export interface ActivityMetrics {
+  // From ActivityMetric table
   trimp: number | null;
   tss: number | null;
   training_effect: number | null;
   vo2max_est: number | null;
   efficiency_factor: number | null;
-  intensity_factor: number | null; // IF (NP/FTP)
-  // Stryd / Power Metrics
+  // Power Metrics (from Activity table / FIT session)
   avg_power: number | null;
+  max_power: number | null;
   normalized_power: number | null;
-  power_to_hr: number | null; // Pa:Hr (W/bpm)
-  leg_spring_stiffness: number | null; // kN/m
+  intensity_factor: number | null; // IF (NP/FTP)
+  // Running Dynamics (from FIT records)
+  ground_time: number | null; // GCT in ms
+  vertical_oscillation: number | null; // in cm
+  stride_length: number | null; // in m
+  leg_spring_stiffness: number | null; // in kN/m (calculated)
+  form_power: number | null; // from Stryd
+  // Calculated metrics
+  power_to_hr: number | null; // Pa:Hr ratio (W/bpm)
   running_effectiveness: number | null; // m/kJ
-  form_power: number | null;
-  ground_time: number | null; // ms
-  vertical_oscillation: number | null; // cm
 }
 
 // 활동에 사용된 센서/장비 정보
@@ -237,15 +243,28 @@ export interface ActivityDetail {
   activity_type: string;
   name: string | null;
   start_time: string;
+  // Duration and distance
   duration_seconds: number | null;
+  elapsed_seconds: number | null; // Total elapsed time including pauses
   distance_meters: number | null;
   calories: number | null;
+  // Heart rate
   avg_hr: number | null;
   max_hr: number | null;
+  // Pace
   avg_pace_seconds: number | null;
+  best_pace_seconds: number | null; // Fastest pace during activity
+  // Elevation
   elevation_gain: number | null;
   elevation_loss: number | null;
+  // Cadence
   avg_cadence: number | null;
+  max_cadence: number | null;
+  // Training effect & VO2Max (from Garmin)
+  training_effect_aerobic: number | null;
+  training_effect_anaerobic: number | null;
+  vo2max: number | null;
+  // Extended data
   metrics: ActivityMetrics | null;
   sensors: ActivitySensors | null;
   has_fit_file: boolean;
@@ -523,4 +542,34 @@ export interface ExercisePreset {
 
 export interface ExercisePresetsResponse {
   exercises: ExercisePreset[];
+}
+
+// Calendar Notes (메모)
+export interface CalendarNote {
+  id: number;
+  date: string;
+  note_type: string;
+  content: string;
+  icon: string | null;
+}
+
+export interface CalendarNoteCreate {
+  date: string;
+  note_type: string;
+  content: string;
+  icon?: string | null;
+}
+
+export interface CalendarNotesResponse {
+  notes: CalendarNote[];
+}
+
+export interface NoteTypeInfo {
+  value: string;
+  label: string;
+  icon: string;
+}
+
+export interface NoteTypesResponse {
+  types: NoteTypeInfo[];
 }

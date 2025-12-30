@@ -176,14 +176,43 @@ export function getActivityTypeLabel(type: string): string {
 export function getActivityTypeShort(type: string, name?: string | null): string {
   // 활동 이름에서 타입 추론 시도
   const nameLower = name?.toLowerCase() || '';
-  if (nameLower.includes('easy') || nameLower.includes('이지')) return 'ER';
-  if (nameLower.includes('long') || nameLower.includes('롱런')) return 'LR';
-  if (nameLower.includes('interval') || nameLower.includes('인터벌')) return 'IT';
-  if (nameLower.includes('tempo') || nameLower.includes('템포')) return 'TT';
-  if (nameLower.includes('recovery') || nameLower.includes('회복')) return 'RC';
-  if (nameLower.includes('race') || nameLower.includes('대회')) return 'RA';
-  if (nameLower.includes('trail') || nameLower.includes('트레일')) return 'TR';
-  if (nameLower.includes('treadmill') || nameLower.includes('트레드밀')) return 'TM';
+
+  // Long Run (LR) - 장거리 러닝
+  if (nameLower.includes('long') || nameLower.includes('롱런') ||
+      nameLower.includes('장거리') || nameLower.includes('lsd')) return 'LR';
+
+  // Easy Run (ER) - 이지 러닝
+  if (nameLower.includes('easy') || nameLower.includes('이지') ||
+      nameLower.includes('조깅') || nameLower.includes('jog')) return 'ER';
+
+  // Interval (IT) - 인터벌
+  if (nameLower.includes('interval') || nameLower.includes('인터벌') ||
+      nameLower.includes('반복') || nameLower.includes('repeat')) return 'IT';
+
+  // Tempo/Threshold (TT) - 템포/역치
+  if (nameLower.includes('tempo') || nameLower.includes('템포') ||
+      nameLower.includes('threshold') || nameLower.includes('역치') ||
+      nameLower.includes('cruise')) return 'TT';
+
+  // Recovery (RC) - 회복
+  if (nameLower.includes('recovery') || nameLower.includes('회복') ||
+      nameLower.includes('리커버리')) return 'RC';
+
+  // Race (RA) - 대회/레이스
+  if (nameLower.includes('race') || nameLower.includes('대회') ||
+      nameLower.includes('마라톤') || nameLower.includes('하프') ||
+      nameLower.includes('10k') || nameLower.includes('5k')) return 'RA';
+
+  // Trail (TR) - 트레일
+  if (nameLower.includes('trail') || nameLower.includes('트레일') ||
+      nameLower.includes('산') || nameLower.includes('hill')) return 'TR';
+
+  // Treadmill (TM) - 트레드밀
+  if (nameLower.includes('treadmill') || nameLower.includes('트레드밀') ||
+      nameLower.includes('러닝머신') || nameLower.includes('실내')) return 'TM';
+
+  // Fartlek (FK) - 파틀렉
+  if (nameLower.includes('fartlek') || nameLower.includes('파틀렉')) return 'FK';
 
   // 기본 타입 매핑
   switch (type) {
@@ -193,6 +222,10 @@ export function getActivityTypeShort(type: string, name?: string | null): string
       return 'CY';
     case 'swimming':
       return 'SW';
+    case 'walking':
+      return 'WK';
+    case 'hiking':
+      return 'HK';
     default:
       return '--';
   }

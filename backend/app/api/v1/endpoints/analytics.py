@@ -27,12 +27,13 @@ router = APIRouter()
 # -------------------------------------------------------------------------
 
 # Distance categories for PR calculation (min_meters, max_meters)
-# Tolerance: +10% to allow for GPS variance
+# Tolerance: ±5% to allow for GPS variance (both under and over)
+# GPS can read short (signal loss) or long (zigzag path)
 DISTANCE_CATEGORIES = [
-    ("5K", 5000, 5500),
-    ("10K", 10000, 11000),
-    ("Half Marathon", 21097, 22000),
-    ("Marathon", 42195, 43000),
+    ("5K", 4750, 5250),           # 5000m ± 5%
+    ("10K", 9500, 10500),         # 10000m ± 5%
+    ("Half Marathon", 20042, 22152),  # 21097m ± 5%
+    ("Marathon", 40085, 44305),   # 42195m ± 5%
 ]
 
 
@@ -211,7 +212,7 @@ async def compare_periods(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     period: str = Query("week", pattern="^(week|month)$", description="Period type"),
-    current_end: date | None = Query(None, description="End date for current period (defaults to today)"),
+    current_end: date | None = Query(None, description="Reference date to determine the period (defaults to today). The period containing this date will be compared with its previous period."),
 ) -> CompareResponse:
     """Compare current period with previous period.
 
@@ -466,7 +467,8 @@ async def get_personal_records(
             distance_records.append(distance_record)
 
             # Check if this is a recent PR (within 30 days)
-            if best_time_activity.start_time >= thirty_days_ago and prev_time is not None:
+            # Include both: first-ever PR (no previous) and improvements over previous
+            if best_time_activity.start_time >= thirty_days_ago:
                 recent_prs.append(distance_record)
 
         # Find best pace for this distance (lowest sec/km)
@@ -576,17 +578,7 @@ async def get_personal_records(
     duration_activity = duration_result.scalar_one_or_none()
 
     if duration_activity and duration_activity.duration_seconds:
-        prev_duration, _ = await _find_previous_best(
-            db, current_user.id, activity_type,
-            duration_activity.id, duration_activity.start_time,
-            "Longest Duration", order_by_field="duration"
-        )
-        # Note: For "longest duration" we want highest, but _find_previous_best
-        # orders by asc for duration. We need to fix this.
-        # Actually, for endurance (longest), higher is better.
-        # Let me reconsider the query...
-
-        # For longest duration, we need to find the previous longest (highest)
+        # For longest duration, find the previous longest (highest value before current record)
         prev_result = await db.execute(
             select(Activity)
             .where(

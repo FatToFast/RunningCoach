@@ -11,6 +11,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
+from app.core.ai_constants import (
+    AI_MAX_TOKENS,
+    AI_TEMPERATURE,
+    RUNNING_COACH_SYSTEM_PROMPT,
+)
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.ai import AIConversation, AIImport, AIMessage
@@ -61,13 +66,15 @@ class ConversationResponse(BaseModel):
 
 
 class ConversationDetailResponse(BaseModel):
-    """Conversation with messages."""
+    """Conversation with paginated messages."""
 
     id: int
     title: str | None
     language: str
     model: str
     messages: list[MessageResponse]
+    total_messages: int
+    has_more: bool
     created_at: datetime
     updated_at: datetime
 
@@ -260,16 +267,23 @@ async def get_conversation(
     conversation_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    limit: int = Query(50, ge=1, le=100, description="Max messages to return"),
+    offset: int = Query(0, ge=0, description="Number of messages to skip"),
 ) -> ConversationDetailResponse:
-    """Get conversation with all messages.
+    """Get conversation with paginated messages.
+
+    Messages are returned in ascending order by creation time (oldest first).
+    Use limit/offset for pagination when conversations have many messages.
 
     Args:
         conversation_id: Conversation ID.
         current_user: Authenticated user.
         db: Database session.
+        limit: Maximum number of messages to return (1-100, default 50).
+        offset: Number of messages to skip for pagination.
 
     Returns:
-        Conversation with messages.
+        Conversation with paginated messages.
 
     Raises:
         HTTPException: If not found.
@@ -288,11 +302,20 @@ async def get_conversation(
             detail="Conversation not found",
         )
 
-    # Get messages
+    # Get total message count
+    count_result = await db.execute(
+        select(func.count(AIMessage.id))
+        .where(AIMessage.conversation_id == conversation_id)
+    )
+    total_messages = count_result.scalar() or 0
+
+    # Get paginated messages
     msg_result = await db.execute(
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation_id)
         .order_by(AIMessage.created_at.asc())
+        .offset(offset)
+        .limit(limit)
     )
     messages = msg_result.scalars().all()
 
@@ -302,6 +325,8 @@ async def get_conversation(
         language=conversation.language,
         model=conversation.model,
         messages=[MessageResponse.model_validate(m) for m in messages],
+        total_messages=total_messages,
+        has_more=(offset + len(messages)) < total_messages,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
@@ -382,16 +407,7 @@ async def chat(
             detail="Conversation not found",
         )
 
-    # Save user message
-    user_message = AIMessage(
-        conversation_id=conversation_id,
-        role="user",
-        content=request.message,
-    )
-    db.add(user_message)
-    await db.flush()
-
-    # Get AI response
+    # Get AI response first (before saving user message to avoid duplication in history)
     try:
         ai_response = await _get_ai_response(
             conversation=conversation,
@@ -401,11 +417,18 @@ async def chat(
         )
     except Exception as e:
         logger.exception("AI service error in conversation chat")
-        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI service is temporarily unavailable. Please try again.",
         )
+
+    # Save user message (after AI response to avoid duplication)
+    user_message = AIMessage(
+        conversation_id=conversation_id,
+        role="user",
+        content=request.message,
+    )
+    db.add(user_message)
 
     # Save AI response
     assistant_message = AIMessage(
@@ -459,18 +482,9 @@ async def quick_chat(
         model=settings.openai_model,
     )
     db.add(conversation)
-    await db.flush()
+    await db.flush()  # Need conversation.id for messages
 
-    # Save user message
-    user_message = AIMessage(
-        conversation_id=conversation.id,
-        role="user",
-        content=request.message,
-    )
-    db.add(user_message)
-    await db.flush()
-
-    # Get AI response
+    # Get AI response first (before saving user message to avoid duplication in history)
     try:
         ai_response = await _get_ai_response(
             conversation=conversation,
@@ -485,6 +499,14 @@ async def quick_chat(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI service is temporarily unavailable. Please try again.",
         )
+
+    # Save user message (after AI response to avoid duplication)
+    user_message = AIMessage(
+        conversation_id=conversation.id,
+        role="user",
+        content=request.message,
+    )
+    db.add(user_message)
 
     # Save AI response
     assistant_message = AIMessage(
@@ -553,23 +575,7 @@ async def _get_ai_response(
             continue  # Skip duplicate
         history.append(msg)
 
-    # System prompt for running coach
-    system_prompt = """당신은 전문 러닝 코치입니다. 사용자의 훈련 데이터와 목표를 기반으로 과학적이고 개인화된 훈련 계획을 제공합니다.
-
-주요 역할:
-1. 사용자의 현재 체력 수준과 목표를 파악합니다
-2. 과학적 원리에 기반한 훈련 계획을 제안합니다
-3. 부상 예방과 회복을 고려합니다
-4. 점진적 과부하 원칙을 적용합니다
-5. 개인의 일정과 상황을 고려합니다
-
-응답 시 유의사항:
-- 친근하고 동기부여가 되는 톤을 사용합니다
-- 복잡한 개념은 쉽게 설명합니다
-- 구체적인 수치와 계획을 제시합니다
-- 사용자의 질문에 직접적으로 답변합니다"""
-
-    messages = [{"role": "system", "content": system_prompt}]
+    messages = [{"role": "system", "content": RUNNING_COACH_SYSTEM_PROMPT}]
 
     # Add context if provided
     if context:
@@ -590,8 +596,8 @@ async def _get_ai_response(
         response = await client.chat.completions.create(
             model=settings.openai_model,
             messages=messages,
-            max_tokens=2000,
-            temperature=0.7,
+            max_tokens=AI_MAX_TOKENS,
+            temperature=AI_TEMPERATURE,
         )
         status_code = 200
     except Exception:
@@ -723,13 +729,15 @@ async def import_plan(
 
             for workout_data in week_data.workouts:
                 # Map request fields to model fields
+                # Note: structure should be list of step dicts (not wrapped in {"steps": ...})
+                # Notes go to dedicated notes field (not target)
                 workout = Workout(
                     plan_week_id=plan_week.id,
                     user_id=current_user.id,
                     name=workout_data.name,
                     workout_type=workout_data.type,  # type -> workout_type
-                    structure={"steps": [step.model_dump() for step in workout_data.steps]},
-                    target={"notes": workout_data.notes} if workout_data.notes else None,
+                    structure=[step.model_dump() for step in workout_data.steps],
+                    notes=workout_data.notes,  # Use dedicated notes field
                 )
                 db.add(workout)
                 workouts_created += 1
@@ -843,14 +851,14 @@ async def export_summary(
     summary_data = {
         "profile": {
             "display_name": current_user.display_name if include_sensitive else "Runner",
-            "timezone": current_user.timezone or "Asia/Seoul",
+            "timezone": current_user.timezone or settings.default_timezone,
         },
         "recent_6_weeks": {
             "total_activities": len(recent_activities),
             "total_distance_km": round(sum(a.distance_meters or 0 for a in recent_activities) / 1000, 1),
             "total_duration_hours": round(sum(a.duration_seconds or 0 for a in recent_activities) / 3600, 1),
             "avg_pace_per_km": _calculate_avg_pace(recent_activities),
-            "avg_hr": round(sum(a.avg_hr or 0 for a in recent_activities if a.avg_hr) / max(len([a for a in recent_activities if a.avg_hr]), 1)),
+            "avg_hr": _calculate_avg_hr(recent_activities),
         },
         "trend_12_weeks": {
             "total_activities": len(trend_activities),
@@ -894,6 +902,18 @@ def _calculate_avg_pace(activities: list) -> str:
     minutes = int(pace_seconds_per_km // 60)
     seconds = int(pace_seconds_per_km % 60)
     return f"{minutes}:{seconds:02d}/km"
+
+
+def _calculate_avg_hr(activities: list) -> int | None:
+    """Calculate average heart rate from activities with valid HR data.
+
+    Only considers activities that have actual heart rate data (avg_hr > 0).
+    Returns None if no activities have valid HR data.
+    """
+    activities_with_hr = [a for a in activities if a.avg_hr and a.avg_hr > 0]
+    if not activities_with_hr:
+        return None
+    return round(sum(a.avg_hr for a in activities_with_hr) / len(activities_with_hr))
 
 
 def _format_markdown_summary(data: dict) -> str:

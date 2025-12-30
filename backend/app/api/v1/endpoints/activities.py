@@ -1,6 +1,7 @@
 """Activity endpoints."""
 
 import math
+import os
 from datetime import datetime, timedelta
 from typing import Annotated
 
@@ -54,16 +55,45 @@ class ActivityListResponse(BaseModel):
 
 
 class ActivityMetricResponse(BaseModel):
-    """Activity derived metrics."""
+    """Activity derived metrics - includes both stored metrics and computed values."""
 
-    trimp: float | None
-    tss: float | None
-    training_effect: float | None
-    vo2max_est: float | None
-    efficiency_factor: float | None
+    # From ActivityMetric table
+    trimp: float | None = None
+    tss: float | None = None
+    training_effect: float | None = None
+    vo2max_est: float | None = None
+    efficiency_factor: float | None = None
+
+    # From Activity table (FIT session data)
+    avg_power: int | None = None
+    max_power: int | None = None
+    normalized_power: int | None = None
+    intensity_factor: float | None = None
+
+    # Running dynamics from FIT
+    ground_time: int | None = None  # GCT in ms
+    vertical_oscillation: float | None = None  # in cm
+    stride_length: float | None = None  # in m
+    leg_spring_stiffness: float | None = None  # in kN/m (calculated)
+    form_power: int | None = None  # from Stryd
+
+    # Calculated metrics
+    power_to_hr: float | None = None  # Pa:Hr ratio (W/bpm)
+    running_effectiveness: float | None = None  # m/kJ
 
     class Config:
         from_attributes = True
+
+
+class SensorInfo(BaseModel):
+    """Sensor information for an activity."""
+
+    has_power_meter: bool = False
+    power_meter_name: str | None = None
+    has_hr_monitor: bool = False
+    hr_monitor_name: str | None = None
+    has_footpod: bool = False
+    footpod_name: str | None = None
 
 
 class ActivityDetailResponse(BaseModel):
@@ -75,17 +105,41 @@ class ActivityDetailResponse(BaseModel):
     name: str | None
     start_time: datetime
     duration_seconds: int | None
+    elapsed_seconds: int | None
     distance_meters: float | None
     calories: int | None
+
+    # Heart rate
     avg_hr: int | None
     max_hr: int | None
+
+    # Pace
     avg_pace_seconds: int | None
+    best_pace_seconds: int | None
+
+    # Elevation
     elevation_gain: float | None
     elevation_loss: float | None
+
+    # Cadence
     avg_cadence: int | None
+    max_cadence: int | None
+
+    # Training Effect (from Garmin)
+    training_effect_aerobic: float | None = None
+    training_effect_anaerobic: float | None = None
+    vo2max: float | None = None
+
+    # Metrics (combined from Activity and ActivityMetric)
     metrics: ActivityMetricResponse | None
+
+    # Sensor info
+    sensors: SensorInfo | None = None
+
+    # File status
     has_fit_file: bool
     has_samples: bool
+
     created_at: datetime
     updated_at: datetime
 
@@ -245,6 +299,12 @@ async def get_activity(
     )
     sample_count = sample_result.scalar() or 0
 
+    # Build metrics response with data from both Activity and ActivityMetric
+    metrics_response = _build_metrics_response(activity)
+
+    # Build sensor info based on available data
+    sensors = _build_sensor_info(activity)
+
     return ActivityDetailResponse(
         id=activity.id,
         garmin_id=activity.garmin_id,
@@ -252,21 +312,114 @@ async def get_activity(
         name=activity.name,
         start_time=activity.start_time,
         duration_seconds=activity.duration_seconds,
+        elapsed_seconds=activity.elapsed_seconds,
         distance_meters=activity.distance_meters,
         calories=activity.calories,
+        # Heart rate
         avg_hr=activity.avg_hr,
         max_hr=activity.max_hr,
+        # Pace
         avg_pace_seconds=activity.avg_pace_seconds,
+        best_pace_seconds=activity.best_pace_seconds,
+        # Elevation
         elevation_gain=activity.elevation_gain,
         elevation_loss=activity.elevation_loss,
+        # Cadence
         avg_cadence=activity.avg_cadence,
-        metrics=ActivityMetricResponse.model_validate(activity.metrics)
-        if activity.metrics
-        else None,
+        max_cadence=activity.max_cadence,
+        # Training Effect
+        training_effect_aerobic=activity.training_effect_aerobic,
+        training_effect_anaerobic=activity.training_effect_anaerobic,
+        vo2max=activity.vo2max,
+        # Metrics
+        metrics=metrics_response,
+        # Sensors
+        sensors=sensors,
+        # File status
         has_fit_file=has_fit,
         has_samples=sample_count > 0,
         created_at=activity.created_at,
         updated_at=activity.updated_at,
+    )
+
+
+def _build_metrics_response(activity: Activity) -> ActivityMetricResponse | None:
+    """Build metrics response from Activity and ActivityMetric data.
+
+    Combines data from:
+    - ActivityMetric table (TRIMP, TSS, etc.)
+    - Activity table (power, running dynamics from FIT)
+    - Calculated metrics (power-to-HR ratio, etc.)
+    """
+    # Start with ActivityMetric data if available
+    metric_data = {}
+
+    if activity.metrics:
+        metric_data = {
+            "trimp": activity.metrics.trimp,
+            "tss": activity.metrics.tss,
+            "training_effect": activity.metrics.training_effect,
+            "vo2max_est": activity.metrics.vo2max_est,
+            "efficiency_factor": activity.metrics.efficiency_factor,
+        }
+
+    # Add power data from Activity (from FIT file)
+    metric_data["avg_power"] = activity.avg_power
+    metric_data["max_power"] = activity.max_power
+    metric_data["normalized_power"] = activity.normalized_power
+    metric_data["intensity_factor"] = activity.intensity_factor
+
+    # Add running dynamics from Activity (from FIT file)
+    metric_data["ground_time"] = activity.avg_ground_contact_time
+    metric_data["vertical_oscillation"] = activity.avg_vertical_oscillation
+    metric_data["stride_length"] = activity.avg_stride_length
+
+    # Calculate Power-to-HR ratio if we have both
+    if activity.avg_power and activity.avg_hr and activity.avg_hr > 0:
+        metric_data["power_to_hr"] = round(activity.avg_power / activity.avg_hr, 2)
+
+    # Calculate Running Effectiveness (m/kJ) if we have power and distance
+    if activity.avg_power and activity.distance_meters and activity.duration_seconds:
+        # Total energy in kJ = (avg_power * duration) / 1000
+        total_energy_kj = (activity.avg_power * activity.duration_seconds) / 1000
+        if total_energy_kj > 0:
+            # RE = distance in meters / energy in kJ
+            metric_data["running_effectiveness"] = round(
+                activity.distance_meters / total_energy_kj, 2
+            )
+
+    # Use TSS from activity if not in metrics table
+    if not metric_data.get("tss") and activity.training_stress_score:
+        metric_data["tss"] = activity.training_stress_score
+
+    # Use training effect from activity if not in metrics table
+    if not metric_data.get("training_effect") and activity.training_effect_aerobic:
+        metric_data["training_effect"] = activity.training_effect_aerobic
+
+    # Check if we have any meaningful data
+    has_data = any(v is not None for v in metric_data.values())
+    if not has_data:
+        return None
+
+    return ActivityMetricResponse(**metric_data)
+
+
+def _build_sensor_info(activity: Activity) -> SensorInfo:
+    """Build sensor info based on available activity data."""
+    has_power = activity.avg_power is not None and activity.avg_power > 0
+    has_dynamics = activity.avg_ground_contact_time is not None
+
+    # Determine if we have external HR monitor (vs wrist-based)
+    # If we have detailed dynamics, likely using external sensors
+    has_hr_monitor = activity.avg_hr is not None
+
+    return SensorInfo(
+        has_power_meter=has_power,
+        power_meter_name="Stryd" if has_power else None,  # Assume Stryd for running
+        has_hr_monitor=has_hr_monitor,
+        hr_monitor_name=None,  # Could be detected from FIT device_info
+        has_footpod=has_dynamics,
+        footpod_name="Stryd" if has_dynamics and has_power else None,
     )
 
 
@@ -485,6 +638,13 @@ async def download_fit_file(
             detail="FIT file not found for this activity",
         )
 
+    # Validate file path exists before serving
+    if not fit_file.file_path or not os.path.isfile(fit_file.file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="FIT file path is invalid or file has been deleted",
+        )
+
     return FileResponse(
         path=fit_file.file_path,
         filename=f"activity_{activity.garmin_id}.fit",
@@ -559,7 +719,7 @@ async def get_activity_hr_zones(
     activity_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    max_hr: int | None = Query(None, ge=100, le=250, description="User's max HR. Default: 220 - age or max from samples"),
+    max_hr: int | None = Query(None, ge=100, le=250, description="User's max HR. Default: user.max_hr (Garmin profile) or max from samples"),
 ) -> HRZonesResponse:
     """Calculate HR zone distribution for an activity.
 
@@ -745,10 +905,15 @@ async def get_activity_laps(
         # Use FIT laps directly
         laps = []
         for lap in fit_laps:
+            # Calculate proper end_time even when start_time is missing
+            lap_start = lap.start_time or activity.start_time
+            lap_duration = int(lap.duration_seconds or 0)
+            lap_end = lap_start + timedelta(seconds=lap_duration) if lap_duration > 0 else lap_start
+
             laps.append(LapResponse(
                 lap_number=lap.lap_number,
-                start_time=lap.start_time or activity.start_time,
-                end_time=lap.start_time + timedelta(seconds=int(lap.duration_seconds or 0)) if lap.start_time and lap.duration_seconds else activity.start_time,
+                start_time=lap_start,
+                end_time=lap_end,
                 duration_seconds=int(lap.duration_seconds or 0),
                 distance_meters=lap.distance_meters,
                 avg_hr=lap.avg_hr,
@@ -778,6 +943,7 @@ async def get_activity_laps(
         )
 
     # Calculate cumulative distance (if GPS data available)
+    # Note: Using "is not None" to properly handle 0.0 coordinates (equator/prime meridian)
     has_gps = any(s.latitude is not None and s.longitude is not None for s in samples)
 
     laps: list[LapResponse] = []
@@ -794,7 +960,10 @@ async def get_activity_laps(
         prev_sample = None
 
         for sample in samples:
-            if prev_sample and sample.latitude and sample.longitude and prev_sample.latitude and prev_sample.longitude:
+            # Use "is not None" to handle 0.0 coordinates (equator/prime meridian)
+            if (prev_sample and
+                sample.latitude is not None and sample.longitude is not None and
+                prev_sample.latitude is not None and prev_sample.longitude is not None):
                 # Calculate distance between points (simplified haversine)
                 lat1, lon1 = math.radians(prev_sample.latitude), math.radians(prev_sample.longitude)
                 lat2, lon2 = math.radians(sample.latitude), math.radians(sample.longitude)

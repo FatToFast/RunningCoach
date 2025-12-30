@@ -2,12 +2,11 @@ import { useState } from 'react';
 import { Outlet, Navigate } from 'react-router-dom';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
-import { useUser, useGarminStatus } from '../../hooks/useAuth';
+import { useUser } from '../../hooks/useAuth';
 
 export function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { data: user, isLoading, error } = useUser();
-  const { data: garminStatus } = useGarminStatus();
 
   // Show loading state
   if (isLoading) {
@@ -26,8 +25,6 @@ export function Layout() {
   return (
     <div className="min-h-screen">
       <Header
-        isConnected={garminStatus?.connected ?? false}
-        lastSync={garminStatus?.last_sync ?? null}
         onMenuToggle={() => setSidebarOpen(true)}
         user={user}
       />
@@ -35,7 +32,7 @@ export function Layout() {
 
       {/* Main content - responsive margin */}
       <main className="pt-16 min-h-[calc(100vh-4rem)] lg:ml-64">
-        <div className="p-4 lg:p-6 max-w-[1600px] mx-auto">
+        <div className="p-4 lg:p-6 xl:p-8">
           <Outlet />
         </div>
       </main>

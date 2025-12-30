@@ -67,6 +67,12 @@ Request
   "end_date": "2024-12-31"
 }
 ```
+지원 endpoints:
+- activities, sleep, heart_rate
+- body_battery, stress, hrv, respiration, spo2
+- training_status, max_metrics, stats
+- race_predictions, personal_records, goals
+
 Response
 ```json
 {

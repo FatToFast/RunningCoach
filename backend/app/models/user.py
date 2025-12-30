@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from app.models.strava import StravaSession, StravaSyncState
     from app.models.gear import Gear
     from app.models.strength import StrengthSession
+    from app.models.calendar_note import CalendarNote
+    from app.models.race import Race
 
 
 class User(BaseModel):
@@ -114,6 +116,16 @@ class User(BaseModel):
     )
     strength_sessions: Mapped[list["StrengthSession"]] = relationship(
         "StrengthSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    calendar_notes: Mapped[list["CalendarNote"]] = relationship(
+        "CalendarNote",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    races: Mapped[list["Race"]] = relationship(
+        "Race",
         back_populates="user",
         cascade="all, delete-orphan",
     )

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   X,
   Plus,
@@ -12,7 +12,6 @@ import {
   useExercisePresets,
   useCreateStrengthSession,
   getSessionTypeLabel,
-  getSessionPurposeLabel,
 } from '../../hooks/useStrength';
 import type { ExerciseSet, ExercisePreset } from '../../types/api';
 

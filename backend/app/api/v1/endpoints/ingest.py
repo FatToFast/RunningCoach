@@ -183,6 +183,9 @@ async def run_sync_background(
                 logger.error(f"Could not create sync service for user {user_id}")
                 return
 
+            # Sync user profile once per run (max HR, raw snapshot)
+            await sync_service.sync_user_profile()
+
             # Run sync for each endpoint
             for endpoint in endpoints:
                 try:
@@ -245,9 +248,23 @@ async def run_ingest(
     # Validate Garmin session (with API call to verify not expired)
     await validate_garmin_session(db, current_user.id, validate_with_api=True)
 
-    # Default endpoints
+    # Determine endpoints to sync
+    # - None or not provided: sync all endpoints (default)
+    # - Empty list []: explicitly means "do nothing" - return early
+    # - List with items: sync only those endpoints
     all_endpoints = GarminSyncService.ENDPOINTS
-    endpoints = request.endpoints if request and request.endpoints else all_endpoints
+
+    if request and request.endpoints is not None:
+        if len(request.endpoints) == 0:
+            # Explicit empty list means no sync requested
+            return IngestRunResponse(
+                started=False,
+                message="No endpoints specified for sync",
+                endpoints=[],
+            )
+        endpoints = request.endpoints
+    else:
+        endpoints = all_endpoints
 
     # Validate endpoints
     invalid = set(endpoints) - set(all_endpoints)
@@ -305,9 +322,19 @@ async def run_ingest_sync(
             detail="Could not initialize sync service",
         )
 
-    # Default endpoints
+    # Sync user profile once per run (max HR, raw snapshot)
+    await sync_service.sync_user_profile()
+
+    # Determine endpoints to sync (same logic as /run)
     all_endpoints = GarminSyncService.ENDPOINTS
-    endpoints = request.endpoints if request and request.endpoints else all_endpoints
+
+    if request and request.endpoints is not None:
+        if len(request.endpoints) == 0:
+            # Explicit empty list means no sync requested
+            return []
+        endpoints = request.endpoints
+    else:
+        endpoints = all_endpoints
 
     # Validate endpoints
     invalid = set(endpoints) - set(all_endpoints)
@@ -354,11 +381,25 @@ async def get_ingest_status(
     Returns:
         Sync states for all endpoints.
     """
-    # Check connection
+    # Check connection (with actual API validation for accuracy)
     session_result = await db.execute(
         select(GarminSession).where(GarminSession.user_id == current_user.id)
     )
     session = session_result.scalar_one_or_none()
+
+    # Determine if session is truly connected (validate with API if session exists)
+    is_connected = False
+    if session and session.is_valid:
+        try:
+            adapter = GarminConnectAdapter()
+            loop = asyncio.get_event_loop()
+            is_connected = await loop.run_in_executor(
+                None,
+                lambda: adapter.validate_session(session.session_data),
+            )
+        except Exception:
+            # If validation fails, session is not truly connected
+            is_connected = False
 
     # Get sync states
     result = await db.execute(
@@ -370,7 +411,7 @@ async def get_ingest_status(
     is_running = _running_jobs.get(current_user.id, False)
 
     return IngestStatusResponse(
-        connected=session is not None and session.is_valid,
+        connected=is_connected,
         running=is_running,
         sync_states=[
             SyncStateResponse(

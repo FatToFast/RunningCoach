@@ -30,6 +30,7 @@ export const mockDashboardSummary: DashboardSummary = {
       distance_km: 20.0,
       duration_seconds: 7202, // 2:00:02
       avg_pace_seconds: 360, // 6:00/km
+      avg_hr: 134,
       avg_hr_percent: 72,
       elevation_gain: null,
       calories: 1248,
@@ -47,6 +48,7 @@ export const mockDashboardSummary: DashboardSummary = {
       distance_km: 10.0,
       duration_seconds: 3120, // 52:00
       avg_pace_seconds: 312, // 5:12/km
+      avg_hr: 162,
       avg_hr_percent: 87,
       elevation_gain: 120,
       calories: 680,
@@ -64,6 +66,7 @@ export const mockDashboardSummary: DashboardSummary = {
       distance_km: 5.5,
       duration_seconds: 2100, // 35:00
       avg_pace_seconds: 382, // 6:22/km
+      avg_hr: 132,
       avg_hr_percent: 71,
       elevation_gain: 45,
       calories: 320,
@@ -81,6 +84,7 @@ export const mockDashboardSummary: DashboardSummary = {
       distance_km: 15.0,
       duration_seconds: 5700, // 1:35:00
       avg_pace_seconds: 380, // 6:20/km
+      avg_hr: 145,
       avg_hr_percent: 78,
       elevation_gain: 185,
       calories: 980,
@@ -98,6 +102,7 @@ export const mockDashboardSummary: DashboardSummary = {
       distance_km: 6.8,
       duration_seconds: 2520, // 42:00
       avg_pace_seconds: 371, // 6:11/km
+      avg_hr: 169,
       avg_hr_percent: 91,
       elevation_gain: 65,
       calories: 520,
@@ -300,6 +305,7 @@ function generateMockCalendarDays(): CalendarDay[] {
         distance_km: a.distance_km,
         duration_seconds: a.duration_minutes * 60,
         avg_pace_seconds: Math.round((a.duration_minutes * 60) / a.distance_km),
+        avg_hr: a.avg_hr,
         avg_hr_percent: Math.round((a.avg_hr / 190) * 100),
         elevation_gain: 50,
         calories: Math.round(a.distance_km * 60),

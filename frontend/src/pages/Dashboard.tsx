@@ -19,13 +19,16 @@ export function Dashboard() {
     if (!activities) return [];
 
     if (period === 'week') {
-      // 최근 8주 데이터
+      // 최근 8주 데이터 (월요일~일요일 기준, 백엔드와 일치)
       const weeks: { label: string; distance: number; isCurrent: boolean }[] = [];
       const now = new Date();
 
       for (let i = 7; i >= 0; i--) {
         const weekStart = new Date(now);
-        weekStart.setDate(now.getDate() - now.getDay() - i * 7);
+        // getDay(): 일요일=0, 월요일=1, ... 토요일=6
+        // 월요일 기준으로 변환: (getDay() + 6) % 7 → 월요일=0, 일요일=6
+        const daysSinceMonday = (now.getDay() + 6) % 7;
+        weekStart.setDate(now.getDate() - daysSinceMonday - i * 7);
         const weekEnd = new Date(weekStart);
         weekEnd.setDate(weekStart.getDate() + 6);
 
@@ -170,16 +173,16 @@ export function Dashboard() {
           <RecentActivities activities={recent_activities} />
         </div>
 
-        {/* Right Column - Calculations, Training Paces, Fitness */}
+        {/* Right Column - Fitness (부상방지 우선), Calculations, Training Paces */}
         <div className="space-y-3 sm:space-y-4">
+          {/* Fitness Gauge - 부상방지를 위해 가장 상단에 배치 */}
+          <FitnessGauge fitness={fitness_status} />
+
           {/* Calculations (Runalyze style) */}
           <CalculationsCard fitness={fitness_status} health={health_status} />
 
           {/* Training Paces (Daniels) */}
           <TrainingPacesCard paces={training_paces} />
-
-          {/* Fitness Gauge */}
-          <FitnessGauge fitness={fitness_status} />
         </div>
       </div>
     </div>

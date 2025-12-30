@@ -5,13 +5,6 @@ import {
   type StrengthSessionCreateData,
   type StrengthSessionUpdateData,
 } from '../api/strength';
-import type {
-  StrengthSession,
-  StrengthSessionListResponse,
-  StrengthSessionSummary,
-  SessionTypesResponse,
-  ExercisePresetsResponse,
-} from '../types/api';
 
 // -------------------------------------------------------------------------
 // Query Hooks

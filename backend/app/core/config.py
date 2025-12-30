@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     ai_default_language: str = "ko"
     ai_max_history_messages: int = 20
 
+    # Localization
+    default_timezone: str = "Asia/Seoul"
+
     # Strava
     strava_client_id: Optional[str] = None
     strava_client_secret: Optional[str] = None

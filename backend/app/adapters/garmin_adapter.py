@@ -793,6 +793,100 @@ class GarminConnectAdapter:
             logger.error(f"Failed to get SpO2 data: {e}")
             raise GarminAPIError(f"Failed to get SpO2 data: {e}") from e
 
+    # -------------------------------------------------------------------------
+    # Race-related Endpoints
+    # -------------------------------------------------------------------------
+
+    def get_race_predictions(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        prediction_type: str = "daily",
+    ) -> dict[str, Any]:
+        """Get race predictions based on VO2Max.
+
+        Returns predicted race times for 5K, 10K, Half Marathon, and Marathon.
+
+        Args:
+            start_date: Start date for predictions (optional).
+            end_date: End date for predictions (optional).
+            prediction_type: 'daily' or 'monthly'.
+
+        Returns:
+            Race predictions data dict.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            # Garmin API requires either all parameters or none
+            if start_date and end_date:
+                data = self._client.get_race_predictions(
+                    startdate=start_date.isoformat(),
+                    enddate=end_date.isoformat(),
+                    _type=prediction_type,
+                )
+            else:
+                # Call without date parameters
+                data = self._client.get_race_predictions()
+            status_code = 200
+            return data or {}
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get race predictions: {e}")
+            raise GarminAPIError(f"Failed to get race predictions: {e}") from e
+        finally:
+            self._observe_api_call("get_race_predictions", status_code, start_time)
+
+    def get_personal_records(self) -> list[dict[str, Any]]:
+        """Get personal records from Garmin.
+
+        Returns:
+            List of personal records.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            data = self._client.get_personal_record()
+            status_code = 200
+            return data or []
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get personal records: {e}")
+            raise GarminAPIError(f"Failed to get personal records: {e}") from e
+        finally:
+            self._observe_api_call("get_personal_records", status_code, start_time)
+
+    def get_goals(self) -> list[dict[str, Any]]:
+        """Get user goals from Garmin.
+
+        Returns:
+            List of goals.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            data = self._client.get_goals("all")
+            status_code = 200
+            return data or []
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get goals: {e}")
+            raise GarminAPIError(f"Failed to get goals: {e}") from e
+        finally:
+            self._observe_api_call("get_goals", status_code, start_time)
+
 
 # Global adapter instance (for simple single-user MVP)
 _adapter: Optional[GarminConnectAdapter] = None

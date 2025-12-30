@@ -9,7 +9,7 @@ API Reference: https://runalyze.com/help/article/personal-api
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -20,6 +20,32 @@ from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import get_settings
 from app.models.user import User
 from app.observability import get_metrics_backend
+
+
+def _parse_datetime(value: str) -> datetime:
+    """Parse datetime string with various ISO formats.
+
+    Handles:
+    - Standard ISO format: 2024-12-31T10:00:00
+    - With Z suffix: 2024-12-31T10:00:00Z
+    - With timezone offset: 2024-12-31T10:00:00+00:00
+    - With microseconds: 2024-12-31T10:00:00.123456Z
+
+    Args:
+        value: Datetime string in ISO format.
+
+    Returns:
+        Parsed datetime object.
+
+    Raises:
+        ValueError: If format is not recognized.
+    """
+    # Handle Z suffix (common in APIs)
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+
+    # Try standard fromisoformat
+    return datetime.fromisoformat(value)
 
 router = APIRouter()
 settings = get_settings()
@@ -87,6 +113,9 @@ class RunalyzeSummary(BaseModel):
     latest_sleep_duration: int | None = None
     latest_sleep_date: datetime | None = None
     avg_sleep_quality_7d: float | None = None
+    # Error tracking for partial data scenarios
+    hrv_error: str | None = None
+    sleep_error: str | None = None
 
 
 class RunalyzeCalculations(BaseModel):
@@ -230,18 +259,24 @@ async def get_hrv_data(
 
             # Parse and sort by date descending
             data_points = []
+            skipped_count = 0
             for item in raw_data:
                 try:
                     data_points.append(HRVDataPoint(
                         id=item["id"],
-                        date_time=datetime.fromisoformat(item["date_time"]),
+                        date_time=_parse_datetime(item["date_time"]),
                         hrv=item["hrv"],
                         rmssd=item.get("rmssd", item["hrv"]),
                         metric=item.get("metric", "rmssd"),
                         measurement_type=item.get("measurement_type", "unknown"),
                     ))
-                except (KeyError, ValueError):
+                except (KeyError, ValueError) as e:
+                    skipped_count += 1
+                    logger.debug("Skipped HRV item id=%s: %s", item.get("id"), e)
                     continue
+
+            if skipped_count > 0:
+                logger.warning("Skipped %d HRV items due to parsing errors", skipped_count)
 
             # Sort by date descending and limit
             data_points.sort(key=lambda x: x.date_time, reverse=True)
@@ -289,11 +324,12 @@ async def get_sleep_data(
 
             # Parse and sort by date descending
             data_points = []
+            skipped_count = 0
             for item in raw_data:
                 try:
                     data_points.append(SleepDataPoint(
                         id=item["id"],
-                        date_time=datetime.fromisoformat(item["date_time"]),
+                        date_time=_parse_datetime(item["date_time"]),
                         duration=item["duration"],
                         rem_duration=item.get("rem_duration"),
                         light_sleep_duration=item.get("light_sleep_duration"),
@@ -302,8 +338,13 @@ async def get_sleep_data(
                         quality=item.get("quality"),
                         source=item.get("source"),
                     ))
-                except (KeyError, ValueError):
+                except (KeyError, ValueError) as e:
+                    skipped_count += 1
+                    logger.debug("Skipped sleep item id=%s: %s", item.get("id"), e)
                     continue
+
+            if skipped_count > 0:
+                logger.warning("Skipped %d sleep items due to parsing errors", skipped_count)
 
             # Sort by date descending and limit
             data_points.sort(key=lambda x: x.date_time, reverse=True)
@@ -362,18 +403,32 @@ async def get_runalyze_summary(
                         if hrv_sorted:
                             summary.latest_hrv = hrv_sorted[0].get("hrv")
                             try:
-                                summary.latest_hrv_date = datetime.fromisoformat(
+                                summary.latest_hrv_date = _parse_datetime(
                                     hrv_sorted[0]["date_time"]
                                 )
                             except (KeyError, ValueError):
                                 pass
 
-                            # 7-day average
-                            recent_hrv = [h.get("hrv") for h in hrv_sorted[:7] if h.get("hrv")]
+                            # 7-day average (based on actual dates, not record count)
+                            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+                            recent_hrv = []
+                            for h in hrv_sorted:
+                                try:
+                                    dt = _parse_datetime(h["date_time"])
+                                    if dt >= seven_days_ago and h.get("hrv"):
+                                        recent_hrv.append(h["hrv"])
+                                except (KeyError, ValueError):
+                                    continue
                             if recent_hrv:
                                 summary.avg_hrv_7d = round(sum(recent_hrv) / len(recent_hrv), 1)
-            except Exception:
-                pass
+                else:
+                    summary.hrv_error = f"API returned status {hrv_response.status_code}"
+            except httpx.HTTPStatusError as e:
+                summary.hrv_error = f"HTTP error: {e.response.status_code}"
+                logger.warning("Runalyze HRV API error in summary: %s", e)
+            except Exception as e:
+                summary.hrv_error = "Failed to fetch HRV data"
+                logger.warning("Failed to fetch HRV data for summary: %s", e)
 
             # Fetch sleep data
             try:
@@ -392,28 +447,47 @@ async def get_runalyze_summary(
                             summary.latest_sleep_quality = sleep_sorted[0].get("quality")
                             summary.latest_sleep_duration = sleep_sorted[0].get("duration")
                             try:
-                                summary.latest_sleep_date = datetime.fromisoformat(
+                                summary.latest_sleep_date = _parse_datetime(
                                     sleep_sorted[0]["date_time"]
                                 )
                             except (KeyError, ValueError):
                                 pass
 
-                            # 7-day average quality
-                            recent_quality = [
-                                s.get("quality")
-                                for s in sleep_sorted[:7]
-                                if s.get("quality") is not None
-                            ]
+                            # 7-day average quality (based on actual dates)
+                            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+                            recent_quality = []
+                            for s in sleep_sorted:
+                                try:
+                                    dt = _parse_datetime(s["date_time"])
+                                    if dt >= seven_days_ago and s.get("quality") is not None:
+                                        recent_quality.append(s["quality"])
+                                except (KeyError, ValueError):
+                                    continue
                             if recent_quality:
                                 summary.avg_sleep_quality_7d = round(
                                     sum(recent_quality) / len(recent_quality), 1
                                 )
-            except Exception:
-                pass
+                else:
+                    summary.sleep_error = f"API returned status {sleep_response.status_code}"
+            except httpx.HTTPStatusError as e:
+                summary.sleep_error = f"HTTP error: {e.response.status_code}"
+                logger.warning("Runalyze sleep API error in summary: %s", e)
+            except Exception as e:
+                summary.sleep_error = "Failed to fetch sleep data"
+                logger.warning("Failed to fetch sleep data for summary: %s", e)
 
-    except Exception:
-        # Return empty summary on error
-        pass
+    except httpx.HTTPStatusError as e:
+        # Connection-level error - set both
+        error_msg = f"HTTP error: {e.response.status_code}"
+        summary.hrv_error = error_msg
+        summary.sleep_error = error_msg
+        logger.warning("Runalyze API connection error: %s", e)
+    except Exception as e:
+        # Connection-level error - set both
+        error_msg = "Failed to connect to Runalyze"
+        summary.hrv_error = error_msg
+        summary.sleep_error = error_msg
+        logger.warning("Failed to connect to Runalyze for summary: %s", e)
 
     return summary
 

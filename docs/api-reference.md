@@ -201,12 +201,18 @@ Garmin에서 데이터를 동기화합니다.
 }
 ```
 
+지원 endpoints:
+- activities, sleep, heart_rate
+- body_battery, stress, hrv, respiration, spo2
+- training_status, max_metrics, stats
+- race_predictions, personal_records, goals
+
 ### POST `/ingest/run` Response
 
 ```json
 {
   "started": true,
-  "message": "Sync started",
+  "message": "Sync started in background",
   "endpoints": ["activities", "sleep", "heart_rate"],
   "sync_id": "sync_1_1735632000"
 }
@@ -760,7 +766,7 @@ HR존별 시간 분포를 계산합니다.
 | POST | `/ai/chat` | 빠른 채팅 (대화 자동 생성) |
 | GET | `/ai/conversations` | 대화 목록 |
 | POST | `/ai/conversations` | 새 대화 생성 |
-| GET | `/ai/conversations/{id}` | 대화 상세 (메시지 포함) |
+| GET | `/ai/conversations/{id}` | 대화 상세 (메시지 포함, 페이지네이션) |
 | DELETE | `/ai/conversations/{id}` | 대화 삭제 |
 | POST | `/ai/conversations/{id}/chat` | 대화에 메시지 전송 |
 | POST | `/ai/import` | 수동 플랜 JSON import |
@@ -772,6 +778,37 @@ HR존별 시간 분포를 계산합니다.
 {
   "title": "마라톤 훈련 계획",
   "language": "ko"
+}
+```
+
+### GET `/ai/conversations/{id}` Query Parameters
+
+| Parameter | Type | Default | 설명 |
+|-----------|------|---------|------|
+| limit | int | 50 | 반환할 메시지 수 (1-100) |
+| offset | int | 0 | 건너뛸 메시지 수 |
+
+### GET `/ai/conversations/{id}` Response
+
+```json
+{
+  "id": 10,
+  "title": "마라톤 훈련 계획",
+  "language": "ko",
+  "model": "gpt-4o-mini",
+  "messages": [
+    {
+      "id": 101,
+      "role": "user",
+      "content": "이번 주 템포런 계획을 조정해줘",
+      "tokens": 12,
+      "created_at": "2024-12-01T09:10:00Z"
+    }
+  ],
+  "total_messages": 42,
+  "has_more": true,
+  "created_at": "2024-12-01T09:00:00Z",
+  "updated_at": "2024-12-01T09:10:02Z"
 }
 ```
 
@@ -855,6 +892,8 @@ Response:
 **Note:**
 - `start_date`는 import 시점(오늘) 기준으로 자동 설정
 - `end_date`는 `goal_date` 또는 `weeks * 7일`로 계산
+- Workout `structure`는 **단계 목록**(list of steps)입니다 (`{"steps": [...]}` 형태가 아님)
+- Workout `notes`는 전용 필드로 저장됩니다 (`target.notes`가 아님)
 
 ---
 
@@ -952,10 +991,29 @@ Response:
 |--------|----------|------|
 | POST | `/plans` | 훈련 계획 생성 |
 | GET | `/plans` | 계획 목록 |
-| GET | `/plans/{id}` | 계획 상세 |
-| PUT | `/plans/{id}` | 계획 수정 |
-| POST | `/plans/{id}/approve` | 계획 승인 |
-| POST | `/plans/{id}/sync` | Garmin 동기화 |
+| GET | `/plans/{id}` | 계획 상세 (주차 포함) |
+| PATCH | `/plans/{id}` | 계획 수정 (status 제외) |
+| DELETE | `/plans/{id}` | 계획 삭제 |
+| POST | `/plans/{id}/approve` | 계획 승인 (draft → approved) |
+| POST | `/plans/{id}/activate` | 계획 활성화 (approved → active) |
+| POST | `/plans/{id}/weeks` | 주차 추가 |
+
+### Plan Status Flow
+
+```
+draft → approved → active
+```
+
+- **draft**: 초안 상태, 수정 가능
+- **approved**: 승인됨, 활성화 대기
+- **active**: 진행 중, 주차 추가 불가
+
+### POST `/plans/{id}/weeks` Validation
+
+- week_index는 1 이상이어야 함
+- week_index는 계획 기간 내 (총 주차 수 이하)
+- 동일 plan 내 week_index 중복 불가
+- active 상태 플랜에는 주차 추가 불가
 
 ---
 
@@ -1122,6 +1180,129 @@ Response:
 
 ---
 
+## Runalyze 연동
+
+Runalyze API를 통해 건강 지표와 훈련 계산 데이터를 가져옵니다.
+
+**설정:** `RUNALYZE_API_TOKEN` 환경변수에 Runalyze Personal API 토큰 설정 필요
+
+| Method | Endpoint | 설명 |
+|--------|----------|------|
+| GET | `/runalyze/status` | 연결 상태 확인 |
+| GET | `/runalyze/hrv` | HRV 측정값 목록 |
+| GET | `/runalyze/sleep` | 수면 데이터 목록 |
+| GET | `/runalyze/summary` | 건강 지표 요약 (최신 + 7일 평균) |
+| GET | `/runalyze/calculations` | 훈련 계산 (VO2max, CTL/ATL/TSB, A:C ratio 등) |
+| GET | `/runalyze/training-paces` | Daniels 기반 훈련 페이스 |
+
+### GET `/runalyze/hrv` Query Parameters
+
+| Parameter | Type | Default | 설명 |
+|-----------|------|---------|------|
+| limit | int | 30 | 반환할 레코드 수 (1-365) |
+
+### GET `/runalyze/hrv` Response
+
+```json
+{
+  "data": [
+    {
+      "id": 123,
+      "date_time": "2024-12-30T07:00:00Z",
+      "hrv": 45.5,
+      "rmssd": 45.5,
+      "metric": "rmssd",
+      "measurement_type": "morning"
+    }
+  ],
+  "count": 30
+}
+```
+
+### GET `/runalyze/sleep` Query Parameters
+
+| Parameter | Type | Default | 설명 |
+|-----------|------|---------|------|
+| limit | int | 30 | 반환할 레코드 수 (1-365) |
+
+### GET `/runalyze/sleep` Response
+
+```json
+{
+  "data": [
+    {
+      "id": 456,
+      "date_time": "2024-12-30T06:00:00Z",
+      "duration": 28800,
+      "rem_duration": 5400,
+      "light_sleep_duration": 14400,
+      "deep_sleep_duration": 7200,
+      "awake_duration": 1800,
+      "quality": 85,
+      "source": "garmin"
+    }
+  ],
+  "count": 30
+}
+```
+
+### GET `/runalyze/summary` Response
+
+```json
+{
+  "latest_hrv": 48.5,
+  "latest_hrv_date": "2024-12-30T07:00:00Z",
+  "avg_hrv_7d": 45.2,
+  "latest_sleep_quality": 85,
+  "latest_sleep_duration": 28800,
+  "latest_sleep_date": "2024-12-30T06:00:00Z",
+  "avg_sleep_quality_7d": 82.5,
+  "hrv_error": null,
+  "sleep_error": null
+}
+```
+
+**Note:** `hrv_error` / `sleep_error` 필드는 해당 데이터 조회 실패 시 오류 메시지를 포함합니다.
+부분 데이터 조회가 가능하며, 한쪽 실패 시에도 다른 쪽 데이터는 정상 반환됩니다.
+
+### GET `/runalyze/calculations` Response
+
+```json
+{
+  "effective_vo2max": 52.4,
+  "marathon_shape": 85.0,
+  "atl": 72.5,
+  "ctl": 58.2,
+  "tsb": -14.3,
+  "workload_ratio": 1.24,
+  "rest_days": 2.0,
+  "monotony": 25.0,
+  "training_strain": 450.0
+}
+```
+
+### GET `/runalyze/training-paces` Response
+
+```json
+{
+  "vdot": 48.5,
+  "easy_min": 343,
+  "easy_max": 430,
+  "marathon_min": 302,
+  "marathon_max": 338,
+  "threshold_min": 276,
+  "threshold_max": 288,
+  "interval_min": 254,
+  "interval_max": 267,
+  "repetition_min": 231,
+  "repetition_max": 242
+}
+```
+
+**Note:** 페이스 값은 초/km 단위입니다. 예: 343초 = 5:43/km
+
+---
+
 ## 레거시 경로 (Legacy Routes)
 
 하위 호환성을 위해 일부 레거시 경로를 지원합니다.
@@ -1213,3 +1394,4 @@ Response:
 | v1.3 | 2024-12-30 | Gear API 추가, 대시보드 기간 계산 달력 기준으로 변경 |
 | v1.4 | 2024-12-30 | Garmin 인증 API 문서화, health_status/trends 데이터 연결 |
 | v1.5 | 2024-12-30 | 보안 강화: 에러 메시지 일반화 (Auth/Strava/Runalyze), 레거시 라우트 리다이렉트 헤더 수정, Strava refresh 문서 추가 |
+| v1.6 | 2024-12-31 | AI 대화 메시지 페이지네이션 추가 (limit/offset), Workout structure/notes 필드 명확화, /ai/export avg_hr 버그 수정 |

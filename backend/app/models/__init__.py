@@ -11,6 +11,8 @@ from app.models.ai import AIConversation, AIMessage, AIImport
 from app.models.strava import StravaSession, StravaSyncState, StravaActivityMap
 from app.models.gear import Gear, ActivityGear, GearType, GearStatus
 from app.models.strength import StrengthSession, StrengthExercise
+from app.models.calendar_note import CalendarNote
+from app.models.race import Race
 
 __all__ = [
     # User
@@ -56,4 +58,8 @@ __all__ = [
     # Strength
     "StrengthSession",
     "StrengthExercise",
+    # Calendar
+    "CalendarNote",
+    # Race
+    "Race",
 ]
