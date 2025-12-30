@@ -1,11 +1,14 @@
 """Strava integration endpoints."""
 
+import asyncio
 import logging
 import secrets
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -218,8 +221,6 @@ async def handle_strava_callback(
     Returns:
         Callback result.
     """
-    import httpx
-
     # Validate OAuth state for CSRF protection
     if not _validate_oauth_state(request.state, current_user.id):
         raise HTTPException(
@@ -374,8 +375,6 @@ async def refresh_strava_tokens(
     Returns:
         Refresh result.
     """
-    import httpx
-
     result = await db.execute(
         select(StravaSession).where(StravaSession.user_id == current_user.id)
     )
@@ -686,13 +685,144 @@ async def upload_single_activity(
             status="uploaded",
         )
 
-    # TODO: Implement actual Strava upload
-    # strava_id = await strava_client.upload_activity(activity, session.access_token)
+    # Check if FIT file exists
+    if not activity.has_fit_file or not activity.fit_file_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Activity does not have a FIT file for upload",
+        )
 
-    return UploadStatusResponse(
-        activity_id=activity.id,
-        garmin_id=activity.garmin_id,
-        strava_activity_id=None,
-        uploaded_at=None,
-        status="pending",
-    )
+    # Upload to Strava
+    fit_path = Path(activity.fit_file_path)
+    if not fit_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="FIT file not found on disk",
+        )
+
+    # Ensure token is valid (refresh if needed)
+    if session.expires_at and session.expires_at <= datetime.now(timezone.utc):
+        # Auto-refresh token
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://www.strava.com/oauth/token",
+                    data={
+                        "client_id": settings.strava_client_id,
+                        "client_secret": settings.strava_client_secret,
+                        "refresh_token": session.refresh_token,
+                        "grant_type": "refresh_token",
+                    },
+                )
+                response.raise_for_status()
+                tokens = response.json()
+                session.access_token = tokens["access_token"]
+                session.refresh_token = tokens["refresh_token"]
+                session.expires_at = datetime.fromtimestamp(tokens["expires_at"], tz=timezone.utc)
+                await db.flush()
+        except Exception:
+            logger.exception("Failed to refresh Strava token")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Strava token expired. Please reconnect.",
+            )
+
+    metrics = get_metrics_backend()
+    start_time = time.perf_counter()
+    upload_status_code = 500
+    try:
+        async with httpx.AsyncClient() as client:
+            with fit_path.open("rb") as f:
+                files = {"file": (fit_path.name, f, "application/octet-stream")}
+                data = {
+                    "data_type": "fit",
+                    "name": activity.name or f"Run {activity.start_time.strftime('%Y-%m-%d')}",
+                    "activity_type": "run",
+                }
+                response = await client.post(
+                    "https://www.strava.com/api/v3/uploads",
+                    headers={"Authorization": f"Bearer {session.access_token}"},
+                    files=files,
+                    data=data,
+                    timeout=60.0,
+                )
+                upload_status_code = response.status_code
+                response.raise_for_status()
+                upload_result = response.json()
+
+        # Strava returns upload_id, activity_id comes later
+        # We'll store the upload_id temporarily and poll for completion
+        upload_id = upload_result.get("id")
+        strava_activity_id = upload_result.get("activity_id")
+
+        # If activity_id is not yet available, poll for it (up to 3 attempts)
+        if not strava_activity_id and upload_id:
+            for _ in range(3):
+                await asyncio.sleep(2)
+                async with httpx.AsyncClient() as client:
+                    check_response = await client.get(
+                        f"https://www.strava.com/api/v3/uploads/{upload_id}",
+                        headers={"Authorization": f"Bearer {session.access_token}"},
+                    )
+                    if check_response.status_code == 200:
+                        check_result = check_response.json()
+                        strava_activity_id = check_result.get("activity_id")
+                        if strava_activity_id:
+                            break
+
+        # Create mapping record
+        strava_map = StravaActivityMap(
+            activity_id=activity.id,
+            strava_activity_id=strava_activity_id,
+        )
+        db.add(strava_map)
+
+        # Update sync state
+        sync_result = await db.execute(
+            select(StravaSyncState).where(StravaSyncState.user_id == current_user.id)
+        )
+        sync_state = sync_result.scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+
+        if sync_state:
+            sync_state.last_sync_at = now
+            sync_state.last_success_at = now
+        else:
+            sync_state = StravaSyncState(
+                user_id=current_user.id,
+                last_sync_at=now,
+                last_success_at=now,
+            )
+            db.add(sync_state)
+
+        await db.commit()
+        await db.refresh(strava_map)
+
+        return UploadStatusResponse(
+            activity_id=activity.id,
+            garmin_id=activity.garmin_id,
+            strava_activity_id=strava_activity_id,
+            uploaded_at=strava_map.uploaded_at,
+            status="uploaded",
+        )
+
+    except httpx.HTTPStatusError as e:
+        logger.exception("Strava upload failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to upload to Strava. Please try again.",
+        )
+    except Exception as e:
+        logger.exception("Unexpected error during Strava upload")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Upload failed. Please try again.",
+        )
+    finally:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        metrics.observe_external_api("strava", "upload", upload_status_code, duration_ms)
+        logger.info(
+            "Strava API upload status=%s duration_ms=%.2f",
+            upload_status_code,
+            duration_ms,
+        )

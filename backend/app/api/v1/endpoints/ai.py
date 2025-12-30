@@ -211,7 +211,7 @@ class CreateConversationRequest(BaseModel):
     """Request to create a new conversation."""
 
     title: Optional[str] = None
-    language: str = "ko"
+    language: str | None = None  # Uses AI_DEFAULT_LANGUAGE from config if not set
 
 
 @router.post("/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
@@ -233,7 +233,7 @@ async def create_conversation(
         Created conversation.
     """
     title = request.title if request else None
-    language = request.language if request else "ko"
+    language = (request.language if request and request.language else None) or settings.ai_default_language
 
     conversation = AIConversation(
         user_id=current_user.id,
@@ -393,10 +393,11 @@ async def chat(
             db=db,
         )
     except Exception as e:
+        logger.exception("AI service error in conversation chat")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"AI service error: {str(e)}",
+            detail="AI service is temporarily unavailable. Please try again.",
         )
 
     # Save AI response
@@ -447,7 +448,7 @@ async def quick_chat(
     conversation = AIConversation(
         user_id=current_user.id,
         title=request.message[:50] + "..." if len(request.message) > 50 else request.message,
-        language="ko",
+        language=settings.ai_default_language,
         model=settings.openai_model,
     )
     db.add(conversation)
@@ -471,10 +472,11 @@ async def quick_chat(
             db=db,
         )
     except Exception as e:
+        logger.exception("AI service error in quick chat")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"AI service error: {str(e)}",
+            detail="AI service is temporarily unavailable. Please try again.",
         )
 
     # Save AI response
@@ -524,13 +526,14 @@ async def _get_ai_response(
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     metrics = get_metrics_backend()
 
-    # Build message history (get most recent 20 messages, ordered chronologically)
+    # Build message history (get most recent N messages, ordered chronologically)
     # Note: user_message is not yet committed, so we won't get duplicates
+    history_limit = settings.ai_max_history_messages
     msg_result = await db.execute(
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation.id)
         .order_by(AIMessage.created_at.desc())
-        .limit(20)  # Limit context window to most recent
+        .limit(history_limit)
     )
     # Reverse to get chronological order (oldest first)
     history = list(reversed(msg_result.scalars().all()))
@@ -718,10 +721,11 @@ async def import_plan(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception("Plan import failed")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Import failed: {str(e)}",
+            detail="Import failed. Please check the plan format and try again.",
         )
 
 

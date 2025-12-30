@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_budget_usd: Optional[float] = None
 
+    # AI Coach settings
+    ai_default_language: str = "ko"
+    ai_max_history_messages: int = 20
+
     # Strava
     strava_client_id: Optional[str] = None
     strava_client_secret: Optional[str] = None

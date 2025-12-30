@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import {
   LineChart,
   Line,
@@ -11,6 +11,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
+import type { ValueType } from 'recharts/types/component/DefaultTooltipContent';
 import { TrendingUp, TrendingDown, Activity, Heart } from 'lucide-react';
 import { useTrends } from '../hooks/useDashboard';
 
@@ -62,8 +63,8 @@ function formatPace(seconds: number) {
 
 interface TooltipPayloadEntry {
   name: string;
-  value: number;
-  color: string;
+  value: ValueType;
+  color?: string;
 }
 
 interface CustomTooltipProps {
@@ -79,9 +80,9 @@ function CustomTooltip({ active, payload, label, selectedMetric, unit }: CustomT
     return (
       <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-lg p-3 shadow-lg">
         <p className="text-sm text-muted mb-1">{label}</p>
-        {payload.map((entry, index) => (
+        {payload.map((entry: TooltipPayloadEntry, index: number) => (
           <p key={index} className="text-sm font-mono" style={{ color: entry.color }}>
-            {entry.name}: {selectedMetric === 'pace' ? formatPace(entry.value) : entry.value}
+            {entry.name}: {selectedMetric === 'pace' ? formatPace(Number(entry.value)) : entry.value}
             {unit && ` ${unit}`}
           </p>
         ))}
@@ -94,6 +95,16 @@ function CustomTooltip({ active, payload, label, selectedMetric, unit }: CustomT
 export function Trends() {
   const [selectedMetric, setSelectedMetric] = useState<MetricType>('distance');
   const { data: trends, isLoading, error } = useTrends(12);
+  const config = metricConfig[selectedMetric];
+
+  // useCallback must be called before any early returns
+  const renderTooltip = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (props: any) => (
+      <CustomTooltip {...props} selectedMetric={selectedMetric} unit={config.unit} />
+    ),
+    [selectedMetric, config.unit]
+  );
 
   if (isLoading) {
     return (
@@ -148,7 +159,6 @@ export function Trends() {
   };
 
   const chartData = getChartData();
-  const config = metricConfig[selectedMetric];
 
   // Calculate trend
   const calculateTrend = () => {
@@ -180,10 +190,6 @@ export function Trends() {
   // For pace and HR, lower is better
   const isPositiveTrend =
     selectedMetric === 'pace' || selectedMetric === 'hr' ? trend < 0 : trend > 0;
-
-  const renderTooltip = (props: { active?: boolean; payload?: TooltipPayloadEntry[]; label?: string }) => (
-    <CustomTooltip {...props} selectedMetric={selectedMetric} unit={config.unit} />
-  );
 
   return (
     <div className="space-y-6">

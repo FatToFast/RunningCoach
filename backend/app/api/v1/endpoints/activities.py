@@ -347,29 +347,56 @@ async def get_activity_samples(
         is_downsampled = True
         step = total_count // downsample
 
-        # Use NTILE or modulo-based sampling in SQL for efficiency
-        # For PostgreSQL: use row_number() % step = 0
-        # Fallback for SQLite: offset-based sampling
-        from sqlalchemy import text
-
-        # Get evenly distributed sample IDs using SQL
+        # DB-based downsampling using window function (PostgreSQL only)
         # This avoids loading all samples into memory
-        sample_query = (
-            select(ActivitySample)
+        from sqlalchemy.sql.expression import func as sql_func
+
+        # Create subquery with row numbers
+        row_num = sql_func.row_number().over(
+            partition_by=ActivitySample.activity_id,
+            order_by=ActivitySample.timestamp.asc()
+        ).label("row_num")
+
+        subq = (
+            select(ActivitySample, row_num)
             .where(ActivitySample.activity_id == activity_id)
-            .order_by(ActivitySample.timestamp.asc())
-            .offset(0)  # Start from beginning
+            .subquery()
         )
 
-        # Execute with streaming for memory efficiency
-        result = await db.execute(sample_query)
-        all_samples_iter = result.scalars()
+        # Select every step-th row (row_num % step = 1)
+        sample_query = (
+            select(subq)
+            .where((subq.c.row_num - 1) % step == 0)
+            .order_by(subq.c.timestamp.asc())
+            .limit(downsample)
+        )
 
-        # Pick every `step`-th sample
+        result = await db.execute(sample_query)
+        rows = result.all()
+
+        # Convert rows to objects (subquery returns tuples)
         samples = []
-        for i, sample in enumerate(all_samples_iter):
-            if i % step == 0 and len(samples) < downsample:
-                samples.append(sample)
+        for row in rows:
+            sample = ActivitySample(
+                id=row.id,
+                activity_id=row.activity_id,
+                timestamp=row.timestamp,
+                elapsed_seconds=row.elapsed_seconds,
+                hr=row.hr,
+                heart_rate=row.heart_rate,
+                pace_seconds=row.pace_seconds,
+                speed=row.speed,
+                cadence=row.cadence,
+                power=row.power,
+                latitude=row.latitude,
+                longitude=row.longitude,
+                altitude=row.altitude,
+                distance_meters=row.distance_meters,
+                ground_contact_time=row.ground_contact_time,
+                vertical_oscillation=row.vertical_oscillation,
+                stride_length=row.stride_length,
+            )
+            samples.append(sample)
     else:
         # Regular pagination mode (downsample not requested or not needed)
         result = await db.execute(
