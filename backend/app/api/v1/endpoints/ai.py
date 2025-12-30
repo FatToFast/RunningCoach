@@ -130,12 +130,19 @@ class PlanWeekSchema(BaseModel):
 
 
 class PlanImportRequest(BaseModel):
-    """Request to import a training plan from external source."""
+    """Request to import a training plan from external source.
+
+    Date calculation rules:
+    1. start_date provided: use as-is
+    2. start_date not provided + goal_date provided: start_date = goal_date - (weeks * 7 days)
+    3. Neither provided: start_date = today, end_date = today + (weeks * 7 days)
+    """
 
     source: str = "manual"  # manual, chatgpt, other
     plan_name: str
     goal_type: str  # marathon, half, 10k, 5k, fitness
-    goal_date: str | None = None  # ISO date string
+    start_date: str | None = None  # ISO date string (optional)
+    goal_date: str | None = None  # ISO date string (race day / plan end)
     goal_time: str | None = None  # e.g., "3:30:00"
     weeks: list[PlanWeekSchema]
     notes: str | None = None
@@ -527,7 +534,7 @@ async def _get_ai_response(
     metrics = get_metrics_backend()
 
     # Build message history (get most recent N messages, ordered chronologically)
-    # Note: user_message is not yet committed, so we won't get duplicates
+    # Note: user_message is not yet committed, so we won't get duplicates from DB
     history_limit = settings.ai_max_history_messages
     msg_result = await db.execute(
         select(AIMessage)
@@ -536,7 +543,15 @@ async def _get_ai_response(
         .limit(history_limit)
     )
     # Reverse to get chronological order (oldest first)
-    history = list(reversed(msg_result.scalars().all()))
+    history_raw = list(reversed(msg_result.scalars().all()))
+
+    # Deduplicate consecutive messages with same role and content
+    # (can happen due to retry logic or frontend bugs)
+    history: list = []
+    for msg in history_raw:
+        if history and history[-1].role == msg.role and history[-1].content == msg.content:
+            continue  # Skip duplicate
+        history.append(msg)
 
     # System prompt for running coach
     system_prompt = """당신은 전문 러닝 코치입니다. 사용자의 훈련 데이터와 목표를 기반으로 과학적이고 개인화된 훈련 계획을 제공합니다.
@@ -634,6 +649,17 @@ async def import_plan(
                 detail="Plan must have at least one week",
             )
 
+        # Parse start_date if provided
+        start_date_parsed = None
+        if request.start_date:
+            try:
+                start_date_parsed = date.fromisoformat(request.start_date.split("T")[0])
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid start_date format: {request.start_date}",
+                )
+
         # Parse goal date if provided
         goal_date_parsed = None
         if request.goal_date:
@@ -646,13 +672,23 @@ async def import_plan(
                 )
 
         # Calculate plan start_date and end_date
-        # start_date: today (or provided start)
-        # end_date: goal_date or start_date + (weeks * 7 days)
-        plan_start_date = date.today()
-        if goal_date_parsed:
+        # Rules:
+        # 1. start_date provided: use as-is
+        # 2. start_date not provided + goal_date provided: start_date = goal_date - (weeks * 7 days)
+        # 3. Neither provided: start_date = today, end_date = today + (weeks * 7 days)
+        plan_duration = timedelta(weeks=len(request.weeks))
+
+        if start_date_parsed:
+            plan_start_date = start_date_parsed
+            plan_end_date = goal_date_parsed if goal_date_parsed else (plan_start_date + plan_duration)
+        elif goal_date_parsed:
+            # Backtrack from goal date
             plan_end_date = goal_date_parsed
+            plan_start_date = goal_date_parsed - plan_duration
         else:
-            plan_end_date = plan_start_date + timedelta(weeks=len(request.weeks))
+            # Default: start today
+            plan_start_date = date.today()
+            plan_end_date = plan_start_date + plan_duration
 
         # Create plan (map request fields to model fields)
         plan = Plan(
