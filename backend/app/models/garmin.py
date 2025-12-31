@@ -80,6 +80,7 @@ class GarminSyncState(BaseModel):
     last_success_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+        index=True,  # Index for ORDER BY queries
     )
     cursor: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

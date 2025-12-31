@@ -36,14 +36,11 @@ metrics_backend = get_metrics_backend()
 # CORS middleware
 # Note: When allow_credentials=True, allow_origins cannot be ["*"]
 # Must specify explicit origins for credentials to work
+# Configure via CORS_ORIGINS env var (comma-separated list)
+cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
-        "http://localhost:3000",  # Alternative dev port
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

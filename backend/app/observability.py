@@ -506,7 +506,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
             route = request.scope.get("route")
             route_path = getattr(route, "path", None)
-            path = route_path or request.url.path
+            # Normalize unmatched paths to avoid label cardinality explosion
+            path = route_path or "/__unknown__"
 
             if self.metrics:
                 self.metrics.observe_request(

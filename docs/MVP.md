@@ -575,9 +575,9 @@ CREATE TABLE strava_activity_map (
 | GET | /api/v1/auth/me | 현재 사용자 |
 | POST | /api/v1/auth/garmin/connect | Garmin 계정 연결 |
 | POST | /api/v1/auth/garmin/refresh | 세션 갱신 |
-| POST | /api/v1/auth/strava/connect | Strava 계정 연결 |
-| POST | /api/v1/auth/strava/refresh | Strava 세션 갱신 |
-| GET | /api/v1/auth/strava/status | Strava 연결 상태 |
+| GET | /api/v1/strava/connect | Strava OAuth 시작 (auth_url 반환) |
+| GET | /api/v1/strava/callback | Strava OAuth 콜백 |
+| GET | /api/v1/strava/status | Strava 연결 상태 |
 
 ### 데이터 수집
 | Method | Endpoint | 설명 |

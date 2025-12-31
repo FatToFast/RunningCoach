@@ -1,17 +1,22 @@
 import { useState } from 'react';
-import { Link2, Link2Off, RefreshCw, AlertCircle, CheckCircle2, User, Watch } from 'lucide-react';
+import { Link2, Link2Off, RefreshCw, AlertCircle, CheckCircle2, User, Watch, Download, Loader2 } from 'lucide-react';
 import { useGarminStatus, useConnectGarmin, useDisconnectGarmin, useUser } from '../hooks/useAuth';
+import { useGarminSync, useGarminSyncStatus } from '../hooks/useGarminSync';
 
 export function Settings() {
   const { data: user } = useUser();
   const { data: garminStatus, isLoading: garminLoading } = useGarminStatus();
+  const { data: syncStatus } = useGarminSyncStatus();
   const connectGarmin = useConnectGarmin();
   const disconnectGarmin = useDisconnectGarmin();
+  const syncMutation = useGarminSync();
 
   const [garminEmail, setGarminEmail] = useState('');
   const [garminPassword, setGarminPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  const isSyncing = syncMutation.isPending || syncStatus?.running;
 
   const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,6 +57,38 @@ export function Settings() {
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
         '연동 해제에 실패했습니다.';
+      setError(message);
+    }
+  };
+
+  const handleFullSync = async () => {
+    if (!confirm('전체 히스토리를 다시 동기화합니다. 시간이 오래 걸릴 수 있습니다. 계속하시겠습니까?')) return;
+
+    setError(null);
+    setSuccess(null);
+
+    try {
+      await syncMutation.mutateAsync({ full_backfill: true });
+      setSuccess('전체 동기화가 시작되었습니다. 백그라운드에서 진행됩니다.');
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        '동기화 시작에 실패했습니다.';
+      setError(message);
+    }
+  };
+
+  const handleIncrementalSync = async () => {
+    setError(null);
+    setSuccess(null);
+
+    try {
+      await syncMutation.mutateAsync({});
+      setSuccess('동기화가 시작되었습니다.');
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        '동기화 시작에 실패했습니다.';
       setError(message);
     }
   };
@@ -146,7 +183,32 @@ export function Settings() {
               </div>
             </div>
 
-            <div className="flex gap-3 pt-2">
+            <div className="flex flex-wrap gap-3 pt-2">
+              <button
+                onClick={handleIncrementalSync}
+                disabled={isSyncing}
+                className="flex items-center gap-2 px-4 py-2 bg-cyan/10 text-cyan rounded-lg hover:bg-cyan/20 transition-colors disabled:opacity-50"
+              >
+                {isSyncing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4" />
+                )}
+                {isSyncing ? '동기화 중...' : '새 데이터 동기화'}
+              </button>
+              <button
+                onClick={handleFullSync}
+                disabled={isSyncing}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-500/10 text-amber-400 rounded-lg hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                title="전체 히스토리를 처음부터 다시 동기화합니다"
+              >
+                {isSyncing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+                전체 동기화
+              </button>
               <button
                 onClick={handleDisconnect}
                 disabled={disconnectGarmin.isPending}
@@ -212,8 +274,27 @@ export function Settings() {
       {garminStatus?.connected && (
         <div className="card p-6">
           <h3 className="font-display font-semibold mb-3">동기화 정보</h3>
+
+          {/* Sync Type Explanation */}
+          <div className="mb-4 p-4 bg-[var(--color-bg-tertiary)] rounded-lg">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div>
+                <h4 className="font-medium text-cyan mb-1">새 데이터 동기화</h4>
+                <p className="text-muted">
+                  마지막 동기화 이후의 새로운 데이터만 가져옵니다. 빠르고 효율적입니다.
+                </p>
+              </div>
+              <div>
+                <h4 className="font-medium text-amber-400 mb-1">전체 동기화</h4>
+                <p className="text-muted">
+                  처음부터 모든 히스토리를 다시 가져옵니다. 데이터가 많으면 시간이 오래 걸릴 수 있습니다.
+                </p>
+              </div>
+            </div>
+          </div>
+
           <p className="text-muted text-sm">
-            Garmin Connect에서 다음 데이터가 자동으로 동기화됩니다:
+            Garmin Connect에서 다음 데이터가 동기화됩니다:
           </p>
           <ul className="mt-3 space-y-2 text-sm">
             <li className="flex items-center gap-2">
@@ -227,6 +308,10 @@ export function Settings() {
             <li className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-green-400" />
               수면 데이터
+            </li>
+            <li className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-green-400" />
+              스트레스/바디배터리
             </li>
             <li className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-green-400" />

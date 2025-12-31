@@ -27,7 +27,7 @@ from app.adapters.garmin_adapter import (
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import verify_password
-from app.core.session import create_session, delete_session, get_session
+from app.core.session import create_session, delete_session, get_session, refresh_session
 from app.models.garmin import GarminSession, GarminSyncState
 from app.models.user import User
 
@@ -125,8 +125,11 @@ async def get_current_user(
             detail="Session expired or invalid",
         )
 
+    # Validate session data before refreshing TTL
     user_id = session_data.get("user_id")
     if not user_id:
+        # Invalid session data - delete it and reject
+        await delete_session(session_id)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid session data",
@@ -136,10 +139,15 @@ async def get_current_user(
     user = result.scalar_one_or_none()
 
     if not user:
+        # User no longer exists - delete session and reject
+        await delete_session(session_id)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
+
+    # Sliding expiry: refresh TTL only after full validation
+    await refresh_session(session_id)
 
     return user
 
@@ -391,11 +399,17 @@ async def refresh_garmin_session(
         )
 
 
-@router.delete("/garmin/disconnect", status_code=status.HTTP_204_NO_CONTENT)
+class DisconnectResponse(BaseModel):
+    """Response for disconnect endpoints."""
+
+    message: str
+
+
+@router.delete("/garmin/disconnect", response_model=DisconnectResponse)
 async def disconnect_garmin(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-) -> None:
+) -> DisconnectResponse:
     """Disconnect Garmin account."""
     result = await db.execute(
         select(GarminSession).where(GarminSession.user_id == current_user.id)
@@ -405,6 +419,9 @@ async def disconnect_garmin(
     if session:
         await db.delete(session)
         await db.commit()
+        return DisconnectResponse(message="Garmin account disconnected")
+
+    return DisconnectResponse(message="No Garmin account was connected")
 
 
 @router.get("/garmin/status", response_model=GarminStatusResponse)

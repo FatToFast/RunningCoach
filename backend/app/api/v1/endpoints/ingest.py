@@ -274,6 +274,14 @@ async def run_ingest(
             detail=f"Invalid endpoints: {invalid}. Valid: {all_endpoints}",
         )
 
+    # Validate date range
+    if request and request.start_date and request.end_date:
+        if request.start_date > request.end_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="start_date must be before or equal to end_date",
+            )
+
     # Start background sync
     background_tasks.add_task(
         run_sync_background,
@@ -374,6 +382,9 @@ async def get_ingest_status(
 ) -> IngestStatusResponse:
     """Get ingestion status for all endpoints.
 
+    This is a lightweight status check that does NOT validate with Garmin API.
+    Use /auth/garmin/status for accurate connection validation.
+
     Args:
         current_user: Authenticated user.
         db: Database session.
@@ -381,25 +392,12 @@ async def get_ingest_status(
     Returns:
         Sync states for all endpoints.
     """
-    # Check connection (with actual API validation for accuracy)
+    # Check if Garmin session exists (no API validation - fast check)
     session_result = await db.execute(
         select(GarminSession).where(GarminSession.user_id == current_user.id)
     )
     session = session_result.scalar_one_or_none()
-
-    # Determine if session is truly connected (validate with API if session exists)
-    is_connected = False
-    if session and session.is_valid:
-        try:
-            adapter = GarminConnectAdapter()
-            loop = asyncio.get_event_loop()
-            is_connected = await loop.run_in_executor(
-                None,
-                lambda: adapter.validate_session(session.session_data),
-            )
-        except Exception:
-            # If validation fails, session is not truly connected
-            is_connected = False
+    is_connected = session is not None and session.is_valid
 
     # Get sync states
     result = await db.execute(

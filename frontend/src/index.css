@@ -23,8 +23,8 @@
 
   /* Text Colors */
   --color-text-primary: #e6edf3;
-  --color-text-secondary: #8b949e;
-  --color-text-muted: #484f58;
+  --color-text-secondary: #a8b3c0;  /* Improved contrast for dark mode */
+  --color-text-muted: #6e7681;  /* Improved from #484f58 */
 
   /* Border & Glow */
   --color-border: #30363d;

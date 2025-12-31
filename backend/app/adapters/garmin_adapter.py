@@ -179,9 +179,16 @@ class GarminConnectAdapter:
         try:
             self.restore_session(session_data)
             # Make a lightweight API call to verify session
-            # get_user_summary is a simple endpoint that requires auth
-            self._client.get_user_summary(date.today().isoformat())
-            return True
+            # Use get_full_name() which doesn't require external API calls
+            # and validates that the garth session has valid tokens
+            display_name = self._client.get_full_name()
+            if display_name:
+                logger.debug(f"Session valid for user: {display_name}")
+                return True
+            # Fallback: check if garth session has valid oauth tokens
+            if hasattr(self._client, 'garth') and self._client.garth.oauth1_token:
+                return True
+            return False
         except Exception as e:
             logger.warning(f"Session validation failed: {e}")
             return False

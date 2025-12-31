@@ -10,9 +10,11 @@ export interface User {
   email: string;
   display_name: string | null;
   timezone: string;
+  last_login_at?: string | null;
 }
 
 export interface LoginResponse {
+  success: boolean;
   user: User;
   message: string;
 }

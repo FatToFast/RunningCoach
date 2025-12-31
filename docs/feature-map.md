@@ -77,7 +77,7 @@ Response
 ```json
 {
   "started": true,
-  "message": "Sync started",
+  "message": "Sync started in background",
   "endpoints": ["activities", "sleep", "heart_rate"],
   "sync_id": "sync_1_1735632000"
 }
@@ -190,26 +190,51 @@ FIT 파일 스트림 (binary)
 ```
 
 ## 디버깅 체크리스트
+
+### 요청/라우팅
 - 요청 경로/프리픽스 확인: `/api/v1` 누락 여부와 `frontend/src/api/client.ts`의 base URL
-- 인증 상태 확인: 세션 쿠키/토큰 존재 여부, `backend/app/core/session.py` 설정, CORS 허용 도메인
+- 레거시 경로 사용 여부: `backend/app/api/v1/aliases.py` (`/api/v1` prefix 아래에서만 지원, 예: `/api/v1/sync/garmin/run` → `/api/v1/ingest/run`)
+
+### 인증/세션
+- 로컬 인증 (쿠키 기반): `backend/app/core/session.py`, `config.py`의 `cookie_secure`/`cookie_samesite`
+- 외부 연동 (토큰 기반): Garmin(`garmin_sessions`), Strava(`strava_tokens`), Runalyze(`runalyze_api_token`)
+- CORS/credentials 확인: `backend/app/main.py`의 `allow_origins` + `frontend/src/api/client.ts`의 `withCredentials: true`
+- 401 리다이렉트 예외: `client.ts`의 인터셉터에서 `/garmin/`, `/strava/`, `/auth/login` 제외 여부
+
+### DB/마이그레이션
 - DB 연동 확인: 쿼리 결과 유무, `backend/app/core/config.py`의 `database_url`/`database_echo`
+- 마이그레이션 상태: `alembic current`, `alembic history` 명령으로 스키마 일치 확인
+- 모델/DB 불일치: `backend/alembic/versions/` 파일과 `backend/app/models/` 비교
+
+### 동기화/외부 API
 - 동기화 상태 확인: `/ingest/status` 결과와 `backend/app/services/sync_service.py`의 로그
 - 외부 API 확인: Garmin/Strava/Runalyze 토큰 만료·갱신 흐름, 어댑터 응답 값
 - FIT/파일 확인: `fit_storage_path` 경로, `has_fit_file` 플래그, 파일 존재 여부
-- 문서/구현 차이 확인: `docs/api-reference.md`와 `backend/app/api/v1/router.py` 비교
-- 프론트/백 스키마 확인: `frontend/src/types/api.ts`와 `response_model` 정의 불일치 여부
-- 로그 포인트: 요청 시작/끝, 사용자/세션 ID, 응답 시간(미들웨어), 예외 스택
-- 로그 포인트: 동기화 시작/종료(엔드포인트/기간), 에러, 재시도 횟수 (`backend/app/services/sync_service.py`)
-- 로그 포인트: 외부 API 요청/응답 코드 및 레이트리밋 헤더 (`backend/app/adapters/garmin_adapter.py`, `backend/app/api/v1/endpoints/strava.py`, `backend/app/api/v1/endpoints/runalyze.py`)
-- 메트릭 포인트: endpoint별 요청 수/지연(p95/p99), 4xx/5xx 비율
-- 메트릭 포인트: 동기화 성공률/처리량, FIT 다운로드 시간·바이트, 외부 API 오류율
-- 메트릭 포인트: DB 슬로우 쿼리, 커넥션 풀 사용률, 큐 적체(있다면 Celery/Redis)
+
+### 문서/스키마 일치
+- 문서/구현 차이 확인: `docs/api-reference.md`, `docs/PRD.md`, `docs/MVP.md`와 `backend/app/api/v1/router.py` 비교
+- 프론트/백 스키마 확인: `frontend/src/types/api.ts`, `frontend/src/api/auth.ts`와 백엔드 `response_model` 정의 불일치 여부
+
+### 로그 포인트
+- 요청 로그: 시작/끝, 응답 시간 (`backend/app/observability.py` 미들웨어)
+- 사용자/세션 ID: 현재 미들웨어에서 미기록 → 필요 시 `RequestLoggingMiddleware` 보강
+- 동기화 로그: 시작/종료(엔드포인트/기간), 에러, 재시도 횟수 (`backend/app/services/sync_service.py`)
+- 외부 API 로그: 요청/응답 코드 및 레이트리밋 헤더 (`backend/app/adapters/garmin_adapter.py`, `strava.py`, `runalyze.py`)
+
+### 메트릭 포인트
+- HTTP: endpoint별 요청 수/지연(p95/p99), 4xx/5xx 비율
+- 동기화: 성공률/처리량, FIT 다운로드 시간·바이트, 외부 API 오류율
+- DB: 슬로우 쿼리, 커넥션 풀 사용률, 큐 적체(Celery/Redis 사용 시)
 
 ## 관측성 설계 초안
-- 로그 포맷: 구조화(JSON) + `request_id` + `user_id` + `endpoint` + `status_code` + `elapsed_ms`
+- 로그 포맷: 구조화(JSON) + `request_id` + `method` + `path` + `route` + `status_code` + `elapsed_ms` + `client`
+  - 참고: `user_id`는 현재 미포함, 필요시 `RequestLoggingMiddleware` 보강 필요
 - 미들웨어: 요청 시작/종료 시점에 `request_id`를 발급하고 응답 헤더로 반환
 - 트레이싱: OpenTelemetry로 HTTP 요청/DB/외부 API 호출 span 연결
-- 메트릭: Prometheus 포맷으로 `http_requests_total`, `http_request_duration_seconds`, `sync_job_duration_seconds`, `fit_download_bytes_total`
+- 메트릭: Prometheus 포맷 (단위: 밀리초)
+  - `http_requests_total` - 요청 수 (method, route, status)
+  - `http_request_duration_ms` - 요청 지연 히스토그램
+  - 참고: 매칭되지 않는 경로는 `/__unknown__`으로 정규화하여 라벨 카디널리티 제한
 - 메트릭 엔드포인트: `GET /metrics` (Prometheus 텍스트, `/api/v1` 외부)
 - 경보 기준: 5xx 비율, 외부 API 오류율, 동기화 실패율, 대기 큐 적체
 - 대시보드: 요청 지연(p95/p99), 동기화 처리량, 외부 API 레이트리밋, DB 커넥션 풀
@@ -219,6 +244,8 @@ FIT 파일 스트림 (binary)
 - Backend 설정/세션/DB: `backend/app/core/config.py`, `backend/app/core/session.py`, `backend/app/core/security.py`, `backend/app/core/database.py`
 - Backend 관측성: `backend/app/observability.py`
 - Frontend 부트스트랩/라우팅: `frontend/src/main.tsx`, `frontend/src/App.tsx`
+  - SPA이므로 운영 배포 시 웹서버에서 모든 경로를 `index.html`로 rewrite 필요 (Nginx: `try_files $uri /index.html;`)
+  - 404 catch-all 라우트로 잘못된 URL 접근 시 Not Found 페이지 표시
 - 공통 API 클라이언트: `frontend/src/api/client.ts`
 
 ## 인증/세션

@@ -89,14 +89,20 @@ const mockActivityDetail: ActivityDetail = {
   name: 'Morning Easy Run',
   start_time: '2024-12-29T06:30:00',
   duration_seconds: 2760,
+  elapsed_seconds: 2820,
   distance_meters: 8200,
   calories: 520,
   avg_hr: 142,
   max_hr: 158,
   avg_pace_seconds: 337,
+  best_pace_seconds: 285,
   elevation_gain: 45,
   elevation_loss: 42,
   avg_cadence: 172,
+  max_cadence: 188,
+  training_effect_aerobic: 3.2,
+  training_effect_anaerobic: 0.8,
+  vo2max: 52.4,
   metrics: {
     trimp: 78,
     tss: 65,
@@ -106,6 +112,7 @@ const mockActivityDetail: ActivityDetail = {
     intensity_factor: 0.82, // IF (NP/FTP)
     // Stryd Power Metrics
     avg_power: 245,
+    max_power: 380,
     normalized_power: 252,
     power_to_hr: 1.73, // Pa:Hr (W/bpm)
     leg_spring_stiffness: 9.8, // kN/m
@@ -113,6 +120,7 @@ const mockActivityDetail: ActivityDetail = {
     form_power: 62,
     ground_time: 218, // ms
     vertical_oscillation: 7.2, // cm
+    stride_length: 1.18, // m
   },
   sensors: {
     has_power_meter: true,

@@ -31,7 +31,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
 
   const handleSync = () => {
     if (!isSyncing && isConnected) {
-      syncMutation.mutate();
+      syncMutation.mutate({});
     }
   };
 
@@ -73,13 +73,13 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
             RUNNING<span className="text-cyan">COACH</span>
           </h1>
 
-          {/* Connection Status & Sync Button - hidden on mobile */}
-          <div className="hidden md:flex items-center gap-3 ml-6 pl-6 border-l border-[var(--color-border)]">
+          {/* Connection Status & Sync Button */}
+          <div className="flex items-center gap-3 ml-4 md:ml-6 pl-4 md:pl-6 border-l border-[var(--color-border)]">
             {isConnected ? (
               <>
-                <span className="badge badge-live">GARMIN</span>
+                <span className="badge badge-live hidden sm:inline-flex">GARMIN</span>
                 {lastSync && (
-                  <span className="text-xs text-muted">
+                  <span className="text-xs text-[var(--color-text-secondary)] hidden lg:inline">
                     {new Date(lastSync).toLocaleTimeString()}
                   </span>
                 )}
@@ -87,17 +87,17 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
                   onClick={handleSync}
                   disabled={isSyncing}
                   className={clsx(
-                    'btn btn-secondary p-1.5 text-xs flex items-center gap-1.5',
+                    'btn btn-primary p-1.5 md:px-3 text-xs flex items-center gap-1.5',
                     isSyncing && 'opacity-70 cursor-not-allowed'
                   )}
                   title={isSyncing ? '동기화 중...' : 'Garmin 동기화'}
                 >
                   {isSyncing ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
-                    <RefreshCw className="w-3.5 h-3.5" />
+                    <RefreshCw className="w-4 h-4" />
                   )}
-                  <span className="hidden lg:inline">
+                  <span className="hidden md:inline">
                     {isSyncing ? '동기화 중' : '동기화'}
                   </span>
                 </button>
@@ -105,9 +105,10 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
             ) : (
               <Link
                 to="/settings"
-                className="text-xs text-amber hover:text-amber/80 flex items-center gap-1"
+                className="text-xs text-[var(--color-accent-amber)] hover:text-[var(--color-accent-amber-dim)] flex items-center gap-1 font-medium"
               >
-                Garmin 연결 필요
+                <span className="hidden sm:inline">Garmin 연결 필요</span>
+                <span className="sm:hidden">연결</span>
               </Link>
             )}
           </div>

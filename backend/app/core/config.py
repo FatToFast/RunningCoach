@@ -35,8 +35,11 @@ class Settings(BaseSettings):
     # Session
     session_secret: str = "change-me-in-production"
     session_ttl_seconds: int = 604800  # 7 days
-    cookie_secure: bool = True
+    cookie_secure: bool = False  # Set to True in production (HTTPS)
     cookie_samesite: str = "Lax"
+
+    # CORS
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
 
     # Security (legacy JWT - can be removed if not needed)
     secret_key: str = "change-me-in-production"

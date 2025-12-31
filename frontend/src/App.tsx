@@ -30,6 +30,15 @@ const PlaceholderPage = ({ title }: { title: string }) => (
   </div>
 );
 
+// 404 Not Found page
+const NotFound = () => (
+  <div className="card text-center py-12">
+    <h1 className="font-display text-4xl font-bold mb-4">404</h1>
+    <p className="text-muted mb-6">Page not found</p>
+    <a href="/" className="btn btn-primary">Go to Dashboard</a>
+  </div>
+);
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -51,6 +60,8 @@ function App() {
             <Route path="/workouts" element={<PlaceholderPage title="Workouts" />} />
             <Route path="/ai" element={<Coach />} />
             <Route path="/settings" element={<Settings />} />
+            {/* 404 catch-all */}
+            <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>
       </BrowserRouter>

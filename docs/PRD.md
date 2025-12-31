@@ -660,11 +660,12 @@ POST   /api/v1/workouts/:id/schedule   - 스케줄링
 
 #### Strava 동기화
 ```
-POST   /api/v1/auth/strava/connect     - Strava 계정 연결
-POST   /api/v1/auth/strava/refresh     - Strava 세션 갱신
-GET    /api/v1/auth/strava/status      - Strava 연결 상태
-POST   /api/v1/strava/sync/run         - Strava 수동 동기화
-GET    /api/v1/strava/sync/status      - Strava 동기화 상태
+GET    /api/v1/strava/connect          - Strava OAuth 시작 (auth_url 반환)
+GET    /api/v1/strava/callback         - Strava OAuth 콜백
+GET    /api/v1/strava/status           - Strava 연결 상태
+POST   /api/v1/strava/refresh          - Strava 토큰 갱신
+DELETE /api/v1/strava/disconnect       - Strava 연결 해제
+POST   /api/v1/strava/sync             - Strava 수동 동기화
 ```
 
 #### 훈련 계획 (v1.0, CRUD)
@@ -823,16 +824,17 @@ Weekly:
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| DATABASE_URL | - | PostgreSQL 연결 문자열 |
-| REDIS_URL | - | Redis 세션/캐시 |
-| SESSION_SECRET | - | 세션 서명 키 |
-| SESSION_TTL_SECONDS | 604800 | 세션 만료(초) |
-| COOKIE_SECURE | true | HTTPS에서만 쿠키 전송 |
+| DATABASE_URL | postgresql+asyncpg://postgres:postgres@localhost:5432/runningcoach | PostgreSQL 연결 문자열 |
+| REDIS_URL | redis://localhost:6379/0 | Redis 세션/캐시 |
+| SESSION_SECRET | change-me-in-production | Redis 세션 키 prefix (서명 미사용, 향후 확장용 예약) |
+| SESSION_TTL_SECONDS | 604800 | 세션 만료(초), 슬라이딩 만료 지원 |
+| COOKIE_SECURE | false | HTTPS에서만 쿠키 전송 (운영: true 권장) |
 | COOKIE_SAMESITE | Lax | SameSite 정책 |
-| GARMIN_ENCRYPTION_KEY | - | Garmin 토큰 암호화 키 |
+| CORS_ORIGINS | localhost 개발서버 | CORS 허용 도메인 (쉼표 구분) |
+| GARMIN_ENCRYPTION_KEY | - | Garmin 토큰 암호화 키 (v1.0 예정, 현재 미사용) |
 | GARMIN_BACKFILL_DAYS | 0 | 초기 백필 범위 (0=전체 이력) |
 | GARMIN_SAFETY_WINDOW_DAYS | 3 | 증분 재조회 윈도우 |
-| FIT_STORAGE_PATH | /data/fit | FIT 파일 저장 경로 |
+| FIT_STORAGE_PATH | /data/fit | FIT 파일 저장 경로 (도커 외 환경은 권한 확인 필요) |
 | OPENAI_API_KEY | - | OpenAI API 키 |
 | OPENAI_MODEL | gpt-4o-mini | 기본 모델 |
 | OPENAI_BUDGET_USD | - | 월 예산 상한 |
