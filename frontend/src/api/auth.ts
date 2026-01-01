@@ -31,6 +31,23 @@ export interface GarminStatus {
   last_sync: string | null;
 }
 
+// Response types matching backend Pydantic models
+export interface GarminConnectResponse {
+  connected: boolean;
+  message: string;
+  last_login: string | null;
+}
+
+export interface GarminRefreshResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface GarminDisconnectResponse {
+  success: boolean;
+  message: string;
+}
+
 export const authApi = {
   login: async (credentials: LoginRequest): Promise<LoginResponse> => {
     const { data } = await apiClient.post('/auth/login', credentials);
@@ -47,7 +64,7 @@ export const authApi = {
   },
 
   // Garmin
-  connectGarmin: async (credentials: GarminConnectRequest): Promise<{ message: string }> => {
+  connectGarmin: async (credentials: GarminConnectRequest): Promise<GarminConnectResponse> => {
     const { data } = await apiClient.post('/auth/garmin/connect', credentials);
     return data;
   },
@@ -57,12 +74,12 @@ export const authApi = {
     return data;
   },
 
-  refreshGarmin: async (): Promise<{ message: string }> => {
+  refreshGarmin: async (): Promise<GarminRefreshResponse> => {
     const { data } = await apiClient.post('/auth/garmin/refresh');
     return data;
   },
 
-  disconnectGarmin: async (): Promise<{ message: string }> => {
+  disconnectGarmin: async (): Promise<GarminDisconnectResponse> => {
     const { data } = await apiClient.delete('/auth/garmin/disconnect');
     return data;
   },

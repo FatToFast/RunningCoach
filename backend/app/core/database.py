@@ -33,11 +33,17 @@ class Base(DeclarativeBase):
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency that provides a database session."""
+    """Dependency that provides a database session.
+
+    Note: This does NOT auto-commit. Endpoints must explicitly call:
+    - await db.commit() after write operations
+    - await db.rollback() if needed for error recovery
+
+    This gives explicit control and avoids unnecessary commits on read-only requests.
+    """
     async with async_session_maker() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise

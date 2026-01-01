@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { authApi } from '../api/auth';
 import type { LoginRequest, User } from '../api/auth';
+import { garminSyncKeys } from './useGarminSync';
 
 export function useUser() {
   return useQuery<User, Error>({
@@ -49,6 +50,7 @@ export function useConnectGarmin() {
     mutationFn: authApi.connectGarmin,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['garmin-status'] });
+      queryClient.invalidateQueries({ queryKey: garminSyncKeys.all });
     },
   });
 }
@@ -60,6 +62,7 @@ export function useDisconnectGarmin() {
     mutationFn: authApi.disconnectGarmin,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['garmin-status'] });
+      queryClient.invalidateQueries({ queryKey: garminSyncKeys.all });
     },
   });
 }

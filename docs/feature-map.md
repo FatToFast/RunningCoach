@@ -14,7 +14,7 @@
 - Workouts: GET `/workouts`, POST `/workouts`, GET `/workouts/{id}`, PATCH `/workouts/{id}`, DELETE `/workouts/{id}`, POST `/workouts/{id}/push`, GET `/workouts/schedules/list`, POST `/workouts/schedules`, PATCH `/workouts/schedules/{schedule_id}/status`, DELETE `/workouts/schedules/{schedule_id}`
 - Plans: GET `/plans`, POST `/plans`, GET `/plans/{id}`, PATCH `/plans/{id}`, DELETE `/plans/{id}`, POST `/plans/{id}/approve`, POST `/plans/{id}/activate`, POST `/plans/{id}/weeks`
 - Strava: GET `/strava/connect`, POST `/strava/callback`, POST `/strava/refresh`, GET `/strava/status`, DELETE `/strava/disconnect`, POST `/strava/sync/run`, GET `/strava/sync/status`, GET `/strava/activities`, POST `/strava/activities/{activity_id}/upload`
-- Runalyze: GET `/runalyze/status`, GET `/runalyze/hrv`, GET `/runalyze/sleep`, GET `/runalyze/summary`
+- Runalyze: GET `/runalyze/status`, GET `/runalyze/hrv`, GET `/runalyze/sleep`, GET `/runalyze/summary`, GET `/runalyze/calculations`, GET `/runalyze/training-paces`
 - Gear: GET `/gear`, GET `/gear/stats`, GET `/gear/{gear_id}`, POST `/gear`, PATCH `/gear/{gear_id}`, POST `/gear/{gear_id}/retire`, DELETE `/gear/{gear_id}`, POST `/gear/{gear_id}/activities/{activity_id}`, DELETE `/gear/{gear_id}/activities/{activity_id}`, GET `/gear/{gear_id}/activities`
 - Aliases: GET `/aliases`
 
@@ -30,7 +30,7 @@
 - Workouts: `/workouts` → `WorkoutListResponse`, `/workouts`(POST) → `WorkoutResponse`, `/workouts/{id}` → `WorkoutResponse`, `/workouts/{id}/push` → `GarminPushResponse`, `/workouts/schedules/list` → `ScheduleListResponse`, `/workouts/schedules` → `ScheduleResponse`
 - Plans: `/plans` → `PlanListResponse`, `/plans`(POST) → `PlanResponse`, `/plans/{id}` → `PlanDetailResponse`, `/plans/{id}`(PATCH) → `PlanResponse`, `/plans/{id}/approve` → `PlanResponse`, `/plans/{id}/activate` → `PlanResponse`, `/plans/{id}/weeks` → `PlanWeekResponse`
 - Strava: `/strava/connect` → `StravaConnectResponse`, `/strava/callback` → `StravaCallbackResponse`, `/strava/status` → `StravaStatusResponse`, `/strava/refresh` → `RefreshResponse`, `/strava/sync/run` → `SyncRunResponse`, `/strava/sync/status` → `SyncStatusResponse`, `/strava/activities` → `list[UploadStatusResponse]`, `/strava/activities/{activity_id}/upload` → `UploadStatusResponse`
-- Runalyze: `/runalyze/status` → `RunalyzeStatusResponse`, `/runalyze/hrv` → `HRVResponse`, `/runalyze/sleep` → `SleepResponse`, `/runalyze/summary` → `RunalyzeSummary`
+- Runalyze: `/runalyze/status` → `RunalyzeStatusResponse`, `/runalyze/hrv` → `HRVResponse`, `/runalyze/sleep` → `SleepResponse`, `/runalyze/summary` → `RunalyzeSummary`, `/runalyze/calculations` → `RunalyzeCalculations`, `/runalyze/training-paces` → `RunalyzeTrainingPaces | null`
 - Gear: `/gear` → `GearListResponse`, `/gear/stats` → `GearStatsResponse`, `/gear/{gear_id}` → `GearDetailResponse`, `/gear`(POST) → `GearDetailResponse`, `/gear/{gear_id}`(PATCH) → `GearDetailResponse`
 - 참고: 일부 엔드포인트는 204(No Content) 또는 파일 스트림(FileResponse)을 반환
 

@@ -4,6 +4,8 @@ import type {
   RunalyzeHRVResponse,
   RunalyzeSleepResponse,
   RunalyzeSummary,
+  RunalyzeCalculations,
+  RunalyzeTrainingPaces,
 } from '../types/api';
 
 export interface RunalyzeDataParams {
@@ -47,6 +49,24 @@ export const runalyzeApi = {
    */
   getSummary: async (): Promise<RunalyzeSummary> => {
     const { data } = await apiClient.get('/runalyze/summary');
+    return data;
+  },
+
+  /**
+   * Get training calculations from Runalyze.
+   * Includes VO2max, ATL, CTL, TSB, and other metrics.
+   */
+  getCalculations: async (): Promise<RunalyzeCalculations> => {
+    const { data } = await apiClient.get('/runalyze/calculations');
+    return data;
+  },
+
+  /**
+   * Get Daniels-based training paces from Runalyze.
+   * Returns paces in seconds per km for different training zones.
+   */
+  getTrainingPaces: async (): Promise<RunalyzeTrainingPaces | null> => {
+    const { data } = await apiClient.get('/runalyze/training-paces');
     return data;
   },
 };

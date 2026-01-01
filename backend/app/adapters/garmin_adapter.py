@@ -6,9 +6,11 @@ download and parsing capabilities for Runalyze+ level data extraction.
 """
 
 import hashlib
+import io
 import logging
 import os
 import time
+import zipfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Protocol
@@ -360,8 +362,8 @@ class GarminConnectAdapter:
         start_time = time.perf_counter()
         status_code = 500
         try:
-            # garminconnect의 get_user_summary() 메서드 사용
-            data = self._client.get_user_summary(date.today().isoformat()) or {}
+            # Use garminconnect's built-in get_user_profile method
+            data = self._client.get_user_profile() or {}
             status_code = 200
             return data
         except Exception as e:
@@ -370,6 +372,90 @@ class GarminConnectAdapter:
             raise GarminAPIError(f"Failed to get user profile: {e}") from e
         finally:
             self._observe_api_call("get_user_profile", status_code, start_time)
+
+    def get_gear(self, user_profile_number: str) -> list[dict[str, Any]]:
+        """Get all gear (shoes, bikes, etc.) for user.
+
+        Args:
+            user_profile_number: User's Garmin profile number.
+
+        Returns:
+            List of gear items.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            data = self._client.get_gear(user_profile_number)
+            status_code = 200
+            # API returns dict with gear list
+            if isinstance(data, dict):
+                return data.get("gearDTOList", []) or data.get("gear", []) or []
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get gear: {e}")
+            raise GarminAPIError(f"Failed to get gear: {e}") from e
+        finally:
+            self._observe_api_call("get_gear", status_code, start_time)
+
+    def get_gear_stats(self, gear_uuid: str) -> dict[str, Any]:
+        """Get statistics for a specific gear item.
+
+        Args:
+            gear_uuid: UUID of the gear item.
+
+        Returns:
+            Gear statistics including total distance, activity count, etc.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            data = self._client.get_gear_stats(gear_uuid)
+            status_code = 200
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            status_code = 500
+            logger.warning(f"Failed to get gear stats for {gear_uuid}: {e}")
+            return {}  # Return empty dict on error to allow sync to continue
+        finally:
+            self._observe_api_call("get_gear_stats", status_code, start_time)
+
+    def get_activity_gear(self, activity_id: int) -> list[dict[str, Any]]:
+        """Get gear associated with a specific activity.
+
+        Args:
+            activity_id: Garmin activity ID.
+
+        Returns:
+            List of gear items used in activity.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            data = self._client.get_activity_gear(activity_id)
+            status_code = 200
+            # API returns list of gear or dict with list
+            if isinstance(data, dict):
+                return data.get("gearDTOList", []) or data.get("gear", []) or []
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get activity gear: {e}")
+            raise GarminAPIError(f"Failed to get activity gear: {e}") from e
+        finally:
+            self._observe_api_call("get_activity_gear", status_code, start_time)
 
     def _ensure_authenticated(self) -> None:
         """Ensure client is authenticated.
@@ -462,6 +548,40 @@ class GarminConnectAdapter:
         finally:
             self._observe_api_call("download_fit_file", status_code, start_time)
 
+    def _extract_fit_from_zip(self, data: bytes) -> bytes:
+        """Extract FIT file from ZIP archive if needed.
+
+        Garmin API returns FIT files wrapped in ZIP archives.
+        This method extracts the actual FIT data.
+
+        Args:
+            data: Raw bytes that may be ZIP or FIT format.
+
+        Returns:
+            Extracted FIT file bytes.
+
+        Raises:
+            GarminAPIError: If extraction fails.
+        """
+        # Check if data is a ZIP file (starts with PK magic bytes)
+        if data[:2] == b"PK":
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    # Find .fit file in archive
+                    fit_files = [f for f in zf.namelist() if f.lower().endswith(".fit")]
+                    if not fit_files:
+                        raise GarminAPIError("No .fit file found in ZIP archive")
+
+                    # Extract the first .fit file
+                    fit_filename = fit_files[0]
+                    logger.debug(f"Extracting {fit_filename} from ZIP archive")
+                    return zf.read(fit_filename)
+            except zipfile.BadZipFile as e:
+                raise GarminAPIError(f"Invalid ZIP archive: {e}") from e
+        else:
+            # Already raw FIT data
+            return data
+
     def parse_fit_file(self, fit_data: bytes) -> dict[str, Any]:
         """Parse FIT file and extract detailed data.
 
@@ -472,7 +592,7 @@ class GarminConnectAdapter:
         - Device info
 
         Args:
-            fit_data: Raw FIT file bytes.
+            fit_data: Raw FIT file bytes (may be ZIP-compressed).
 
         Returns:
             Parsed data dict with records, laps, session, and device info.
@@ -483,7 +603,10 @@ class GarminConnectAdapter:
         try:
             from fitparse import FitFile
 
-            fit_file = FitFile(fit_data)
+            # Extract FIT data from ZIP if needed
+            actual_fit_data = self._extract_fit_from_zip(fit_data)
+
+            fit_file = FitFile(actual_fit_data)
             result: dict[str, Any] = {
                 "records": [],
                 "laps": [],

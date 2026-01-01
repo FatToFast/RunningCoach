@@ -3,20 +3,44 @@
  * 날짜, 시간, 페이스, 거리 등 일관된 형식으로 표시
  */
 
+// 날짜 문자열을 안전하게 Date 객체로 변환
+// - ISO 8601 형식 지원 (타임존 포함/미포함)
+// - Invalid Date 체크
+function parseDate(dateStr: string | Date): Date | null {
+  if (dateStr instanceof Date) {
+    return isNaN(dateStr.getTime()) ? null : dateStr;
+  }
+  const date = new Date(dateStr);
+  return isNaN(date.getTime()) ? null : date;
+}
+
+// 로컬 날짜만 비교 (시간 제외)
+function isSameLocalDate(date1: Date, date2: Date): boolean {
+  return (
+    date1.getFullYear() === date2.getFullYear() &&
+    date1.getMonth() === date2.getMonth() &&
+    date1.getDate() === date2.getDate()
+  );
+}
+
 // 페이스 포맷 (초 → mm:ss)
 export function formatPace(seconds: number | null | undefined): string {
   if (seconds == null) return '--:--';
-  const min = Math.floor(seconds / 60);
-  const sec = Math.round(seconds % 60);
+  // Math.round로 전체 초를 반올림한 후 분/초 계산 (60초 오버플로우 방지)
+  const totalSeconds = Math.round(seconds);
+  const min = Math.floor(totalSeconds / 60);
+  const sec = totalSeconds % 60;
   return `${min}:${String(sec).padStart(2, '0')}`;
 }
 
 // 지속시간 포맷 (초 → hh:mm:ss 또는 mm:ss)
 export function formatDuration(seconds: number | null | undefined): string {
   if (seconds == null) return '--:--';
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.round(seconds % 60);
+  // Math.round로 전체 초를 반올림한 후 시/분/초 계산 (60초 오버플로우 방지)
+  const totalSeconds = Math.round(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
   if (hours > 0) {
     return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }
@@ -50,15 +74,17 @@ export function formatDistanceCompact(meters: number | null | undefined): string
 
 // 날짜 포맷 (한국어)
 export function formatDate(dateStr: string | Date): string {
-  const date = typeof dateStr === 'string' ? new Date(dateStr) : dateStr;
+  const date = parseDate(dateStr);
+  if (!date) return '--';
+
   const today = new Date();
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
 
-  if (date.toDateString() === today.toDateString()) {
+  if (isSameLocalDate(date, today)) {
     return '오늘';
   }
-  if (date.toDateString() === yesterday.toDateString()) {
+  if (isSameLocalDate(date, yesterday)) {
     return '어제';
   }
 
@@ -67,7 +93,8 @@ export function formatDate(dateStr: string | Date): string {
 
 // 날짜 전체 포맷 (한국어)
 export function formatDateFull(dateStr: string | Date): string {
-  const date = typeof dateStr === 'string' ? new Date(dateStr) : dateStr;
+  const date = parseDate(dateStr);
+  if (!date) return '--';
   return date.toLocaleDateString('ko-KR', {
     year: 'numeric',
     month: 'long',
@@ -78,7 +105,8 @@ export function formatDateFull(dateStr: string | Date): string {
 
 // 시간 포맷 (HH:mm)
 export function formatTime(dateStr: string | Date): string {
-  const date = typeof dateStr === 'string' ? new Date(dateStr) : dateStr;
+  const date = parseDate(dateStr);
+  if (!date) return '--:--';
   return date.toLocaleTimeString('ko-KR', {
     hour: '2-digit',
     minute: '2-digit',
@@ -86,13 +114,33 @@ export function formatTime(dateStr: string | Date): string {
   });
 }
 
-// 날짜+시간 포맷
+// 캐시된 Intl.DateTimeFormat 인스턴스 (성능 최적화)
+const dateTimeFormatters = {
+  full: new Intl.DateTimeFormat('ko-KR', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long',
+  }),
+  time: new Intl.DateTimeFormat('ko-KR', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }),
+};
+
+// 날짜+시간 포맷 (최적화: 한 번의 파싱으로 모든 형식 생성)
 export function formatDateTime(dateStr: string | Date): { date: string; time: string; full: string } {
-  const date = typeof dateStr === 'string' ? new Date(dateStr) : dateStr;
+  const date = parseDate(dateStr);
+  if (!date) {
+    return { date: '--', time: '--:--', full: '--' };
+  }
+  const dateFormatted = dateTimeFormatters.full.format(date);
+  const timeFormatted = dateTimeFormatters.time.format(date);
   return {
-    date: formatDateFull(date),
-    time: formatTime(date),
-    full: `${formatDateFull(date)} ${formatTime(date)}`,
+    date: dateFormatted,
+    time: timeFormatted,
+    full: `${dateFormatted} ${timeFormatted}`,
   };
 }
 
@@ -129,8 +177,10 @@ export function formatSpeed(mps: number | null | undefined): string {
 
 // 소수점 페이스 → mm:ss 변환 (차트용)
 export function formatPaceFromDecimal(paceDecimal: number): string {
-  const minutes = Math.floor(paceDecimal);
-  const seconds = Math.round((paceDecimal - minutes) * 60);
+  // 전체 초로 변환 후 반올림하여 60초 오버플로우 방지
+  const totalSeconds = Math.round(paceDecimal * 60);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
@@ -233,7 +283,8 @@ export function getActivityTypeShort(type: string, name?: string | null): string
 
 // Runalyze 스타일 날짜 포맷 (예: "29.12 Mon")
 export function formatDateRunalyze(dateStr: string | Date): string {
-  const date = typeof dateStr === 'string' ? new Date(dateStr) : dateStr;
+  const date = parseDate(dateStr);
+  if (!date) return '--';
   const day = String(date.getDate()).padStart(2, '0');
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const weekdays = ['일', '월', '화', '수', '목', '금', '토'];

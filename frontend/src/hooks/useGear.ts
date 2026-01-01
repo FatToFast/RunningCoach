@@ -2,8 +2,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { gearApi, type GearParams, type CreateGearData, type UpdateGearData } from '../api/gear';
 import type { Gear, GearListResponse, GearStats } from '../types/api';
 
-// Mock 데이터 사용 여부
-const USE_MOCK_DATA = true;
+// Mock 데이터 사용 여부 - false로 설정하면 실제 API 호출
+const USE_MOCK_DATA = false;
 
 // Mock 데이터
 const mockGearList: GearListResponse = {
@@ -65,10 +65,12 @@ const mockGearDetail: Gear = {
   gear_type: 'running_shoes',
   status: 'active',
   purchase_date: '2024-06-15',
+  retired_date: null,
   initial_distance_meters: 0,
   total_distance_meters: 245000,
   max_distance_meters: 500000,
   activity_count: 32,
+  usage_percentage: 49,
   notes: '레이스용 신발. 5K, 10K, 하프마라톤에 사용.',
   image_url: null,
   created_at: '2024-06-15T10:00:00Z',

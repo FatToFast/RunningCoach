@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronUp,
   Download,
-  FileCheck,
   Activity,
   Footprints,
   Gauge,
@@ -184,19 +183,6 @@ export function ActivityDetail() {
                 <span className="hidden sm:inline">{activity.sensors.hr_monitor_name || 'HRM'}</span>
               </span>
             )}
-            {/* Status indicators */}
-            {activity.has_fit_file && (
-              <span className="flex items-center gap-1 text-green-400">
-                <FileCheck className="w-3 h-3" />
-                <span className="hidden sm:inline">FIT</span>
-              </span>
-            )}
-            {activity.has_samples && (
-              <span className="flex items-center gap-1 text-cyan">
-                <Activity className="w-3 h-3" />
-                <span className="hidden sm:inline">샘플</span>
-              </span>
-            )}
           </div>
         </div>
         <button className="btn btn-secondary flex items-center gap-2 w-fit focus:ring-2 focus:ring-cyan/50">
@@ -206,75 +192,87 @@ export function ActivityDetail() {
       </div>
 
       {/* Primary Stats - Compact Layout */}
-      <div className="grid grid-cols-4 gap-2 sm:gap-3">
-        <div className="card-accent p-2 sm:p-3">
-          <div className="flex items-center gap-1.5 mb-0.5 sm:mb-1">
-            <MapPin className="w-3 h-3 text-cyan" />
-            <span className="text-[9px] sm:text-[10px] text-muted uppercase tracking-wider">거리</span>
+      <div className="grid grid-cols-4 gap-1.5">
+        <div className="card-accent p-1.5">
+          <div className="flex items-center gap-1">
+            <MapPin className="w-4 h-4 text-cyan" />
+            <span className="text-xs sm:text-sm text-muted uppercase">거리</span>
           </div>
-          <div className="font-mono text-base sm:text-lg font-bold">{distanceKm.toFixed(2)} km</div>
+          <div className="font-mono text-lg sm:text-xl font-bold">{distanceKm.toFixed(2)} km</div>
         </div>
 
-        <div className="card p-2 sm:p-3">
-          <div className="flex items-center gap-1.5 mb-0.5 sm:mb-1">
-            <Clock className="w-3 h-3 text-muted" />
-            <span className="text-[9px] sm:text-[10px] text-muted uppercase tracking-wider">시간</span>
+        <div className="card p-1.5">
+          <div className="flex items-center gap-1">
+            <Clock className="w-4 h-4 text-muted" />
+            <span className="text-xs sm:text-sm text-muted uppercase">시간</span>
           </div>
-          <div className="font-mono text-base sm:text-lg font-bold">
+          <div className="font-mono text-lg sm:text-xl font-bold">
             {formatDuration(activity.duration_seconds)}
           </div>
         </div>
 
-        <div className="card p-2 sm:p-3">
-          <div className="flex items-center gap-1.5 mb-0.5 sm:mb-1">
-            <Zap className="w-3 h-3 text-amber" />
-            <span className="text-[9px] sm:text-[10px] text-muted uppercase tracking-wider">페이스</span>
+        <div className="card p-1.5">
+          <div className="flex items-center gap-1">
+            <Zap className="w-4 h-4 text-amber" />
+            <span className="text-xs sm:text-sm text-muted uppercase">페이스</span>
           </div>
-          <div className="font-mono text-base sm:text-lg font-bold text-cyan">
+          <div className="font-mono text-lg sm:text-xl font-bold text-cyan">
             {formatPace(activity.avg_pace_seconds)}/km
           </div>
         </div>
 
-        <div className="card p-2 sm:p-3">
-          <div className="flex items-center gap-1.5 mb-0.5 sm:mb-1">
-            <Heart className="w-3 h-3 text-red-400" />
-            <span className="text-[9px] sm:text-[10px] text-muted uppercase tracking-wider">심박</span>
+        <div className="card p-1.5">
+          <div className="flex items-center gap-1">
+            <Heart className="w-4 h-4 text-red-400" />
+            <span className="text-xs sm:text-sm text-muted uppercase">심박</span>
           </div>
-          <div className="font-mono text-base sm:text-lg font-bold">
+          <div className="font-mono text-lg sm:text-xl font-bold">
             {activity.avg_hr ?? '--'}
-            {activity.max_hr && <span className="text-muted text-xs font-normal"> / {activity.max_hr}</span>}
+            {activity.max_hr && <span className="text-muted text-sm font-normal"> / {activity.max_hr}</span>}
           </div>
         </div>
       </div>
 
       {/* GPS Map and Km Pace Chart */}
-      {samplesData?.samples && samplesData.samples.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-          {/* GPS Map */}
-          <Suspense
-            fallback={
-              <div className="card h-[280px] flex items-center justify-center">
-                <div className="text-cyan animate-pulse">지도 불러오는 중...</div>
-              </div>
-            }
-          >
-            <div className="h-[280px] lg:h-auto lg:min-h-[280px]">
-              <ActivityMap samples={samplesData.samples} />
-            </div>
-          </Suspense>
+      {(() => {
+        const samples = samplesData?.samples || [];
+        const hasGps = samples.some((s) => s.latitude != null && s.longitude != null);
+        const hasLaps = laps && laps.length > 0;
 
-          {/* 1km Pace Chart */}
-          {laps && laps.length > 0 && <KmPaceChart laps={laps} />}
-        </div>
-      )}
+        // GPS도 없고 랩 데이터도 없으면 섹션 자체를 숨김
+        if (!hasGps && !hasLaps) return null;
+
+        // GPS가 있으면 2열 그리드, 없으면 1열
+        return (
+          <div className={`grid gap-2 sm:gap-3 ${hasGps ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
+            {/* GPS Map - GPS 데이터가 있을 때만 표시 */}
+            {hasGps && (
+              <Suspense
+                fallback={
+                  <div className="card h-[320px] flex items-center justify-center">
+                    <div className="text-cyan animate-pulse">지도 불러오는 중...</div>
+                  </div>
+                }
+              >
+                <div className="h-[320px] lg:h-[360px]">
+                  <ActivityMap samples={samples} />
+                </div>
+              </Suspense>
+            )}
+
+            {/* 1km Pace Chart */}
+            {hasLaps && <KmPaceChart laps={laps} />}
+          </div>
+        );
+      })()}
 
       {/* Training Metrics - 훈련 지표 */}
-      <div className="card p-3 sm:p-4">
-        <div className="flex items-center gap-2 mb-3 sm:mb-4">
-          <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-cyan" />
-          <h3 className="font-display font-semibold text-sm sm:text-base">훈련 지표</h3>
+      <div className="card p-1.5">
+        <div className="flex items-center gap-2 mb-1.5">
+          <Activity className="w-5 h-5 text-cyan" />
+          <h3 className="font-display font-semibold text-base">훈련 지표</h3>
         </div>
-        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3">
+        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-8 gap-1.5">
           {/* Calories */}
           <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
             <MetricTooltip description={metricDescriptions.calories} />
@@ -394,15 +392,15 @@ export function ActivityDetail() {
 
       {/* Power & Efficiency - 파워 & 효율 (파워미터가 있을 때만 표시) */}
       {activity.sensors?.has_power_meter && activity.metrics?.avg_power && (
-        <div className="card p-3 sm:p-4">
-          <div className="flex items-center gap-2 mb-3 sm:mb-4">
-            <Gauge className="w-4 h-4 sm:w-5 sm:h-5 text-purple-400" />
-            <h3 className="font-display font-semibold text-sm sm:text-base">파워 & 효율</h3>
-            <span className="text-[10px] sm:text-xs text-purple-400 bg-purple-400/10 px-2 py-0.5 rounded">
+        <div className="card p-1.5">
+          <div className="flex items-center gap-2 mb-1.5">
+            <Gauge className="w-5 h-5 text-purple-400" />
+            <h3 className="font-display font-semibold text-base">파워 & 효율</h3>
+            <span className="text-xs text-purple-400 bg-purple-400/10 px-2 py-0.5 rounded">
               {activity.sensors.power_meter_name || 'Power Meter'}
             </span>
           </div>
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
             {/* Avg Power */}
             <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
               <MetricTooltip description={metricDescriptions.avg_power} />
@@ -472,12 +470,12 @@ export function ActivityDetail() {
 
       {/* Running Form - 러닝 폼 (케이던스나 러닝 다이나믹스가 있을 때 표시) */}
       {(activity.avg_cadence || activity.metrics?.ground_time || activity.metrics?.stride_length) && (
-        <div className="card p-3 sm:p-4">
-          <div className="flex items-center gap-2 mb-3 sm:mb-4">
-            <Footprints className="w-4 h-4 sm:w-5 sm:h-5 text-amber" />
-            <h3 className="font-display font-semibold text-sm sm:text-base">러닝 폼</h3>
+        <div className="card p-1.5">
+          <div className="flex items-center gap-2 mb-1.5">
+            <Footprints className="w-5 h-5 text-amber" />
+            <h3 className="font-display font-semibold text-base">러닝 폼</h3>
           </div>
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
             {/* Cadence */}
             <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
               <MetricTooltip description={metricDescriptions.cadence} />
@@ -558,11 +556,11 @@ export function ActivityDetail() {
 
       {/* Charts Section */}
       {chartSamples.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-1.5">
           {/* Heart Rate Chart */}
-          <div className="card p-3 sm:p-4">
-            <h3 className="font-display font-semibold mb-3 sm:mb-4 text-sm sm:text-base">심박수</h3>
-            <div className="h-40 sm:h-48">
+          <div className="card p-1.5">
+            <h3 className="font-display font-semibold mb-1.5 text-base">심박수</h3>
+            <div className="h-44 sm:h-52">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={chartSamples}>
                   <defs>
@@ -574,16 +572,20 @@ export function ActivityDetail() {
                   <XAxis
                     dataKey="time"
                     tickFormatter={(v) => `${Math.floor(v / 60)}분`}
-                    stroke="#484f58"
+                    stroke="#8b949e"
+                    tick={{ fill: '#8b949e' }}
                     fontSize={10}
                   />
-                  <YAxis domain={['dataMin - 10', 'dataMax + 10']} stroke="#484f58" fontSize={10} />
+                  <YAxis domain={['dataMin - 10', 'dataMax + 10']} stroke="#8b949e" tick={{ fill: '#c9d1d9' }} fontSize={10} />
                   <Tooltip
                     contentStyle={{
                       background: '#1c2128',
                       border: '1px solid #30363d',
-                      borderRadius: '8px',
+                      borderRadius: '6px',
+                      padding: '6px 10px',
                     }}
+                    itemStyle={{ color: '#e6edf3', padding: 0 }}
+                    labelStyle={{ color: '#8b949e' }}
                     formatter={(value) => [`${value} bpm`, '심박']}
                     labelFormatter={(label) => `${Math.floor(Number(label) / 60)}분`}
                   />
@@ -600,21 +602,23 @@ export function ActivityDetail() {
           </div>
 
           {/* Pace Chart */}
-          <div className="card p-3 sm:p-4">
-            <h3 className="font-display font-semibold mb-3 sm:mb-4 text-sm sm:text-base">페이스</h3>
-            <div className="h-40 sm:h-48">
+          <div className="card p-1.5">
+            <h3 className="font-display font-semibold mb-1.5 text-base">페이스</h3>
+            <div className="h-44 sm:h-52">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartSamples}>
                   <XAxis
                     dataKey="time"
                     tickFormatter={(v) => `${Math.floor(v / 60)}분`}
-                    stroke="#484f58"
+                    stroke="#8b949e"
+                    tick={{ fill: '#8b949e' }}
                     fontSize={10}
                   />
                   <YAxis
                     domain={['dataMin - 0.5', 'dataMax + 0.5']}
                     tickFormatter={(v) => formatPaceFromDecimal(v)}
-                    stroke="#484f58"
+                    stroke="#8b949e"
+                    tick={{ fill: '#c9d1d9' }}
                     fontSize={10}
                     reversed
                   />
@@ -622,8 +626,11 @@ export function ActivityDetail() {
                     contentStyle={{
                       background: '#1c2128',
                       border: '1px solid #30363d',
-                      borderRadius: '8px',
+                      borderRadius: '6px',
+                      padding: '6px 10px',
                     }}
+                    itemStyle={{ color: '#e6edf3', padding: 0 }}
+                    labelStyle={{ color: '#8b949e' }}
                     formatter={(value) => [formatPaceFromDecimal(Number(value)) + '/km', '페이스']}
                     labelFormatter={(label) => `${Math.floor(Number(label) / 60)}분`}
                   />
@@ -637,9 +644,9 @@ export function ActivityDetail() {
 
       {/* HR Zones */}
       {hrZones && hrZones.length > 0 && (
-        <div className="card p-3 sm:p-4">
-          <h3 className="font-display font-semibold mb-3 sm:mb-4 text-sm sm:text-base">심박 존</h3>
-          <div className="space-y-2 sm:space-y-3">
+        <div className="card p-1.5">
+          <h3 className="font-display font-semibold mb-1.5 text-base">심박 존</h3>
+          <div className="space-y-1.5">
             {hrZones.map((zone) => (
               <div key={zone.zone} className="flex items-center gap-2 sm:gap-4">
                 <div className="w-16 sm:w-24 text-xs sm:text-sm flex-shrink-0">
@@ -671,9 +678,9 @@ export function ActivityDetail() {
 
       {/* Laps Table */}
       {laps && laps.length > 0 && (
-        <div className="card p-3 sm:p-4">
-          <h3 className="font-display font-semibold mb-3 sm:mb-4 text-sm sm:text-base">랩</h3>
-          <div className="overflow-x-auto -mx-3 sm:mx-0">
+        <div className="card p-1.5">
+          <h3 className="font-display font-semibold mb-1.5 text-base">랩</h3>
+          <div className="overflow-x-auto -mx-1.5 sm:mx-0">
             <table className="table w-full text-xs sm:text-sm">
               <thead>
                 <tr>
@@ -716,7 +723,7 @@ export function ActivityDetail() {
           {(laps?.length || 0) > 5 && (
             <button
               onClick={() => setShowAllLaps(!showAllLaps)}
-              className="mt-3 sm:mt-4 text-xs sm:text-sm text-cyan flex items-center gap-1 hover:underline focus:outline-none focus:ring-2 focus:ring-cyan/50 rounded"
+              className="mt-2 text-xs text-cyan flex items-center gap-1 hover:underline focus:outline-none focus:ring-2 focus:ring-cyan/50 rounded"
             >
               {showAllLaps ? (
                 <>

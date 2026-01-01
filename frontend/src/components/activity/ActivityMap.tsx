@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useCallback } from 'react';
 import Map, { Source, Layer, Marker } from 'react-map-gl/mapbox';
-import type { LayerProps } from 'react-map-gl/mapbox';
+import type { LayerProps, MapRef } from 'react-map-gl/mapbox';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import type { ActivitySample } from '../../types/api';
 
@@ -11,14 +11,14 @@ interface ActivityMapProps {
   className?: string;
 }
 
-// Route line style
+// Route line style - 주황색으로 강변/물가에서도 잘 보이도록
 const routeLayerStyle: LayerProps = {
   id: 'route',
   type: 'line',
   paint: {
-    'line-color': '#00d4ff',
+    'line-color': '#ff6b35',
     'line-width': 4,
-    'line-opacity': 0.9,
+    'line-opacity': 0.95,
   },
 };
 
@@ -33,20 +33,52 @@ export function ActivityMap({ samples, className = '' }: ActivityMapProps) {
       }));
   }, [samples]);
 
-  // Calculate center
-  const center = useMemo(() => {
+  // Calculate bounds for fitting the entire route
+  const bounds = useMemo(() => {
     if (gpsPoints.length < 2) {
-      return { lat: 37.5665, lng: 126.978 }; // Seoul default
+      return null;
     }
 
     const lats = gpsPoints.map((p) => p.lat);
     const lngs = gpsPoints.map((p) => p.lng);
 
     return {
-      lat: (Math.min(...lats) + Math.max(...lats)) / 2,
-      lng: (Math.min(...lngs) + Math.max(...lngs)) / 2,
+      minLng: Math.min(...lngs),
+      maxLng: Math.max(...lngs),
+      minLat: Math.min(...lats),
+      maxLat: Math.max(...lats),
     };
   }, [gpsPoints]);
+
+  // Calculate center (fallback)
+  const center = useMemo(() => {
+    if (!bounds) {
+      return { lat: 37.5665, lng: 126.978 }; // Seoul default
+    }
+    return {
+      lat: (bounds.minLat + bounds.maxLat) / 2,
+      lng: (bounds.minLng + bounds.maxLng) / 2,
+    };
+  }, [bounds]);
+
+  // Map reference for fitBounds
+  const mapRef = useRef<MapRef>(null);
+
+  // Fit map to route bounds when map loads
+  const onMapLoad = useCallback(() => {
+    if (mapRef.current && bounds) {
+      mapRef.current.fitBounds(
+        [
+          [bounds.minLng, bounds.minLat],
+          [bounds.maxLng, bounds.maxLat],
+        ],
+        {
+          padding: { top: 50, bottom: 50, left: 50, right: 50 },
+          duration: 0,
+        }
+      );
+    }
+  }, [bounds]);
 
   // GeoJSON for the route line
   const routeGeoJSON = useMemo(() => {
@@ -60,26 +92,25 @@ export function ActivityMap({ samples, className = '' }: ActivityMapProps) {
     };
   }, [gpsPoints]);
 
+  // GPS 데이터가 없으면 아무것도 렌더링하지 않음
   if (gpsPoints.length < 2) {
-    return (
-      <div className={`card p-4 text-center ${className}`}>
-        <p className="text-muted text-sm">GPS 데이터가 없습니다</p>
-      </div>
-    );
+    return null;
   }
 
   const startPoint = gpsPoints[0];
   const endPoint = gpsPoints[gpsPoints.length - 1];
 
   return (
-    <div className={`card overflow-hidden h-full ${className}`}>
+    <div className={`card overflow-hidden p-0 ${className}`} style={{ height: '100%' }}>
       <Map
+        ref={mapRef}
         initialViewState={{
           latitude: center.lat,
           longitude: center.lng,
-          zoom: 13,
+          zoom: 14,
         }}
-        style={{ width: '100%', height: '100%', minHeight: '280px' }}
+        onLoad={onMapLoad}
+        style={{ width: '100%', height: '100%' }}
         mapStyle="mapbox://styles/mapbox/outdoors-v12"
         mapboxAccessToken={MAPBOX_TOKEN}
         attributionControl={false}

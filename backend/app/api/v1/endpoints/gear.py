@@ -201,6 +201,10 @@ def build_gear_summary(
     if gear.max_distance_meters and gear.max_distance_meters > 0:
         usage_pct = round((total_distance / gear.max_distance_meters) * 100, 1)
 
+    # Use Garmin activity count if it's larger than local activity links
+    garmin_count = gear.garmin_activity_count or 0
+    final_activity_count = max(activity_count, garmin_count)
+
     return GearSummaryResponse(
         id=gear.id,
         name=gear.name,
@@ -209,7 +213,7 @@ def build_gear_summary(
         status=gear.status,
         total_distance_meters=total_distance,
         max_distance_meters=gear.max_distance_meters,
-        activity_count=activity_count,
+        activity_count=final_activity_count,
         usage_percentage=usage_pct,
     )
 
@@ -231,6 +235,10 @@ async def get_gear_detail(gear: Gear, db: AsyncSession) -> GearDetailResponse:
     if gear.max_distance_meters and gear.max_distance_meters > 0:
         usage_pct = round((total_distance / gear.max_distance_meters) * 100, 1)
 
+    # Use Garmin activity count if it's larger than local activity links
+    garmin_count = gear.garmin_activity_count or 0
+    final_activity_count = max(activity_count, garmin_count)
+
     return GearDetailResponse(
         id=gear.id,
         garmin_uuid=gear.garmin_uuid,
@@ -244,7 +252,7 @@ async def get_gear_detail(gear: Gear, db: AsyncSession) -> GearDetailResponse:
         initial_distance_meters=gear.initial_distance_meters,
         total_distance_meters=total_distance,
         max_distance_meters=gear.max_distance_meters,
-        activity_count=activity_count,
+        activity_count=final_activity_count,
         usage_percentage=usage_pct,
         notes=gear.notes,
         image_url=gear.image_url,
@@ -347,6 +355,43 @@ async def get_gear_stats(
         retired_gears=retired,
         gears_near_retirement=near_retirement,
     )
+
+
+@router.post("/sync/garmin")
+async def sync_gear_from_garmin(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Sync gear from Garmin Connect.
+
+    Fetches the user's gear list from Garmin and creates/updates local records.
+
+    Args:
+        current_user: Authenticated user.
+        db: Database session.
+
+    Returns:
+        Sync summary with counts.
+    """
+    from app.services.sync_service import create_sync_service
+
+    sync_service = await create_sync_service(db, current_user)
+    if not sync_service:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin session not found or expired. Please reconnect to Garmin.",
+        )
+
+    from app.services.sync_service import SyncResult
+
+    result = SyncResult("gear")
+    await sync_service._sync_gear(result)
+
+    return {
+        "synced": result.items_created,
+        "updated": result.items_updated,
+        "message": f"Synced {result.items_created} new gear, updated {result.items_updated}",
+    }
 
 
 @router.get("/{gear_id}", response_model=GearDetailResponse)

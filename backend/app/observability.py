@@ -1,9 +1,21 @@
-"""Lightweight observability helpers (logging + metrics)."""
+"""Lightweight observability helpers (logging + metrics).
+
+Cardinality Protection:
+- External API operations are normalized to a fixed allowlist
+- Paths use route templates, not raw URLs (to avoid PII and cardinality explosion)
+- Unknown paths are mapped to /__unknown__
+
+Streaming Responses:
+- Duration measures time until response headers are sent
+- For streaming/FIT downloads, this doesn't include transfer time
+- Use observe_fit_download for file transfer metrics
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -21,6 +33,63 @@ from app.core.config import get_settings
 
 request_id_ctx: ContextVar[str | None] = ContextVar("request_id", default=None)
 logger = logging.getLogger(__name__)
+
+# Flag to prevent duplicate tracing setup
+_tracing_initialized = False
+
+# -------------------------------------------------------------------------
+# Cardinality Protection: Fixed allowlist for external API operations
+# -------------------------------------------------------------------------
+# Any operation not in this list is normalized to "other"
+ALLOWED_EXTERNAL_OPERATIONS = frozenset({
+    # Garmin operations
+    "login", "get_activities", "get_activity_details", "download_fit",
+    "get_sleep", "get_heart_rates", "get_body_composition",
+    "get_training_status", "get_hrv", "get_race_predictions",
+    # Strava operations
+    "authorize", "token", "refresh_token", "get_athlete",
+    "get_activities", "get_activity", "upload_activity",
+    # Runalyze operations
+    "get_metrics", "get_calculations", "get_training_paces",
+    # Generic
+    "health_check", "sync",
+})
+
+
+def normalize_external_operation(operation: str) -> str:
+    """Normalize external API operation to prevent label cardinality explosion.
+
+    Only operations in ALLOWED_EXTERNAL_OPERATIONS are passed through.
+    All others are mapped to "other".
+    """
+    normalized = operation.lower().replace("-", "_").replace(" ", "_")
+    return normalized if normalized in ALLOWED_EXTERNAL_OPERATIONS else "other"
+
+
+# Path ID pattern for normalization (UUIDs, integers, dates)
+_PATH_ID_PATTERNS = [
+    (re.compile(r"/\d+"), "/{id}"),  # Integer IDs
+    (re.compile(r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I), "/{uuid}"),  # UUIDs
+    (re.compile(r"/\d{4}-\d{2}-\d{2}"), "/{date}"),  # ISO dates
+]
+
+
+def normalize_log_path(path: str, max_length: int = 200) -> str:
+    """Normalize path for logging to prevent PII leakage and cardinality explosion.
+
+    - Replaces numeric IDs with {id}
+    - Replaces UUIDs with {uuid}
+    - Replaces dates with {date}
+    - Truncates to max_length
+    """
+    normalized = path
+    for pattern, replacement in _PATH_ID_PATTERNS:
+        normalized = pattern.sub(replacement, normalized)
+
+    if len(normalized) > max_length:
+        normalized = normalized[:max_length] + "..."
+
+    return normalized
 
 
 def get_request_id() -> str | None:
@@ -147,13 +216,19 @@ class MetricsCollector:
         status_code: int,
         duration_ms: float,
     ) -> None:
-        """Record an external API call observation."""
-        duration_key = (provider, operation)
+        """Record an external API call observation.
+
+        Note: operation is normalized to prevent cardinality explosion.
+        Only operations in ALLOWED_EXTERNAL_OPERATIONS are tracked individually.
+        """
+        # Normalize operation to prevent cardinality explosion
+        normalized_op = normalize_external_operation(operation)
+        duration_key = (provider, normalized_op)
         bucket_key = self._bucket_for(duration_ms)
         status = str(status_code)
 
         with self._lock:
-            self._external_counts[(provider, operation, status)] += 1
+            self._external_counts[(provider, normalized_op, status)] += 1
             self._external_duration_sum_ms[duration_key] += duration_ms
             self._external_duration_count[duration_key] += 1
             self._external_duration_buckets[duration_key][bucket_key] += 1
@@ -430,10 +505,12 @@ class PrometheusMetrics:
         status_code: int,
         duration_ms: float,
     ) -> None:
+        # Normalize operation to prevent cardinality explosion
+        normalized_op = normalize_external_operation(operation)
         self._external_api_requests_total.labels(
-            provider, operation, str(status_code)
+            provider, normalized_op, str(status_code)
         ).inc()
-        self._external_api_duration_ms.labels(provider, operation).observe(duration_ms)
+        self._external_api_duration_ms.labels(provider, normalized_op).observe(duration_ms)
 
     def observe_fit_download(self, size_bytes: int, success: bool) -> None:
         status = "success" if success else "error"
@@ -488,7 +565,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         self.logger = logger or logging.getLogger("app.request")
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        # Validate and sanitize X-Request-ID to prevent injection
+        raw_request_id = request.headers.get("X-Request-ID")
+        if raw_request_id and len(raw_request_id) <= 64 and raw_request_id.replace("-", "").isalnum():
+            request_id = raw_request_id
+        else:
+            request_id = str(uuid.uuid4())
+
         token = request_id_ctx.set(request_id)
         request.state.request_id = request_id
 
@@ -517,10 +600,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     duration_ms,
                 )
 
+            # Normalize path for logging to prevent PII leakage
+            log_path = normalize_log_path(request.url.path)
             log_payload = {
                 "request_id": request_id,
                 "method": request.method,
-                "path": request.url.path,
+                "path": log_path,
                 "route": route_path,
                 "status_code": status_code,
                 "elapsed_ms": round(duration_ms, 2),
@@ -531,9 +616,20 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 def setup_tracing(app: FastAPI, settings=None) -> None:
-    """Configure OpenTelemetry tracing if enabled."""
+    """Configure OpenTelemetry tracing if enabled.
+
+    This function is idempotent - calling it multiple times is safe.
+    Duplicate calls (e.g., during hot reload) will be ignored.
+    """
+    global _tracing_initialized
+
     settings = settings or get_settings()
     if not settings.otel_enabled:
+        return
+
+    # Idempotent guard: prevent duplicate instrumentation
+    if _tracing_initialized:
+        logger.debug("Tracing already initialized, skipping duplicate setup")
         return
 
     try:
@@ -562,3 +658,6 @@ def setup_tracing(app: FastAPI, settings=None) -> None:
 
     FastAPIInstrumentor.instrument_app(app)
     HTTPXClientInstrumentor().instrument()
+
+    _tracing_initialized = True
+    logger.info("OpenTelemetry tracing initialized")

@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Activity,
@@ -31,6 +31,13 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isOpen = false, onClose }: SidebarProps) {
+  const navigate = useNavigate();
+
+  const handleAICoachClick = () => {
+    onClose?.();
+    navigate('/ai');
+  };
+
   return (
     <>
       {/* Mobile Overlay */}
@@ -56,7 +63,8 @@ export function Sidebar({ isOpen = false, onClose }: SidebarProps) {
           <button
             className="btn btn-secondary p-2"
             onClick={onClose}
-            title="Close menu"
+            aria-label="메뉴 닫기"
+            title="메뉴 닫기"
           >
             <X className="w-5 h-5" />
           </button>
@@ -84,8 +92,12 @@ export function Sidebar({ isOpen = false, onClose }: SidebarProps) {
         </nav>
 
         {/* Quick Actions */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
-          <button className="btn btn-primary w-full">
+        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-[var(--color-border)] bg-[var(--color-bg-tertiary)]">
+          <button
+            onClick={handleAICoachClick}
+            className="btn btn-primary w-full"
+            aria-label="AI 코치 페이지로 이동"
+          >
             <MessageSquare className="w-4 h-4" />
             AI 코치에게 질문
           </button>

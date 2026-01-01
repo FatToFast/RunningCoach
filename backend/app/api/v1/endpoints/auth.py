@@ -26,7 +26,7 @@ from app.adapters.garmin_adapter import (
 )
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.security import verify_password
+from app.core.security import verify_password_async
 from app.core.session import create_session, delete_session, get_session, refresh_session
 from app.models.garmin import GarminSession, GarminSyncState
 from app.models.user import User
@@ -34,7 +34,8 @@ from app.models.user import User
 settings = get_settings()
 router = APIRouter()
 
-SESSION_COOKIE_NAME = "session_id"
+# Use configured session cookie name
+SESSION_COOKIE_NAME = settings.session_cookie_name
 
 
 # -------------------------------------------------------------------------
@@ -179,7 +180,7 @@ async def login(
     result = await db.execute(select(User).where(User.email == request.email))
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(request.password, user.password_hash):
+    if not user or not await verify_password_async(request.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

@@ -12,6 +12,7 @@ import {
 import {
   useGearList,
   useGearStats,
+  useSyncGearFromGarmin,
   getGearTypeLabel,
   getUsageColor,
   getUsageBarColor,
@@ -22,6 +23,7 @@ export function Gear() {
 
   const { data: gearList, isLoading } = useGearList({ status: statusFilter });
   const { data: stats } = useGearStats();
+  const syncGarmin = useSyncGearFromGarmin();
 
   if (isLoading) {
     return (
@@ -145,9 +147,13 @@ export function Gear() {
             </select>
           </div>
 
-          <button className="btn btn-secondary flex items-center gap-2">
-            <RefreshCw className="w-4 h-4" />
-            <span className="hidden sm:inline">Garmin 동기화</span>
+          <button
+            className="btn btn-secondary flex items-center gap-2"
+            onClick={() => syncGarmin.mutate()}
+            disabled={syncGarmin.isPending}
+          >
+            <RefreshCw className={`w-4 h-4 ${syncGarmin.isPending ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">{syncGarmin.isPending ? '동기화 중...' : 'Garmin 동기화'}</span>
           </button>
         </div>
       </div>

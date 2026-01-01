@@ -23,11 +23,12 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
 
   const isConnected = garminStatus?.connected ?? false;
   const isSyncing = garminStatus?.running || syncMutation.isPending;
+  // Sort by timestamp (ISO format sorts correctly as strings, but use Date for safety)
   const lastSync = garminStatus?.sync_states
     ?.map((s) => s.last_success_at)
-    .filter(Boolean)
-    .sort()
-    .pop();
+    .filter((d): d is string => Boolean(d))
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
+    [0];
 
   const handleSync = () => {
     if (!isSyncing && isConnected) {
@@ -64,7 +65,8 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
           <button
             className="lg:hidden btn btn-secondary p-2"
             onClick={onMenuToggle}
-            title="Menu"
+            aria-label="메뉴 열기"
+            title="메뉴 열기"
           >
             <Menu className="w-5 h-5" />
           </button>
@@ -90,6 +92,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
                     'btn btn-primary p-1.5 md:px-3 text-xs flex items-center gap-1.5',
                     isSyncing && 'opacity-70 cursor-not-allowed'
                   )}
+                  aria-label={isSyncing ? '동기화 중' : 'Garmin 데이터 동기화'}
                   title={isSyncing ? '동기화 중...' : 'Garmin 동기화'}
                 >
                   {isSyncing ? (
@@ -116,7 +119,12 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
 
         {/* Right Actions */}
         <div className="flex items-center gap-2">
-          <Link to="/settings" className="btn btn-secondary p-2" title="Settings">
+          <Link
+            to="/settings"
+            className="btn btn-secondary p-2"
+            aria-label="설정"
+            title="설정"
+          >
             <Settings className="w-5 h-5" />
           </Link>
 
@@ -125,7 +133,10 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
             <button
               className="btn btn-secondary p-2 flex items-center gap-2"
               onClick={() => setShowUserMenu(!showUserMenu)}
-              title="Profile"
+              aria-label="사용자 메뉴"
+              aria-expanded={showUserMenu}
+              aria-haspopup="true"
+              title="프로필"
             >
               <UserIcon className="w-5 h-5" />
               {user && (

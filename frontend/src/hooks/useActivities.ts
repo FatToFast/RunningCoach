@@ -128,6 +128,7 @@ const mockActivityDetail: ActivityDetail = {
     has_footpod: false,
     power_meter_name: 'Stryd',
     hr_monitor_name: 'HRM-Pro Plus',
+    footpod_name: null,
   },
   has_fit_file: true,
   has_samples: true,

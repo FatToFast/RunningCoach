@@ -27,6 +27,9 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Track running sync jobs (in-memory for now)
+# WARNING: This only works for single-worker deployments.
+# For multi-worker/multi-instance, use Redis-based locking instead.
+# See: https://redis.io/docs/manual/patterns/distributed-locks/
 _running_jobs: dict[int, bool] = {}
 
 
@@ -113,7 +116,8 @@ class IngestRunResponse(BaseModel):
     started: bool
     message: str
     endpoints: list[str]
-    sync_id: str | None = None  # For tracking background job
+    # Note: sync_id was removed as it was not persisted or queryable.
+    # Use /ingest/status to check if sync is running.
 
 
 class SyncStateResponse(BaseModel):
@@ -294,9 +298,8 @@ async def run_ingest(
 
     return IngestRunResponse(
         started=True,
-        message="Sync started in background",
+        message="Sync started in background. Use /ingest/status to monitor progress.",
         endpoints=endpoints,
-        sync_id=f"sync_{current_user.id}_{datetime.now(timezone.utc).timestamp():.0f}",
     )
 
 
@@ -318,61 +321,78 @@ async def run_ingest_sync(
 
     Returns:
         List of sync results for each endpoint.
+
+    Raises:
+        HTTPException 409: If sync is already running for this user.
     """
-    # Validate Garmin session (with API call to verify not expired)
-    await validate_garmin_session(db, current_user.id, validate_with_api=True)
-
-    # Create sync service
-    sync_service = await create_sync_service(db, current_user)
-    if not sync_service:
+    # Check if already running (prevent concurrent syncs)
+    if _running_jobs.get(current_user.id, False):
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not initialize sync service",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Sync already in progress. Use /ingest/status to check progress.",
         )
 
-    # Sync user profile once per run (max HR, raw snapshot)
-    await sync_service.sync_user_profile()
+    # Mark as running
+    _running_jobs[current_user.id] = True
 
-    # Determine endpoints to sync (same logic as /run)
-    all_endpoints = GarminSyncService.ENDPOINTS
+    try:
+        # Validate Garmin session (with API call to verify not expired)
+        await validate_garmin_session(db, current_user.id, validate_with_api=True)
 
-    if request and request.endpoints is not None:
-        if len(request.endpoints) == 0:
-            # Explicit empty list means no sync requested
-            return []
-        endpoints = request.endpoints
-    else:
-        endpoints = all_endpoints
-
-    # Validate endpoints
-    invalid = set(endpoints) - set(all_endpoints)
-    if invalid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid endpoints: {invalid}",
-        )
-
-    # Run sync
-    results = []
-    for endpoint in endpoints:
-        sync_result = await sync_service.sync_endpoint(
-            endpoint,
-            start_date=request.start_date if request else None,
-            end_date=request.end_date if request else None,
-            full_backfill=request.full_backfill if request else False,
-        )
-        results.append(
-            SyncResultItem(
-                endpoint=sync_result.endpoint,
-                success=sync_result.success,
-                items_fetched=sync_result.items_fetched,
-                items_created=sync_result.items_created,
-                items_updated=sync_result.items_updated,
-                error=sync_result.error,
+        # Create sync service
+        sync_service = await create_sync_service(db, current_user)
+        if not sync_service:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not initialize sync service",
             )
-        )
 
-    return results
+        # Sync user profile once per run (max HR, raw snapshot)
+        await sync_service.sync_user_profile()
+
+        # Determine endpoints to sync (same logic as /run)
+        all_endpoints = GarminSyncService.ENDPOINTS
+
+        if request and request.endpoints is not None:
+            if len(request.endpoints) == 0:
+                # Explicit empty list means no sync requested
+                return []
+            endpoints = request.endpoints
+        else:
+            endpoints = all_endpoints
+
+        # Validate endpoints
+        invalid = set(endpoints) - set(all_endpoints)
+        if invalid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid endpoints: {invalid}",
+            )
+
+        # Run sync
+        results = []
+        for endpoint in endpoints:
+            sync_result = await sync_service.sync_endpoint(
+                endpoint,
+                start_date=request.start_date if request else None,
+                end_date=request.end_date if request else None,
+                full_backfill=request.full_backfill if request else False,
+            )
+            results.append(
+                SyncResultItem(
+                    endpoint=sync_result.endpoint,
+                    success=sync_result.success,
+                    items_fetched=sync_result.items_fetched,
+                    items_created=sync_result.items_created,
+                    items_updated=sync_result.items_updated,
+                    error=sync_result.error,
+                )
+            )
+
+        return results
+
+    finally:
+        _running_jobs[current_user.id] = False
 
 
 @router.get("/status", response_model=IngestStatusResponse)

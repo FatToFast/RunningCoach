@@ -8,8 +8,8 @@ import {
   mockCalendarResponse,
 } from '../api/mockData';
 
-// Set to true to use mock data (when backend is not running)
-const USE_MOCK_DATA = false;
+// Use mock data when VITE_USE_MOCK_DATA env var is 'true'
+const USE_MOCK_DATA = import.meta.env.VITE_USE_MOCK_DATA === 'true';
 
 // Default extended fitness metrics (Runalyze-style)
 const defaultExtendedFitness = {

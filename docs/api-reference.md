@@ -275,8 +275,8 @@ Garmin에서 데이터를 동기화합니다.
 | page | int | 1 | 페이지 번호 |
 | per_page | int | 20 | 페이지당 항목 수 (max: 100) |
 | activity_type | string | - | 활동 유형 필터 |
-| start_date | date | - | 시작 날짜 필터 |
-| end_date | date | - | 종료 날짜 필터 |
+| start_date | datetime | - | 시작 날짜 필터 (ISO 8601, e.g., `2024-01-01` or `2024-01-01T00:00:00Z`) |
+| end_date | datetime | - | 종료 날짜 필터 (ISO 8601, e.g., `2024-12-31` or `2024-12-31T23:59:59Z`) |
 | sort_by | string | start_time | 정렬 기준: start_time, distance, duration |
 | sort_order | string | desc | 정렬 순서: asc, desc |
 

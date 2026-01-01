@@ -66,7 +66,8 @@ function secondsToTime(totalSeconds: number | null): { hours: number; minutes: n
 }
 
 // 메모 타입 정보
-const NOTE_TYPES = [
+type NoteTypeValue = 'memo' | 'injury' | 'event' | 'rest' | 'goal';
+const NOTE_TYPES: { value: NoteTypeValue; label: string; icon: string }[] = [
   { value: 'memo', label: '메모', icon: '📝' },
   { value: 'injury', label: '부상', icon: '🩹' },
   { value: 'event', label: '이벤트', icon: '🏃' },
@@ -141,7 +142,7 @@ export function Calendar() {
   // 메모 편집 상태
   const [isEditingNote, setIsEditingNote] = useState(false);
   const [noteContent, setNoteContent] = useState('');
-  const [noteType, setNoteType] = useState('memo');
+  const [noteType, setNoteType] = useState<NoteTypeValue>('memo');
 
   // 대회 모달 상태
   const [isRaceModalOpen, setIsRaceModalOpen] = useState(false);

@@ -35,7 +35,7 @@ def _parse_datetime(value: str) -> datetime:
         value: Datetime string in ISO format.
 
     Returns:
-        Parsed datetime object.
+        Parsed datetime object (always timezone-aware, defaults to UTC).
 
     Raises:
         ValueError: If format is not recognized.
@@ -45,7 +45,13 @@ def _parse_datetime(value: str) -> datetime:
         value = value[:-1] + "+00:00"
 
     # Try standard fromisoformat
-    return datetime.fromisoformat(value)
+    dt = datetime.fromisoformat(value)
+
+    # Ensure timezone-aware (assume UTC if naive)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt
 
 router = APIRouter()
 settings = get_settings()
@@ -153,16 +159,26 @@ class RunalyzeTrainingPaces(BaseModel):
 # -------------------------------------------------------------------------
 
 
+class RunalyzeNotConfiguredError(Exception):
+    """Raised when Runalyze API token is not configured."""
+
+    pass
+
+
 async def _get_runalyze_client() -> httpx.AsyncClient:
-    """Create configured Runalyze API client."""
+    """Create configured Runalyze API client.
+
+    Raises:
+        RunalyzeNotConfiguredError: If API token is not configured.
+    """
     if not settings.runalyze_api_token:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Runalyze API token not configured",
-        )
+        raise RunalyzeNotConfiguredError("Runalyze API token not configured")
+
+    # Ensure base_url doesn't have trailing slash (httpx handles path joining)
+    base_url = settings.runalyze_api_base_url.rstrip("/")
 
     return httpx.AsyncClient(
-        base_url=settings.runalyze_api_base_url,
+        base_url=base_url,
         headers={"token": settings.runalyze_api_token},
         timeout=30.0,
     )
@@ -216,17 +232,36 @@ async def get_runalyze_status(
             response = await _runalyze_get(client, "/ping")
             data = response.json()
 
-            if data == ["pong"]:
+            # Accept various "pong" response formats:
+            # - ["pong"] (array)
+            # - "pong" (string)
+            # - {"status": "pong"} or {"message": "pong"} (object)
+            is_pong = False
+            if isinstance(data, list) and "pong" in data:
+                is_pong = True
+            elif isinstance(data, str) and data.lower() == "pong":
+                is_pong = True
+            elif isinstance(data, dict):
+                if data.get("status") == "pong" or data.get("message") == "pong":
+                    is_pong = True
+
+            if is_pong:
                 return RunalyzeStatusResponse(
                     connected=True,
                     message="Connected to Runalyze API",
                 )
             else:
+                logger.warning("Runalyze ping returned unexpected response: %s", data)
                 return RunalyzeStatusResponse(
                     connected=False,
-                    message="Unexpected ping response",
+                    message=f"Unexpected ping response: {type(data).__name__}",
                 )
 
+    except RunalyzeNotConfiguredError:
+        return RunalyzeStatusResponse(
+            connected=False,
+            message="Runalyze API token not configured",
+        )
     except Exception as e:
         logger.exception("Runalyze connection check failed")
         return RunalyzeStatusResponse(
@@ -287,6 +322,11 @@ async def get_hrv_data(
                 count=len(data_points),
             )
 
+    except RunalyzeNotConfiguredError:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Runalyze API token not configured",
+        )
     except httpx.HTTPStatusError as e:
         logger.exception("Runalyze API error fetching HRV data")
         raise HTTPException(
@@ -355,6 +395,11 @@ async def get_sleep_data(
                 count=len(data_points),
             )
 
+    except RunalyzeNotConfiguredError:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Runalyze API token not configured",
+        )
     except httpx.HTTPStatusError as e:
         logger.exception("Runalyze API error fetching sleep data")
         raise HTTPException(
@@ -476,6 +521,11 @@ async def get_runalyze_summary(
                 summary.sleep_error = "Failed to fetch sleep data"
                 logger.warning("Failed to fetch sleep data for summary: %s", e)
 
+    except RunalyzeNotConfiguredError:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Runalyze API token not configured",
+        )
     except httpx.HTTPStatusError as e:
         # Connection-level error - set both
         error_msg = f"HTTP error: {e.response.status_code}"
@@ -526,8 +576,8 @@ async def get_runalyze_calculations(
                         calculations.rest_days = data.get("rest_days")
                         calculations.monotony = data.get("monotony")
                         calculations.training_strain = data.get("training_strain")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to fetch calculations from Runalyze: %s", e)
 
             # Fallback: try individual endpoints if /metrics/calculations fails
             if calculations.effective_vo2max is None:
@@ -543,8 +593,8 @@ async def get_runalyze_calculations(
                                 reverse=True,
                             )
                             calculations.effective_vo2max = sorted_data[0].get("value") or sorted_data[0].get("vo2max")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to fetch VO2max from Runalyze: %s", e)
 
             # Try fitness endpoint for ATL/CTL/TSB
             if calculations.ctl is None:
@@ -568,12 +618,17 @@ async def get_runalyze_calculations(
                                 calculations.ctl = fitness_data.get("ctl") or fitness_data.get("fitness")
                                 calculations.atl = fitness_data.get("atl") or fitness_data.get("fatigue")
                                 calculations.tsb = fitness_data.get("tsb") or fitness_data.get("form")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to fetch fitness data from Runalyze: %s", e)
 
-    except Exception:
-        # Return empty calculations on error
-        pass
+    except RunalyzeNotConfiguredError:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Runalyze API token not configured",
+        )
+    except Exception as e:
+        # Log and return empty calculations on error
+        logger.warning("Failed to connect to Runalyze for calculations: %s", e)
 
     return calculations
 
@@ -627,23 +682,49 @@ async def get_runalyze_training_paces(
                                         return None
                                 return None
 
+                            # Get parsed values (no fallback to hardcoded values)
+                            easy_min = parse_pace(paces_data.get("easy_min"))
+                            easy_max = parse_pace(paces_data.get("easy_max"))
+                            marathon_min = parse_pace(paces_data.get("marathon_min"))
+                            marathon_max = parse_pace(paces_data.get("marathon_max"))
+                            threshold_min = parse_pace(paces_data.get("threshold_min"))
+                            threshold_max = parse_pace(paces_data.get("threshold_max"))
+                            interval_min = parse_pace(paces_data.get("interval_min"))
+                            interval_max = parse_pace(paces_data.get("interval_max"))
+                            repetition_min = parse_pace(paces_data.get("repetition_min"))
+                            repetition_max = parse_pace(paces_data.get("repetition_max"))
+
+                            # Check if we have essential pace data (at least easy paces)
+                            if easy_min is None or easy_max is None:
+                                logger.warning(
+                                    "Runalyze returned incomplete pace data for VDOT %.1f",
+                                    vdot,
+                                )
+                                continue
+
                             return RunalyzeTrainingPaces(
                                 vdot=float(vdot),
-                                easy_min=parse_pace(paces_data.get("easy_min")) or 343,
-                                easy_max=parse_pace(paces_data.get("easy_max")) or 430,
-                                marathon_min=parse_pace(paces_data.get("marathon_min")) or 302,
-                                marathon_max=parse_pace(paces_data.get("marathon_max")) or 338,
-                                threshold_min=parse_pace(paces_data.get("threshold_min")) or 276,
-                                threshold_max=parse_pace(paces_data.get("threshold_max")) or 288,
-                                interval_min=parse_pace(paces_data.get("interval_min")) or 254,
-                                interval_max=parse_pace(paces_data.get("interval_max")) or 267,
-                                repetition_min=parse_pace(paces_data.get("repetition_min")) or 231,
-                                repetition_max=parse_pace(paces_data.get("repetition_max")) or 242,
+                                easy_min=easy_min,
+                                easy_max=easy_max,
+                                marathon_min=marathon_min or easy_min,  # Fallback to easy if missing
+                                marathon_max=marathon_max or easy_max,
+                                threshold_min=threshold_min or marathon_min or easy_min,
+                                threshold_max=threshold_max or marathon_max or easy_max,
+                                interval_min=interval_min or threshold_min or easy_min,
+                                interval_max=interval_max or threshold_max or easy_max,
+                                repetition_min=repetition_min or interval_min or easy_min,
+                                repetition_max=repetition_max or interval_max or easy_max,
                             )
-                except Exception:
+                except Exception as e:
+                    logger.debug("Failed to fetch paces from %s: %s", endpoint, e)
                     continue
 
-    except Exception:
-        pass
+    except RunalyzeNotConfiguredError:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Runalyze API token not configured",
+        )
+    except Exception as e:
+        logger.warning("Failed to connect to Runalyze for training paces: %s", e)
 
     return None

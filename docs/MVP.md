@@ -573,8 +573,10 @@ CREATE TABLE strava_activity_map (
 | POST | /api/v1/auth/login | 로컬 로그인 |
 | POST | /api/v1/auth/logout | 로그아웃 |
 | GET | /api/v1/auth/me | 현재 사용자 |
-| POST | /api/v1/auth/garmin/connect | Garmin 계정 연결 |
-| POST | /api/v1/auth/garmin/refresh | 세션 갱신 |
+| POST | /api/v1/auth/garmin/connect | Garmin 계정 연결 (2FA 미지원, 수동 재연결 필요) |
+| GET | /api/v1/auth/garmin/status | Garmin 연결 상태 조회 |
+| POST | /api/v1/auth/garmin/refresh | Garmin 세션 갱신 |
+| DELETE | /api/v1/auth/garmin/disconnect | Garmin 연결 해제 |
 | GET | /api/v1/strava/connect | Strava OAuth 시작 (auth_url 반환) |
 | GET | /api/v1/strava/callback | Strava OAuth 콜백 |
 | GET | /api/v1/strava/status | Strava 연결 상태 |
@@ -582,8 +584,10 @@ CREATE TABLE strava_activity_map (
 ### 데이터 수집
 | Method | Endpoint | 설명 |
 |--------|----------|------|
-| POST | /api/v1/ingest/run | 수동 동기화 실행 |
+| POST | /api/v1/ingest/run | 수동 동기화 실행 (백그라운드) |
+| POST | /api/v1/ingest/run/sync | 동기화 실행 (블로킹, 테스트용) |
 | GET | /api/v1/ingest/status | 동기화 상태 조회 |
+| GET | /api/v1/ingest/history | 동기화 이력 조회 (페이지네이션) |
 
 ### 활동
 | Method | Endpoint | 설명 |

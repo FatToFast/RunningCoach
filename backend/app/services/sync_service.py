@@ -27,6 +27,7 @@ from app.models import (
     BodyComposition,
 )
 from app.models.activity import ActivitySample, ActivityLap, ActivityMetric
+from app.models.gear import Gear, ActivityGear, GearType, GearStatus
 from app.adapters.garmin_adapter import GarminConnectAdapter
 from app.core.config import get_settings
 from app.observability import get_metrics_backend
@@ -62,6 +63,7 @@ class GarminSyncService:
     """Service for synchronizing Garmin data."""
 
     ENDPOINTS = [
+        "gear",  # Sync gear first, before activities for activity-gear linking
         "activities",
         "sleep",
         "heart_rate",
@@ -215,7 +217,9 @@ class GarminSyncService:
         start_time = time.perf_counter()
         try:
             # Dispatch to appropriate sync method
-            if endpoint == "activities":
+            if endpoint == "gear":
+                await self._sync_gear(result)
+            elif endpoint == "activities":
                 await self._sync_activities(result, start_date, end_date)
             elif endpoint == "sleep":
                 await self._sync_sleep(result, start_date, end_date)
@@ -340,6 +344,9 @@ class GarminSyncService:
             # Download FIT file if not already downloaded
             if not activity.has_fit_file:
                 await self._download_fit_file(activity, garmin_id)
+
+            # Link activity to gear (shoes, etc.)
+            await self._link_activity_gear(activity, garmin_id)
 
         await self.session.commit()
 
@@ -570,6 +577,7 @@ class GarminSyncService:
             raw_event_id=raw_event_id,
             activity_type=data.get("activityType", {}).get("typeKey", "running"),
             name=data.get("activityName"),
+            description=data.get("description"),  # User notes/memo from Garmin
             start_time=start_time,
             duration_seconds=int(data.get("duration", 0)),
             elapsed_seconds=int(data.get("elapsedDuration", 0)) if data.get("elapsedDuration") else None,
@@ -597,6 +605,7 @@ class GarminSyncService:
         """Update an existing activity with new data."""
         # Update fields that may have changed
         activity.name = data.get("activityName") or activity.name
+        activity.description = data.get("description") or activity.description
         activity.calories = data.get("calories") or activity.calories
         activity.vo2max = data.get("vO2MaxValue") or activity.vo2max
 
@@ -1079,6 +1088,194 @@ class GarminSyncService:
             )
         )
         return result.scalar_one_or_none()
+
+    async def _sync_gear(self, result: SyncResult) -> None:
+        """Sync gear (shoes, bikes, etc.) from Garmin.
+
+        Fetches user's gear list and creates/updates local Gear records.
+        Gear sync is performed before activities to enable activity-gear linking.
+        """
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+
+        try:
+            # Get user profile to get userProfileNumber for gear API
+            profile_data = await loop.run_in_executor(
+                None,
+                self.adapter.get_user_profile,
+            )
+            # The profile 'id' field is the userProfileNumber needed for gear API
+            user_profile_number = str(
+                profile_data.get("id")
+                or profile_data.get("displayName")
+                or profile_data.get("userName")
+            )
+            if not user_profile_number or user_profile_number == "None":
+                logger.warning(f"No user profile number found for gear sync. Keys: {list(profile_data.keys())}")
+                return
+
+            logger.info(f"Using profile number {user_profile_number} for gear sync")
+
+            # Fetch gear list from Garmin
+            gear_list = await loop.run_in_executor(
+                None,
+                lambda: self.adapter.get_gear(user_profile_number),
+            )
+
+            if not gear_list:
+                logger.info(f"No gear found for user {self.user.id}")
+                return
+
+            result.items_fetched = len(gear_list)
+
+            # Store raw event
+            await self._store_raw_event("gear", gear_list, flush=False)
+
+            for gear_data in gear_list:
+                garmin_uuid = gear_data.get("uuid") or gear_data.get("gearUUID")
+                if not garmin_uuid:
+                    continue
+
+                # Get gear stats for distance (stored in initial_distance_meters)
+                gear_stats = await loop.run_in_executor(
+                    None,
+                    lambda uuid=garmin_uuid: self.adapter.get_gear_stats(uuid),
+                )
+                # Garmin's totalDistance is the cumulative distance tracked by Garmin
+                garmin_distance = gear_stats.get("totalDistance", 0) or 0  # in meters
+                # Try different key names for activity count
+                garmin_activity_count = (
+                    gear_stats.get("totalActivities")
+                    or gear_stats.get("activityCount")
+                    or gear_stats.get("activities")
+                    or 0
+                )
+
+                # Check if gear exists
+                existing = await self.session.execute(
+                    select(Gear).where(Gear.garmin_uuid == garmin_uuid)
+                )
+                gear = existing.scalar_one_or_none()
+
+                # Map Garmin gear type to our GearType
+                garmin_type = gear_data.get("gearTypeName", "").lower()
+                if "shoe" in garmin_type or "running" in garmin_type:
+                    gear_type = GearType.RUNNING_SHOES.value
+                elif "bike" in garmin_type or "cycling" in garmin_type:
+                    gear_type = GearType.BIKE.value
+                else:
+                    gear_type = GearType.OTHER.value
+
+                # Determine status from gearStatusName field
+                garmin_status = gear_data.get("gearStatusName", "").lower()
+                status = GearStatus.ACTIVE.value
+                if garmin_status == "retired" or gear_data.get("retired"):
+                    status = GearStatus.RETIRED.value
+
+                if gear:
+                    # Update existing gear
+                    gear.name = gear_data.get("displayName") or gear_data.get("customMakeModel") or gear.name
+                    gear.brand = gear_data.get("gearMakeName") if gear_data.get("gearMakeName") != "Other" else gear.brand
+                    gear.gear_type = gear_type
+                    gear.status = status
+                    # Store Garmin's tracked distance as initial_distance_meters
+                    # This will be added to local activity distances in the API
+                    gear.initial_distance_meters = garmin_distance
+                    gear.garmin_activity_count = garmin_activity_count
+                    if gear_data.get("maximumMeters"):
+                        gear.max_distance_meters = gear_data.get("maximumMeters")
+                    result.items_updated += 1
+                    logger.debug(f"Updated gear: {gear.name} ({garmin_uuid}) - {garmin_distance/1000:.1f}km, {garmin_activity_count} activities")
+                else:
+                    # Create new gear
+                    gear = Gear(
+                        user_id=self.user.id,
+                        garmin_uuid=garmin_uuid,
+                        name=gear_data.get("displayName") or gear_data.get("customMakeModel") or "Unknown Gear",
+                        brand=gear_data.get("gearMakeName") if gear_data.get("gearMakeName") != "Other" else None,
+                        gear_type=gear_type,
+                        status=status,
+                        initial_distance_meters=garmin_distance,  # Garmin's tracked distance
+                        garmin_activity_count=garmin_activity_count,  # Garmin's activity count
+                        max_distance_meters=gear_data.get("maximumMeters") or 800000.0,  # 800km default for shoes
+                    )
+                    self.session.add(gear)
+                    result.items_created += 1
+                    logger.info(f"Created gear: {gear.name} ({garmin_uuid}) - {garmin_distance/1000:.1f}km from Garmin")
+
+            await self.session.commit()
+            logger.info(f"Gear sync complete: {result.items_created} created, {result.items_updated} updated")
+
+        except Exception as e:
+            logger.warning(f"Failed to sync gear: {e}")
+            raise
+
+    async def _link_activity_gear(self, activity: Activity, garmin_activity_id: int) -> None:
+        """Link activity to gear used during the activity.
+
+        Fetches gear associated with a Garmin activity and creates ActivityGear links.
+
+        Args:
+            activity: The activity to link gear to.
+            garmin_activity_id: Garmin's activity ID for gear lookup.
+        """
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+
+        try:
+            # Fetch gear for this activity from Garmin
+            activity_gear_list = await loop.run_in_executor(
+                None,
+                lambda: self.adapter.get_activity_gear(garmin_activity_id),
+            )
+
+            if not activity_gear_list:
+                return
+
+            for gear_data in activity_gear_list:
+                garmin_uuid = gear_data.get("uuid") or gear_data.get("gearUUID")
+                if not garmin_uuid:
+                    continue
+
+                # Find matching local gear
+                gear_result = await self.session.execute(
+                    select(Gear).where(
+                        and_(
+                            Gear.user_id == self.user.id,
+                            Gear.garmin_uuid == garmin_uuid,
+                        )
+                    )
+                )
+                gear = gear_result.scalar_one_or_none()
+
+                if not gear:
+                    logger.debug(f"Gear {garmin_uuid} not found locally, skipping link")
+                    continue
+
+                # Check if link already exists
+                existing_link = await self.session.execute(
+                    select(ActivityGear).where(
+                        and_(
+                            ActivityGear.activity_id == activity.id,
+                            ActivityGear.gear_id == gear.id,
+                        )
+                    )
+                )
+                if existing_link.scalar_one_or_none():
+                    continue
+
+                # Create link
+                link = ActivityGear(
+                    activity_id=activity.id,
+                    gear_id=gear.id,
+                )
+                self.session.add(link)
+                logger.debug(f"Linked activity {activity.id} to gear {gear.name}")
+
+        except Exception as e:
+            logger.warning(f"Failed to link activity {activity.id} to gear: {e}")
 
     async def _update_sync_state(self, endpoint: str, success: bool) -> None:
         """Update sync state for an endpoint."""

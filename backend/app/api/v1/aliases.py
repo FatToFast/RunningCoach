@@ -8,7 +8,14 @@ This module provides:
 Deprecation Policy:
 - Deprecated routes return 308 Permanent Redirect to canonical path
 - Deprecation warnings are included in response headers (X-API-Deprecation-Warning)
+- Sunset header indicates when the route will be removed
 - Legacy routes are maintained for 2 major versions before removal
+
+Note on 308 Redirects:
+    HTTP 308 preserves the request method (POST stays POST, PUT stays PUT).
+    Most modern HTTP clients (axios, fetch, requests) handle 308 automatically.
+    If you encounter issues with older clients, consider using the canonical
+    paths directly instead of relying on redirects.
 
 Usage:
     Include alias_router in main API router to enable legacy support.
@@ -80,12 +87,18 @@ class AliasListResponse(BaseModel):
 alias_router = APIRouter(tags=["aliases"])
 
 
-def create_redirect_handler(deprecated_path: str, canonical_path: str, removal_version: str):
+def create_redirect_handler(
+    _deprecated_path: str,
+    canonical_path: str,
+    deprecation_date: str,
+    removal_version: str,
+):
     """Create a redirect handler for a deprecated route.
 
     Args:
         deprecated_path: The deprecated route path.
         canonical_path: The canonical route path to redirect to.
+        deprecation_date: Date when the route was deprecated (ISO format).
         removal_version: Version when the deprecated route will be removed.
 
     Returns:
@@ -114,6 +127,9 @@ def create_redirect_handler(deprecated_path: str, canonical_path: str, removal_v
             f"This endpoint is deprecated. Use {full_canonical} instead. "
             f"Will be removed in {removal_version}."
         )
+        # Add Sunset header per RFC 8594 (HTTP Sunset Header)
+        # Format: Sunset: Sat, 01 Jan 2028 00:00:00 GMT
+        redirect.headers[SUNSET_HEADER] = deprecation_date
 
         return redirect
 
@@ -122,7 +138,7 @@ def create_redirect_handler(deprecated_path: str, canonical_path: str, removal_v
 
 # Register alias redirects dynamically
 for deprecated, canonical, dep_date, removal_ver in ROUTE_ALIASES:
-    handler = create_redirect_handler(deprecated, canonical, removal_ver)
+    handler = create_redirect_handler(deprecated, canonical, dep_date, removal_ver)
 
     # Register for all common HTTP methods
     for method in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
@@ -146,20 +162,35 @@ def _get_current_api_version() -> str:
     Examples:
         "/api/v1" -> "v1"
         "/api/v2" -> "v2"
+        "/api" -> "v1" (fallback for non-versioned prefix)
     """
     prefix = settings.api_prefix
     # Extract version from prefix like "/api/v1"
     if prefix and "/" in prefix:
-        return prefix.rstrip("/").split("/")[-1]
-    return "v1"
+        last_segment = prefix.rstrip("/").split("/")[-1]
+        # Only return if it looks like a version (starts with 'v' followed by digit)
+        if last_segment.startswith("v") and len(last_segment) > 1 and last_segment[1].isdigit():
+            return last_segment
+    return "v1"  # Default fallback
 
 
 def _parse_version(version_str: str) -> tuple[int, int]:
-    """Parse version string like 'v2.0' into (major, minor) tuple."""
+    """Parse version string like 'v2.0' into (major, minor) tuple.
+
+    Safe parsing that handles non-numeric input gracefully.
+
+    Examples:
+        "v1" -> (1, 0)
+        "v2.1" -> (2, 1)
+        "api" -> (0, 0) (fallback for invalid input)
+    """
     version_str = version_str.lstrip("v")
     parts = version_str.split(".")
-    major = int(parts[0]) if parts else 0
-    minor = int(parts[1]) if len(parts) > 1 else 0
+    try:
+        major = int(parts[0]) if parts and parts[0].isdigit() else 0
+        minor = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    except (ValueError, IndexError):
+        return (0, 0)
     return (major, minor)
 
 

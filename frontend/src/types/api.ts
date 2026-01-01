@@ -234,6 +234,7 @@ export interface ActivitySensors {
   has_footpod: boolean; // 풋팟
   power_meter_name: string | null; // 'Stryd', 'Garmin RD Pod' 등
   hr_monitor_name: string | null; // 'HRM-Pro', 'Polar H10' 등
+  footpod_name: string | null; // 풋팟 이름
 }
 
 // Activity Detail (백엔드: ActivityDetailResponse)
@@ -357,10 +358,12 @@ export interface Gear {
   gear_type: GearType;
   status: GearStatus;
   purchase_date: string | null;
+  retired_date: string | null; // 은퇴 날짜
   initial_distance_meters: number; // 등록 전 기존 거리
   total_distance_meters: number; // 총 누적 거리
   max_distance_meters: number | null; // 권장 최대 거리 (신발 수명)
   activity_count: number;
+  usage_percentage: number | null; // 수명 대비 사용률
   notes: string | null;
   image_url: string | null;
   created_at: string;
@@ -405,11 +408,14 @@ export interface ActivityGear {
 
 export interface GarminConnectionStatus {
   connected: boolean;
+  session_valid: boolean;
+  last_login: string | null;
   last_sync: string | null;
 }
 
 export interface StravaConnectionStatus {
   connected: boolean;
+  expires_at: string | null;
   last_sync: string | null;
 }
 
@@ -468,6 +474,39 @@ export interface RunalyzeSummary {
   latest_sleep_duration: number | null;
   latest_sleep_date: string | null;
   avg_sleep_quality_7d: number | null;
+  // Error tracking for partial data scenarios
+  hrv_error?: string | null;
+  sleep_error?: string | null;
+}
+
+// -------------------------------------------------------------------------
+// Runalyze Calculations & Training Paces
+// -------------------------------------------------------------------------
+
+export interface RunalyzeCalculations {
+  effective_vo2max: number | null;
+  marathon_shape: number | null; // percentage (0-100)
+  atl: number | null; // Acute Training Load (Fatigue) %
+  ctl: number | null; // Chronic Training Load (Fitness) %
+  tsb: number | null; // Training Stress Balance
+  workload_ratio: number | null; // A:C ratio
+  rest_days: number | null;
+  monotony: number | null; // percentage
+  training_strain: number | null;
+}
+
+export interface RunalyzeTrainingPaces {
+  vdot: number;
+  easy_min: number; // seconds per km
+  easy_max: number;
+  marathon_min: number;
+  marathon_max: number;
+  threshold_min: number;
+  threshold_max: number;
+  interval_min: number;
+  interval_max: number;
+  repetition_min: number;
+  repetition_max: number;
 }
 
 // -------------------------------------------------------------------------
@@ -545,17 +584,19 @@ export interface ExercisePresetsResponse {
 }
 
 // Calendar Notes (메모)
+export type CalendarNoteType = 'memo' | 'injury' | 'event' | 'rest' | 'goal';
+
 export interface CalendarNote {
   id: number;
   date: string;
-  note_type: string;
+  note_type: CalendarNoteType;
   content: string;
   icon: string | null;
 }
 
 export interface CalendarNoteCreate {
   date: string;
-  note_type: string;
+  note_type: CalendarNoteType;
   content: string;
   icon?: string | null;
 }

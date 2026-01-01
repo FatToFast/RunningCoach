@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
 from app.core.config import get_settings
+from app.core.session import close_redis
 from app.api.v1.router import api_router
 from app.observability import RequestLoggingMiddleware, get_metrics_backend, setup_tracing
 
@@ -19,7 +20,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan events."""
     # Startup
     yield
-    # Shutdown
+    # Shutdown - cleanup resources
+    await close_redis()
 
 
 app = FastAPI(
@@ -38,6 +40,15 @@ metrics_backend = get_metrics_backend()
 # Must specify explicit origins for credentials to work
 # Configure via CORS_ORIGINS env var (comma-separated list)
 cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+
+if not cors_origins:
+    import logging
+    logging.getLogger(__name__).warning(
+        "CORS_ORIGINS is empty or not configured. "
+        "CORS will block all cross-origin requests. "
+        "Set CORS_ORIGINS env var (e.g., 'http://localhost:5173,http://localhost:3000')."
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,

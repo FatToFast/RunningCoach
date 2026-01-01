@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_user
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.activity import Activity, ActivityMetric, ActivitySample, ActivityLap
 from app.models.garmin import GarminRawFile
@@ -74,8 +75,11 @@ class ActivityMetricResponse(BaseModel):
     ground_time: int | None = None  # GCT in ms
     vertical_oscillation: float | None = None  # in cm
     stride_length: float | None = None  # in m
-    leg_spring_stiffness: float | None = None  # in kN/m (calculated)
-    form_power: int | None = None  # from Stryd
+    # Note: leg_spring_stiffness and form_power are planned but not yet populated.
+    # They require either Stryd pod (form_power) or calculation from GCT/mass (LSS).
+    # Keeping in schema for forward compatibility. Always null until implemented.
+    leg_spring_stiffness: float | None = None  # in kN/m (requires body weight + GCT)
+    form_power: int | None = None  # from Stryd pod (not Garmin)
 
     # Calculated metrics
     power_to_hr: float | None = None  # Pa:Hr ratio (W/bpm)
@@ -405,21 +409,34 @@ def _build_metrics_response(activity: Activity) -> ActivityMetricResponse | None
 
 
 def _build_sensor_info(activity: Activity) -> SensorInfo:
-    """Build sensor info based on available activity data."""
-    has_power = activity.avg_power is not None and activity.avg_power > 0
-    has_dynamics = activity.avg_ground_contact_time is not None
+    """Build sensor info based on FIT file device_info data.
 
-    # Determine if we have external HR monitor (vs wrist-based)
-    # If we have detailed dynamics, likely using external sensors
-    has_hr_monitor = activity.avg_hr is not None
+    Sensors are detected from FIT file device_info records:
+    - has_stryd: manufacturer == 'stryd'
+    - has_external_hr: device_type == 120 (ANT+ HR monitor)
+    """
+    # Use explicit sensor flags from FIT parsing
+    has_stryd = activity.has_stryd
+    has_external_hr = activity.has_external_hr
+
+    # Power meter (Stryd)
+    power_meter_name = "Stryd" if has_stryd else None
+
+    # HR monitor detection
+    has_hr_data = activity.avg_hr is not None and activity.avg_hr > 0
+    hr_monitor_name = "HR Monitor" if has_external_hr else None
+
+    # Footpod (Stryd serves as footpod too)
+    has_footpod = has_stryd
+    footpod_name = "Stryd" if has_stryd else None
 
     return SensorInfo(
-        has_power_meter=has_power,
-        power_meter_name="Stryd" if has_power else None,  # Assume Stryd for running
-        has_hr_monitor=has_hr_monitor,
-        hr_monitor_name=None,  # Could be detected from FIT device_info
-        has_footpod=has_dynamics,
-        footpod_name="Stryd" if has_dynamics and has_power else None,
+        has_power_meter=has_stryd,
+        power_meter_name=power_meter_name,
+        has_hr_monitor=has_external_hr,
+        hr_monitor_name=hr_monitor_name,
+        has_footpod=has_footpod,
+        footpod_name=footpod_name,
     )
 
 
@@ -645,8 +662,25 @@ async def download_fit_file(
             detail="FIT file path is invalid or file has been deleted",
         )
 
+    # Path traversal protection: ensure file is within allowed storage directory
+    # This prevents serving arbitrary files if DB is compromised
+    settings = get_settings()
+    allowed_root = os.path.realpath(settings.fit_storage_path)
+    file_real_path = os.path.realpath(fit_file.file_path)
+
+    if not file_real_path.startswith(allowed_root + os.sep):
+        # Log this as a security warning - possible DB tampering
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Path traversal blocked: {fit_file.file_path} not in {allowed_root}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="FIT file not found",  # Intentionally vague for security
+        )
+
     return FileResponse(
-        path=fit_file.file_path,
+        path=file_real_path,
         filename=f"activity_{activity.garmin_id}.fit",
         media_type="application/octet-stream",
     )
@@ -756,22 +790,27 @@ async def get_activity_hr_zones(
             detail="Activity not found",
         )
 
-    # Get all HR samples
+    # Get all HR samples with timestamps for accurate time calculation
+    # Note: We use timestamp deltas instead of assuming 1 sample = 1 second,
+    # as sampling rates can vary (e.g., 1Hz, 5Hz, or irregular intervals)
     result = await db.execute(
-        select(ActivitySample.hr)
+        select(ActivitySample.hr, ActivitySample.timestamp)
         .where(
             ActivitySample.activity_id == activity_id,
             ActivitySample.hr.isnot(None),
         )
         .order_by(ActivitySample.timestamp.asc())
     )
-    hr_values = [row[0] for row in result.all() if row[0]]
+    samples = [(row[0], row[1]) for row in result.all() if row[0] and row[1]]
 
-    if not hr_values:
+    if not samples:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No HR data available for this activity",
         )
+
+    # Extract HR values for max calculation
+    hr_values = [hr for hr, _ in samples]
 
     # Determine max HR (priority: query param > user.max_hr > max from samples)
     if max_hr is None:
@@ -795,16 +834,33 @@ async def get_activity_hr_zones(
             "count": 0,
         })
 
-    # Count samples in each zone (assume 1 sample = 1 second)
-    for hr in hr_values:
+    # Calculate time in each zone using timestamp deltas
+    # This handles variable sampling rates (1Hz, 5Hz, irregular, etc.)
+    for i, (hr, ts) in enumerate(samples):
+        # Calculate duration: time until next sample, or 0 for last sample
+        if i < len(samples) - 1:
+            next_ts = samples[i + 1][1]
+            duration_seconds = (next_ts - ts).total_seconds()
+            # Cap duration at 60s to handle gaps (e.g., paused activity)
+            duration_seconds = min(duration_seconds, 60.0)
+        else:
+            # Last sample: estimate based on average interval or use 1 second
+            if len(samples) > 1:
+                total_span = (samples[-1][1] - samples[0][1]).total_seconds()
+                avg_interval = total_span / (len(samples) - 1)
+                duration_seconds = min(avg_interval, 60.0)
+            else:
+                duration_seconds = 1.0
+
+        # Assign duration to appropriate zone
         for zone in zones:
             if zone["min_hr"] <= hr < zone["max_hr"]:
-                zone["count"] += 1
+                zone["count"] += duration_seconds
                 break
-            # Handle values at or above max zone
+        else:
+            # Handle values at or above max zone threshold
             if hr >= zones[-1]["max_hr"]:
-                zones[-1]["count"] += 1
-                break
+                zones[-1]["count"] += duration_seconds
 
     # Calculate percentages and build response
     total_time = sum(z["count"] for z in zones)
@@ -815,7 +871,7 @@ async def get_activity_hr_zones(
             name=z["name"],
             min_hr=z["min_hr"],
             max_hr=z["max_hr"],
-            time_seconds=z["count"],
+            time_seconds=int(round(z["count"])),
             percentage=round((z["count"] / total_time * 100) if total_time > 0 else 0, 1),
         ))
 
@@ -823,7 +879,7 @@ async def get_activity_hr_zones(
         activity_id=activity_id,
         max_hr=max_hr,
         zones=zone_responses,
-        total_time_in_zones=total_time,
+        total_time_in_zones=int(round(total_time)),
     )
 
 

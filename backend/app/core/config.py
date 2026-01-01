@@ -1,6 +1,7 @@
 """Application configuration settings."""
 
 import logging
+import os
 import warnings
 from functools import lru_cache
 from typing import Optional
@@ -8,6 +9,10 @@ from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
+
+# Environment detection
+_ENV = os.environ.get("ENVIRONMENT", "development").lower()
+_IS_PRODUCTION = _ENV in ("production", "prod")
 
 
 class Settings(BaseSettings):
@@ -23,7 +28,12 @@ class Settings(BaseSettings):
     app_name: str = "RunningCoach"
     app_version: str = "0.1.0"
     debug: bool = False
-    api_prefix: str = "/api/v1"
+    api_prefix: str = "/api/v1"  # Must NOT have trailing slash
+
+    @property
+    def normalized_api_prefix(self) -> str:
+        """Return api_prefix with trailing slash removed."""
+        return self.api_prefix.rstrip("/")
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/runningcoach"
@@ -35,8 +45,9 @@ class Settings(BaseSettings):
     # Session
     session_secret: str = "change-me-in-production"
     session_ttl_seconds: int = 604800  # 7 days
+    session_cookie_name: str = "session_id"  # Cookie name for session ID
     cookie_secure: bool = False  # Set to True in production (HTTPS)
-    cookie_samesite: str = "Lax"
+    cookie_samesite: str = "lax"  # Starlette expects lowercase: "lax", "strict", "none"
 
     # CORS
     cors_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
@@ -53,8 +64,8 @@ class Settings(BaseSettings):
     garmin_backfill_days: int = 0  # 0 = full history
     garmin_safety_window_days: int = 3
 
-    # FIT Storage
-    fit_storage_path: str = "/data/fit"
+    # FIT Storage (default to ./data/fit for local dev, override in production)
+    fit_storage_path: str = "./data/fit"
 
     # OpenAI
     openai_api_key: Optional[str] = None
@@ -95,31 +106,47 @@ class Settings(BaseSettings):
 _INSECURE_DEFAULT = "change-me-in-production"
 
 
+class InsecureConfigurationError(Exception):
+    """Raised when insecure configuration is detected in production."""
+
+    pass
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance.
 
-    Warns if security-sensitive settings are using default values.
+    In production (ENVIRONMENT=production), raises InsecureConfigurationError
+    if security-sensitive settings are using default values.
+    In development, logs warnings instead.
     """
     settings = Settings()
 
-    # Warn about insecure defaults in non-debug mode
-    if settings.session_secret == _INSECURE_DEFAULT:
-        msg = (
-            "session_secret is using the default value. "
-            "Set SESSION_SECRET environment variable for production."
-        )
-        if not settings.debug:
-            logger.warning(msg)
-        warnings.warn(msg, UserWarning, stacklevel=2)
+    insecure_settings: list[str] = []
 
+    # Check session_secret
+    if settings.session_secret == _INSECURE_DEFAULT:
+        insecure_settings.append("SESSION_SECRET")
+
+    # Check secret_key
     if settings.secret_key == _INSECURE_DEFAULT:
+        insecure_settings.append("SECRET_KEY")
+
+    # Check database_url (default contains 'localhost')
+    if "localhost" in settings.database_url and _IS_PRODUCTION:
+        insecure_settings.append("DATABASE_URL (using localhost in production)")
+
+    if insecure_settings:
         msg = (
-            "secret_key is using the default value. "
-            "Set SECRET_KEY environment variable for production."
+            f"Insecure configuration detected: {', '.join(insecure_settings)}. "
+            "Set these environment variables before running in production."
         )
-        if not settings.debug:
+        if _IS_PRODUCTION:
+            # In production, fail fast - don't allow insecure defaults
+            raise InsecureConfigurationError(msg)
+        else:
+            # In development, warn but continue
             logger.warning(msg)
-        warnings.warn(msg, UserWarning, stacklevel=2)
+            warnings.warn(msg, UserWarning, stacklevel=2)
 
     return settings

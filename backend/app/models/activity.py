@@ -29,6 +29,7 @@ class Activity(BaseModel):
     # Basic info
     activity_type: Mapped[str] = mapped_column(String(50), index=True)
     name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # User notes/memo from Garmin
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     start_time_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -77,6 +78,10 @@ class Activity(BaseModel):
     fit_file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     fit_file_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     has_fit_file: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Sensor info (detected from FIT file device_info)
+    has_stryd: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_external_hr: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Reference to raw data
     raw_event_id: Mapped[Optional[int]] = mapped_column(

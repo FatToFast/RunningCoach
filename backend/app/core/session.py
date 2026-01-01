@@ -1,14 +1,16 @@
 """Session management with Redis."""
 
-import secrets
-from datetime import datetime, timedelta, UTC
-from typing import Any, Optional
 import json
+import logging
+import secrets
+from datetime import datetime, UTC
+from typing import Any, Optional
 
 import redis.asyncio as redis
 
 from app.core.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Redis client (initialized lazily)
@@ -25,6 +27,22 @@ async def get_redis() -> redis.Redis:
             decode_responses=True,
         )
     return _redis_client
+
+
+async def close_redis() -> None:
+    """Close Redis client connection.
+
+    Call this during application shutdown to properly cleanup connections.
+    """
+    global _redis_client
+    if _redis_client is not None:
+        try:
+            await _redis_client.close()
+            logger.info("Redis connection closed")
+        except Exception as e:
+            logger.warning(f"Error closing Redis connection: {e}")
+        finally:
+            _redis_client = None
 
 
 def generate_session_id() -> str:

@@ -90,6 +90,14 @@ class Gear(BaseModel):
         comment="Recommended max distance before retirement (default 800km for shoes)",
     )
 
+    # Garmin-synced activity count (from totalActivities in gear stats)
+    garmin_activity_count: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        default=0,
+        comment="Activity count synced from Garmin",
+    )
+
     # Notes and image
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     image_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
@@ -114,8 +122,11 @@ class Gear(BaseModel):
 
     @property
     def activity_count(self) -> int:
-        """Count of activities using this gear."""
-        return len(self.activity_links)
+        """Count of activities using this gear (Garmin synced + local activities)."""
+        local_count = len(self.activity_links)
+        garmin_count = self.garmin_activity_count or 0
+        # Return whichever is larger (Garmin count includes all, local may be partial)
+        return max(local_count, garmin_count)
 
     @property
     def usage_percentage(self) -> Optional[float]:

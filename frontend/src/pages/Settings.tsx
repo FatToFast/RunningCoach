@@ -17,6 +17,7 @@ export function Settings() {
   const [success, setSuccess] = useState<string | null>(null);
 
   const isSyncing = syncMutation.isPending || syncStatus?.running;
+  const canSync = garminStatus?.session_valid && !isSyncing;
 
   const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,8 +69,12 @@ export function Settings() {
     setSuccess(null);
 
     try {
-      await syncMutation.mutateAsync({ full_backfill: true });
-      setSuccess('전체 동기화가 시작되었습니다. 백그라운드에서 진행됩니다.');
+      const result = await syncMutation.mutateAsync({ full_backfill: true });
+      if (result.started) {
+        setSuccess('전체 동기화가 시작되었습니다. 백그라운드에서 진행됩니다.');
+      } else {
+        setError(result.message || '동기화를 시작할 수 없습니다.');
+      }
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
@@ -83,8 +88,12 @@ export function Settings() {
     setSuccess(null);
 
     try {
-      await syncMutation.mutateAsync({});
-      setSuccess('동기화가 시작되었습니다.');
+      const result = await syncMutation.mutateAsync({});
+      if (result.started) {
+        setSuccess('동기화가 시작되었습니다.');
+      } else {
+        setError(result.message || '동기화를 시작할 수 없습니다.');
+      }
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
@@ -186,8 +195,9 @@ export function Settings() {
             <div className="flex flex-wrap gap-3 pt-2">
               <button
                 onClick={handleIncrementalSync}
-                disabled={isSyncing}
-                className="flex items-center gap-2 px-4 py-2 bg-cyan/10 text-cyan rounded-lg hover:bg-cyan/20 transition-colors disabled:opacity-50"
+                disabled={!canSync}
+                className="flex items-center gap-2 px-4 py-2 bg-cyan/10 text-cyan rounded-lg hover:bg-cyan/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title={!garminStatus?.session_valid ? '세션 갱신이 필요합니다. 다시 연동해주세요.' : undefined}
               >
                 {isSyncing ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -198,9 +208,9 @@ export function Settings() {
               </button>
               <button
                 onClick={handleFullSync}
-                disabled={isSyncing}
-                className="flex items-center gap-2 px-4 py-2 bg-amber-500/10 text-amber-400 rounded-lg hover:bg-amber-500/20 transition-colors disabled:opacity-50"
-                title="전체 히스토리를 처음부터 다시 동기화합니다"
+                disabled={!canSync}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-500/10 text-amber-400 rounded-lg hover:bg-amber-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title={!garminStatus?.session_valid ? '세션 갱신이 필요합니다. 다시 연동해주세요.' : '전체 히스토리를 처음부터 다시 동기화합니다'}
               >
                 {isSyncing ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -312,10 +322,6 @@ export function Settings() {
             <li className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-green-400" />
               스트레스/바디배터리
-            </li>
-            <li className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-green-400" />
-              체성분 데이터
             </li>
           </ul>
         </div>

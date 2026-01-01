@@ -18,6 +18,39 @@ interface KmPaceChartProps {
   className?: string;
 }
 
+// 랩 거리 패턴 감지 (1km 또는 400m 트랙)
+function detectLapPattern(laps: ActivityLap[]): { unit: 'km' | 'track' | 'mixed'; minDistance: number; label: string } {
+  const distances = laps
+    .filter((lap) => lap.distance_meters && lap.distance_meters > 100)
+    .map((lap) => lap.distance_meters!);
+
+  if (distances.length === 0) return { unit: 'mixed', minDistance: 100, label: '' };
+
+  // 평균 랩 거리 계산
+  const avgDistance = distances.reduce((a, b) => a + b, 0) / distances.length;
+
+  // 400m 트랙 패턴 감지 (350m ~ 450m)
+  const trackLaps = distances.filter((d) => d >= 350 && d <= 450);
+  if (trackLaps.length >= distances.length * 0.7) {
+    return { unit: 'track', minDistance: 350, label: '400m' };
+  }
+
+  // 1km 랩 패턴 감지 (900m ~ 1100m)
+  const filteredLaps = distances.filter((d) => d >= 900 && d <= 1100);
+  if (filteredLaps.length >= distances.length * 0.7) {
+    return { unit: 'km', minDistance: 900, label: 'km' };
+  }
+
+  // 혼합 패턴 - 가장 일반적인 패턴으로 필터링
+  if (avgDistance >= 800) {
+    return { unit: 'km', minDistance: 900, label: 'km' };
+  } else if (avgDistance >= 300) {
+    return { unit: 'track', minDistance: 350, label: '400m' };
+  }
+
+  return { unit: 'mixed', minDistance: 100, label: '' };
+}
+
 // 페이스에 따른 색상 (빠를수록 시안, 느릴수록 빨강)
 function getPaceColor(paceSeconds: number, avgPace: number): string {
   const diff = paceSeconds - avgPace;
@@ -36,20 +69,23 @@ function getPaceColor(paceSeconds: number, avgPace: number): string {
 }
 
 export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
+  // 랩 패턴 감지 (1km 또는 400m 트랙)
+  const lapPattern = useMemo(() => detectLapPattern(laps), [laps]);
+
   // 가장 느린 페이스 계산 (막대 높이 기준점)
   const slowestPace = useMemo(() => {
     const paces = laps
-      .filter((lap) => lap.distance_meters && lap.distance_meters >= 900 && lap.avg_pace_seconds)
+      .filter((lap) => lap.distance_meters && lap.distance_meters >= lapPattern.minDistance && lap.avg_pace_seconds)
       .map((lap) => lap.avg_pace_seconds!);
     return paces.length > 0 ? Math.max(...paces) + 15 : 0; // 15초 패딩
-  }, [laps]);
+  }, [laps, lapPattern.minDistance]);
 
-  // 1km 단위 랩만 필터링 (마지막 랩은 제외 가능)
-  const kmLaps = useMemo(() => {
+  // 랩 필터링 (1km 또는 400m 트랙)
+  const filteredLaps = useMemo(() => {
     return laps
-      .filter((lap) => lap.distance_meters && lap.distance_meters >= 900) // 900m 이상인 랩만
+      .filter((lap) => lap.distance_meters && lap.distance_meters >= lapPattern.minDistance)
       .map((lap) => ({
-        km: `${lap.lap_number}km`,
+        km: lapPattern.unit === 'track' ? `${lap.lap_number}` : `${lap.lap_number}km`,
         kmNum: lap.lap_number,
         pace: lap.avg_pace_seconds || 0,
         paceFormatted: formatPace(lap.avg_pace_seconds),
@@ -58,42 +94,45 @@ export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
         hr: lap.avg_hr,
         elevation: lap.elevation_gain,
       }));
-  }, [laps, slowestPace]);
+  }, [laps, slowestPace, lapPattern]);
 
   const avgPace = useMemo(() => {
-    if (kmLaps.length === 0) return 0;
-    return kmLaps.reduce((sum, lap) => sum + lap.pace, 0) / kmLaps.length;
-  }, [kmLaps]);
+    if (filteredLaps.length === 0) return 0;
+    return filteredLaps.reduce((sum: number, lap) => sum + lap.pace, 0) / filteredLaps.length;
+  }, [filteredLaps]);
 
   const avgHr = useMemo(() => {
-    const lapsWithHr = kmLaps.filter((l) => l.hr != null);
+    const lapsWithHr = filteredLaps.filter((l) => l.hr != null);
     if (lapsWithHr.length === 0) return null;
-    return Math.round(lapsWithHr.reduce((sum, lap) => sum + (lap.hr || 0), 0) / lapsWithHr.length);
-  }, [kmLaps]);
+    return Math.round(lapsWithHr.reduce((sum: number, lap) => sum + (lap.hr || 0), 0) / lapsWithHr.length);
+  }, [filteredLaps]);
 
-  const hasHrData = kmLaps.some((l) => l.hr != null);
+  const hasHrData = filteredLaps.some((l) => l.hr != null);
 
-  if (kmLaps.length === 0) {
+  if (filteredLaps.length === 0) {
     return null;
   }
 
   // Y축 도메인 계산 (페이스) - 페이스는 낮을수록 빠름
-  const minPace = Math.min(...kmLaps.map((l) => l.pace));
-  const maxPace = Math.max(...kmLaps.map((l) => l.pace));
+  const minPace = Math.min(...filteredLaps.map((l) => l.pace));
+  const maxPace = Math.max(...filteredLaps.map((l) => l.pace));
   const padding = 15; // 15초 패딩
 
   // 막대 높이 계산을 위한 기준점 (가장 느린 페이스 + 패딩)
   const baselinePace = maxPace + padding;
 
   // 심박수 도메인 계산
-  const hrValues = kmLaps.filter((l) => l.hr != null).map((l) => l.hr!);
+  const hrValues = filteredLaps.filter((l) => l.hr != null).map((l) => l.hr!);
   const minHr = hrValues.length > 0 ? Math.min(...hrValues) - 5 : 100;
   const maxHr = hrValues.length > 0 ? Math.max(...hrValues) + 5 : 180;
 
   return (
-    <div className={`card p-2 sm:p-3 ${className}`}>
-      <div className="flex items-center justify-between mb-2">
+    <div className={`card p-1 sm:p-1.5 ${className}`}>
+      <div className="flex items-center justify-between mb-0.5">
         <div className="flex items-center gap-2 text-[10px] sm:text-xs text-muted">
+          {lapPattern.unit === 'track' && (
+            <span className="px-1.5 py-0.5 bg-amber/20 text-amber rounded text-[9px]">트랙 400m</span>
+          )}
           <span>
             평균 <span className="text-cyan font-mono">{formatPace(avgPace)}/km</span>
           </span>
@@ -107,29 +146,31 @@ export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
       <div className="h-[200px] sm:h-[240px]">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
-            data={kmLaps}
-            margin={{ top: 5, right: 5, left: 0, bottom: 20 }}
+            data={filteredLaps}
+            margin={{ top: 5, right: 5, left: 0, bottom: 15 }}
           >
             {/* km X축 (하단) */}
             <XAxis
               dataKey="kmNum"
-              stroke="#484f58"
-              fontSize={9}
+              stroke="#8b949e"
+              tick={{ fill: '#8b949e' }}
+              fontSize={10}
               tickLine={false}
-              axisLine={{ stroke: '#30363d' }}
+              axisLine={{ stroke: '#484f58' }}
               tickFormatter={(v) => `${v}`}
-              interval={kmLaps.length > 20 ? Math.floor(kmLaps.length / 10) - 1 : 0}
+              interval={filteredLaps.length > 20 ? Math.floor(filteredLaps.length / 10) - 1 : 0}
             />
             {/* 페이스 Y축 (왼쪽) - 막대 높이용 (0 ~ max barHeight), 라벨은 페이스로 표시 */}
             <YAxis
               yAxisId="pace"
               domain={[0, baselinePace - minPace + padding]}
-              stroke="#484f58"
-              fontSize={9}
+              stroke="#8b949e"
+              tick={{ fill: '#c9d1d9' }}
+              fontSize={10}
               tickFormatter={(v) => formatPace(baselinePace - v)}
               tickLine={false}
               axisLine={false}
-              width={36}
+              width={40}
               ticks={[0, (baselinePace - minPace) / 2, baselinePace - minPace]}
             />
             {/* 심박수 Y축 (오른쪽) */}
@@ -138,20 +179,24 @@ export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
                 yAxisId="hr"
                 orientation="right"
                 domain={[minHr, maxHr]}
-                stroke="#484f58"
-                fontSize={9}
+                stroke="#8b949e"
+                tick={{ fill: '#ff6b6b' }}
+                fontSize={10}
                 tickLine={false}
                 axisLine={false}
-                width={28}
+                width={32}
               />
             )}
             <Tooltip
               contentStyle={{
                 background: '#1c2128',
                 border: '1px solid #30363d',
-                borderRadius: '8px',
-                fontSize: '11px',
+                borderRadius: '6px',
+                fontSize: '12px',
+                padding: '6px 10px',
               }}
+              itemStyle={{ color: '#e6edf3', padding: 0, margin: 0 }}
+              labelStyle={{ color: '#8b949e', fontWeight: 'bold', marginBottom: '2px' }}
               formatter={(value, name, props) => {
                 if (name === 'barHeight') {
                   // barHeight에서 실제 페이스 계산
@@ -163,7 +208,7 @@ export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
                 }
                 return [value, name];
               }}
-              labelFormatter={(label) => `${label}km`}
+              labelFormatter={(label) => lapPattern.unit === 'track' ? `Lap ${label}` : `${label}km`}
             />
             <ReferenceLine
               yAxisId="pace"
@@ -173,7 +218,7 @@ export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
               strokeOpacity={0.6}
             />
             <Bar yAxisId="pace" dataKey="barHeight" radius={[3, 3, 0, 0]} maxBarSize={24}>
-              {kmLaps.map((entry, index) => (
+              {filteredLaps.map((entry, index) => (
                 <Cell key={`cell-${index}`} fill={getPaceColor(entry.pace, avgPace)} />
               ))}
             </Bar>
@@ -192,7 +237,7 @@ export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
         </ResponsiveContainer>
       </div>
       {/* Legend - compact */}
-      <div className="flex items-center justify-center gap-3 mt-1 text-[9px] sm:text-[10px] text-muted">
+      <div className="flex items-center justify-center gap-3 mt-0.5 text-[9px] sm:text-[10px] text-muted">
         <div className="flex items-center gap-1">
           <div className="w-2.5 h-2.5 rounded" style={{ backgroundColor: 'rgba(0, 212, 255, 0.9)' }} />
           <span>빠름</span>

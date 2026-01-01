@@ -5,10 +5,16 @@ import type {
   RunalyzeHRVResponse,
   RunalyzeSleepResponse,
   RunalyzeSummary,
+  RunalyzeCalculations,
+  RunalyzeTrainingPaces,
 } from '../types/api';
 
-// Mock data for development (USE_MOCK_DATA = true)
-const USE_MOCK_DATA = true;
+// Use environment variable for mock data (default: false in production)
+const USE_MOCK_DATA = import.meta.env.VITE_USE_MOCK_DATA === 'true';
+
+// -------------------------------------------------------------------------
+// Mock Data (for development/testing only)
+// -------------------------------------------------------------------------
 
 const mockStatus: RunalyzeConnectionStatus = {
   connected: true,
@@ -43,13 +49,45 @@ const mockSleepResponse: RunalyzeSleepResponse = {
 
 const mockSummary: RunalyzeSummary = {
   latest_hrv: 52,
-  latest_hrv_date: '2024-12-29',
+  latest_hrv_date: '2024-12-29T06:30:00Z',
   avg_hrv_7d: 51.1,
   latest_sleep_quality: 8,
   latest_sleep_duration: 450,
-  latest_sleep_date: '2024-12-29',
+  latest_sleep_date: '2024-12-29T06:30:00Z',
   avg_sleep_quality_7d: 7.4,
+  hrv_error: null,
+  sleep_error: null,
 };
+
+const mockCalculations: RunalyzeCalculations = {
+  effective_vo2max: 52.5,
+  marathon_shape: 78.5,
+  atl: 45.2,
+  ctl: 62.8,
+  tsb: 17.6,
+  workload_ratio: 0.72,
+  rest_days: 2,
+  monotony: 1.2,
+  training_strain: 285,
+};
+
+const mockTrainingPaces: RunalyzeTrainingPaces = {
+  vdot: 52,
+  easy_min: 330, // 5:30/km
+  easy_max: 360, // 6:00/km
+  marathon_min: 285, // 4:45/km
+  marathon_max: 300, // 5:00/km
+  threshold_min: 255, // 4:15/km
+  threshold_max: 270, // 4:30/km
+  interval_min: 225, // 3:45/km
+  interval_max: 240, // 4:00/km
+  repetition_min: 195, // 3:15/km
+  repetition_max: 210, // 3:30/km
+};
+
+// -------------------------------------------------------------------------
+// Hooks
+// -------------------------------------------------------------------------
 
 /**
  * Hook to check Runalyze connection status.
@@ -71,9 +109,13 @@ export function useRunalyzeStatus() {
 
 /**
  * Hook to fetch HRV data from Runalyze.
- * @param limit - Maximum number of records (default: 30)
+ * Only fetches when Runalyze is connected.
+ * @param params.limit - Maximum number of records (default: 30)
  */
 export function useRunalyzeHRV(params?: RunalyzeDataParams) {
+  const { data: status } = useRunalyzeStatus();
+  const isConnected = status?.connected ?? false;
+
   return useQuery({
     queryKey: ['runalyze', 'hrv', params?.limit],
     queryFn: async () => {
@@ -84,14 +126,19 @@ export function useRunalyzeHRV(params?: RunalyzeDataParams) {
       return runalyzeApi.getHRV(params);
     },
     staleTime: 1000 * 60 * 15, // 15 minutes
+    enabled: USE_MOCK_DATA || isConnected, // Only fetch when connected
   });
 }
 
 /**
  * Hook to fetch sleep data from Runalyze.
- * @param limit - Maximum number of records (default: 30)
+ * Only fetches when Runalyze is connected.
+ * @param params.limit - Maximum number of records (default: 30)
  */
 export function useRunalyzeSleep(params?: RunalyzeDataParams) {
+  const { data: status } = useRunalyzeStatus();
+  const isConnected = status?.connected ?? false;
+
   return useQuery({
     queryKey: ['runalyze', 'sleep', params?.limit],
     queryFn: async () => {
@@ -102,14 +149,19 @@ export function useRunalyzeSleep(params?: RunalyzeDataParams) {
       return runalyzeApi.getSleep(params);
     },
     staleTime: 1000 * 60 * 15, // 15 minutes
+    enabled: USE_MOCK_DATA || isConnected, // Only fetch when connected
   });
 }
 
 /**
  * Hook to fetch combined health metrics summary from Runalyze.
+ * Only fetches when Runalyze is connected.
  * Most useful for dashboard display.
  */
 export function useRunalyzeSummary() {
+  const { data: status } = useRunalyzeStatus();
+  const isConnected = status?.connected ?? false;
+
   return useQuery({
     queryKey: ['runalyze', 'summary'],
     queryFn: async () => {
@@ -120,5 +172,52 @@ export function useRunalyzeSummary() {
       return runalyzeApi.getSummary();
     },
     staleTime: 1000 * 60 * 10, // 10 minutes
+    enabled: USE_MOCK_DATA || isConnected, // Only fetch when connected
+  });
+}
+
+/**
+ * Hook to fetch training calculations from Runalyze.
+ * Only fetches when Runalyze is connected.
+ * Includes VO2max, ATL, CTL, TSB, and other metrics.
+ */
+export function useRunalyzeCalculations() {
+  const { data: status } = useRunalyzeStatus();
+  const isConnected = status?.connected ?? false;
+
+  return useQuery({
+    queryKey: ['runalyze', 'calculations'],
+    queryFn: async () => {
+      if (USE_MOCK_DATA) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return mockCalculations;
+      }
+      return runalyzeApi.getCalculations();
+    },
+    staleTime: 1000 * 60 * 15, // 15 minutes
+    enabled: USE_MOCK_DATA || isConnected, // Only fetch when connected
+  });
+}
+
+/**
+ * Hook to fetch Daniels-based training paces from Runalyze.
+ * Only fetches when Runalyze is connected.
+ * Returns paces in seconds per km for different training zones.
+ */
+export function useRunalyzeTrainingPaces() {
+  const { data: status } = useRunalyzeStatus();
+  const isConnected = status?.connected ?? false;
+
+  return useQuery({
+    queryKey: ['runalyze', 'training-paces'],
+    queryFn: async () => {
+      if (USE_MOCK_DATA) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return mockTrainingPaces;
+      }
+      return runalyzeApi.getTrainingPaces();
+    },
+    staleTime: 1000 * 60 * 30, // 30 minutes (paces don't change often)
+    enabled: USE_MOCK_DATA || isConnected, // Only fetch when connected
   });
 }
