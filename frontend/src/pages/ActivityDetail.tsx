@@ -50,14 +50,11 @@ const ActivityMap = lazy(() =>
 );
 
 function getHRZoneColor(zone: number): string {
-  const colors = ['#00d4ff', '#00ff88', '#ffb800', '#ff6b35', '#ff4757'];
+  // Garmin-style colors: grey, blue, green, orange, red
+  const colors = ['#9ca3af', '#3b82f6', '#22c55e', '#f97316', '#ef4444'];
   return colors[zone - 1] || colors[0];
 }
 
-function getHRZoneName(zone: number): string {
-  const names = ['회복', '유산소', '템포', '역치', '최대'];
-  return names[zone - 1] || '';
-}
 
 export function ActivityDetail() {
   const { id } = useParams<{ id: string }>();
@@ -118,16 +115,41 @@ export function ActivityDetail() {
     // Get the first sample's timestamp as reference
     const firstTimestamp = samples[0].timestamp ? new Date(samples[0].timestamp).getTime() : 0;
 
+    // Collect valid pace values for outlier detection (IQR method)
+    const paceValues = samples
+      .map((s) => s.pace_seconds)
+      .filter((p): p is number => p != null && p > 0)
+      .sort((a, b) => a - b);
+
+    let minPace = 0;
+    let maxPace = Infinity;
+
+    if (paceValues.length >= 4) {
+      const q1Index = Math.floor(paceValues.length * 0.25);
+      const q3Index = Math.floor(paceValues.length * 0.75);
+      const q1 = paceValues[q1Index];
+      const q3 = paceValues[q3Index];
+      const iqr = q3 - q1;
+      // 1.5 * IQR is standard, but use 2.0 for pace to be more lenient
+      minPace = q1 - 2.0 * iqr;
+      maxPace = q3 + 2.0 * iqr;
+    }
+
     return samples.map((s) => {
       // Calculate elapsed seconds from first sample
       const elapsed = s.timestamp
         ? Math.round((new Date(s.timestamp).getTime() - firstTimestamp) / 1000)
         : 0;
 
+      // Filter outlier pace values (measurement errors)
+      const paceSeconds = s.pace_seconds;
+      const isValidPace =
+        paceSeconds != null && paceSeconds > minPace && paceSeconds < maxPace;
+
       return {
         time: elapsed,
         hr: s.hr,
-        pace: s.pace_seconds ? s.pace_seconds / 60 : null,
+        pace: isValidPace ? paceSeconds / 60 : null,
         elevation: s.altitude,
         cadence: s.cadence,
       };
@@ -323,7 +345,7 @@ export function ActivityDetail() {
           )}
 
           {/* Training Effect Anaerobic */}
-          {activity.training_effect_anaerobic && (
+          {activity.training_effect_anaerobic != null && (
             <div className="relative text-center p-2 bg-[var(--color-bg-tertiary)] rounded-lg">
               <MetricTooltip description="무산소 운동 효과입니다. 고강도 인터벌 훈련의 효과를 측정합니다." />
               <div className="font-mono text-lg sm:text-xl font-bold text-purple-400">
@@ -642,16 +664,20 @@ export function ActivityDetail() {
         </div>
       )}
 
-      {/* HR Zones */}
+      {/* HR Zones - Garmin style */}
       {hrZones && hrZones.length > 0 && (
         <div className="card p-1.5">
           <h3 className="font-display font-semibold mb-1.5 text-base">심박 존</h3>
           <div className="space-y-1.5">
             {hrZones.map((zone) => (
               <div key={zone.zone} className="flex items-center gap-2 sm:gap-4">
-                <div className="w-16 sm:w-24 text-xs sm:text-sm flex-shrink-0">
-                  <span className="font-semibold">Z{zone.zone}</span>
-                  <span className="text-muted ml-1 sm:ml-2">{getHRZoneName(zone.zone)}</span>
+                <div className="w-28 sm:w-36 text-xs sm:text-sm flex-shrink-0">
+                  <span className="font-semibold" style={{ color: getHRZoneColor(zone.zone) }}>
+                    Z{zone.zone}
+                  </span>
+                  <span className="text-muted ml-1 sm:ml-2 text-[10px] sm:text-xs">
+                    {zone.min_hr}-{zone.max_hr} bpm
+                  </span>
                 </div>
                 <div className="flex-1 h-4 sm:h-6 bg-[var(--color-bg-tertiary)] rounded-full overflow-hidden">
                   <div

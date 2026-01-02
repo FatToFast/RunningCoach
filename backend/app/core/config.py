@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     garmin_encryption_key: Optional[str] = None
     garmin_backfill_days: int = 0  # 0 = full history
     garmin_safety_window_days: int = 3
+    garmin_max_consecutive_empty: int = 30  # Stop backfill after N empty days
 
     # FIT Storage (default to ./data/fit for local dev, override in production)
     fit_storage_path: str = "./data/fit"

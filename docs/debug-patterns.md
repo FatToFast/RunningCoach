@@ -1062,4 +1062,245 @@ start_date: datetime | None = Query(None, description="Filter start date (from)"
 
 ---
 
-*마지막 업데이트: 2025-12-31*
+---
+
+## 로컬 개발 환경 트러블슈팅
+
+### 빠른 시작 가이드
+
+```bash
+# 1. 백엔드 시작
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 2. 프론트엔드 시작 (별도 터미널)
+cd frontend
+npm run dev
+
+# 3. 브라우저에서 http://localhost:5173 접속
+```
+
+---
+
+### CORS 에러
+
+**증상**:
+```
+Access to XMLHttpRequest at 'http://localhost:8000/api/v1/...' from origin 'http://localhost:5173'
+has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present
+```
+
+**원인**: `.env` 파일에 `CORS_ORIGINS` 환경변수가 없음
+
+**해결**:
+```bash
+# backend/.env에 추가
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173
+```
+
+그 후 백엔드 서버 재시작.
+
+---
+
+### 마이그레이션 버전 오류
+
+**증상**:
+```
+Can't locate revision identified by 'XXXXXXXX'
+```
+
+**원인**:
+- GitHub에서 마이그레이션 파일이 삭제/변경됨
+- 로컬 DB의 `alembic_version`이 존재하지 않는 리비전을 가리킴
+
+**해결**:
+```bash
+# 1. 현재 DB 버전 확인
+/opt/homebrew/opt/postgresql@15/bin/psql -d runningcoach -c "SELECT version_num FROM alembic_version;"
+
+# 2. 최신 마이그레이션 리비전 찾기
+cd backend
+source .venv/bin/activate
+alembic history | head -5
+
+# 3. DB 버전 수동 업데이트 (head 리비전으로)
+/opt/homebrew/opt/postgresql@15/bin/psql -d runningcoach -c "UPDATE alembic_version SET version_num = '<HEAD_REVISION>';"
+
+# 4. 스키마 드리프트 확인 및 자동 수정
+python scripts/check_schema.py --fix
+```
+
+---
+
+### 스키마 드리프트 (누락된 컬럼)
+
+**증상**:
+```
+column activities.has_stryd does not exist
+```
+또는 500 Internal Server Error (CORS 에러처럼 보일 수 있음)
+
+**원인**:
+- git pull 후 새 모델 필드가 추가됨
+- 마이그레이션이 이미 다른 환경에서 실행되어 로컬과 불일치
+
+**해결**:
+```bash
+cd backend
+source .venv/bin/activate
+
+# 1. 스키마 확인 (체크만)
+python scripts/check_schema.py
+
+# 2. 누락된 컬럼 자동 추가
+python scripts/check_schema.py --fix
+
+# 3. 백엔드 재시작
+```
+
+**권장 워크플로우** - git pull 후 항상 실행:
+```bash
+git pull
+cd backend && source .venv/bin/activate
+python scripts/check_schema.py --fix
+```
+
+---
+
+### Redis 연결 오류
+
+**증상**:
+```
+redis.exceptions.ConnectionError: Error 61 connecting to localhost:6379
+```
+
+**해결**:
+```bash
+# macOS
+brew services start redis
+
+# 확인
+redis-cli ping
+# 응답: PONG
+```
+
+---
+
+### PostgreSQL 연결 오류
+
+**증상**:
+```
+sqlalchemy.exc.OperationalError: could not connect to server
+```
+
+**해결**:
+```bash
+# macOS
+brew services start postgresql@15
+
+# 데이터베이스 존재 확인
+/opt/homebrew/opt/postgresql@15/bin/psql -l | grep runningcoach
+
+# 없으면 생성
+/opt/homebrew/opt/postgresql@15/bin/createdb runningcoach
+```
+
+---
+
+### 포트 충돌
+
+**증상**:
+```
+Address already in use - bind(2) for "0.0.0.0" port 8000
+```
+
+**해결**:
+```bash
+# 해당 포트 사용 프로세스 종료
+lsof -ti:8000 | xargs kill -9
+lsof -ti:5173 | xargs kill -9
+```
+
+---
+
+### 쿠키가 저장되지 않음
+
+**증상**: 로그인 후 API 호출 시 401 Unauthorized
+
+**원인**:
+1. HTTPS에서 HTTP 쿠키 설정 (Secure=true 문제)
+2. SameSite 설정 문제
+
+**해결** (`backend/.env`):
+```bash
+# 로컬 개발 환경 설정
+COOKIE_SECURE=false
+COOKIE_SAMESITE=lax
+```
+
+---
+
+### Garmin 세션 만료
+
+**증상**: 동기화 버튼이 비활성화되고 "세션 갱신 필요" 표시
+
+**해결**: Settings 페이지에서 Garmin 연동 해제 후 다시 연동
+
+---
+
+### 로그 확인
+
+```bash
+# 백엔드 로그 (실시간)
+tail -f /tmp/claude/.../tasks/XXX.output
+
+# 또는 터미널에서 직접 실행
+cd backend && source .venv/bin/activate && uvicorn app.main:app --port 8000 --reload
+```
+
+---
+
+### 유용한 디버깅 명령어
+
+```bash
+# API 헬스 체크
+curl http://localhost:8000/health
+
+# 세션 상태 확인 (쿠키 파일 필요)
+curl -b cookies.txt http://localhost:8000/api/v1/auth/me
+
+# DB 테이블 스키마 확인
+/opt/homebrew/opt/postgresql@15/bin/psql -d runningcoach -c "\d+ activities"
+
+# Redis 세션 확인
+redis-cli keys "session:*"
+
+# 마이그레이션 상태
+cd backend && source .venv/bin/activate && alembic current
+```
+
+---
+
+### 환경 변수 체크리스트
+
+로컬 개발에 필요한 최소 설정 (`backend/.env`):
+
+```bash
+# 필수
+DATABASE_URL=postgresql+asyncpg://<user>@localhost:5432/runningcoach
+REDIS_URL=redis://localhost:6379/0
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# 보안 (개발용)
+SESSION_SECRET=<랜덤 문자열>
+COOKIE_SECURE=false
+COOKIE_SAMESITE=lax
+
+# Garmin 연동 (선택)
+GARMIN_ENCRYPTION_KEY=<Fernet key>
+```
+
+---
+
+*마지막 업데이트: 2026-01-02*

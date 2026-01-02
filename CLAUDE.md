@@ -54,7 +54,34 @@ RunningCoach/
 └── docs/             # 문서
 ```
 
+## git pull 후 필수 작업
+
+**중요**: GitHub에서 pull 후 반드시 스키마 체크를 실행합니다.
+
+```bash
+git pull
+cd backend && source .venv/bin/activate
+python scripts/check_schema.py --fix
+```
+
+이 스크립트는 SQLAlchemy 모델과 실제 DB 스키마를 비교하여 누락된 컬럼을 자동으로 추가합니다.
+
 ## 개발 명령어
+
+### 로컬 서버 시작
+
+```bash
+# 1. 백엔드 시작
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 2. 프론트엔드 시작 (별도 터미널)
+cd frontend
+npm run dev
+
+# 3. 브라우저에서 http://localhost:5173 접속
+```
 
 ### Backend
 
@@ -62,6 +89,10 @@ RunningCoach/
 cd backend
 source .venv/bin/activate   # 가상환경 활성화
 uvicorn app.main:app --reload --port 8000
+
+# 스키마 확인
+python scripts/check_schema.py
+python scripts/check_schema.py --fix  # 누락된 컬럼 자동 추가
 
 # 테스트
 pytest

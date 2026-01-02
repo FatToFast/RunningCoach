@@ -185,6 +185,14 @@ async def _get_runalyze_client() -> httpx.AsyncClient:
 
 
 async def _runalyze_get(client: httpx.AsyncClient, path: str) -> httpx.Response:
+    """Make GET request to Runalyze API.
+
+    IMPORTANT: path must NOT start with '/' - httpx base_url path joining
+    treats leading '/' as absolute path, overwriting base_url's path component.
+    e.g., base_url="https://runalyze.com/api/v1" + path="/ping"
+          → https://runalyze.com/ping (WRONG)
+    Use path="ping" instead → https://runalyze.com/api/v1/ping (CORRECT)
+    """
     metrics = get_metrics_backend()
     start_time = time.perf_counter()
     status_code = 500
@@ -229,7 +237,7 @@ async def get_runalyze_status(
 
     try:
         async with await _get_runalyze_client() as client:
-            response = await _runalyze_get(client, "/ping")
+            response = await _runalyze_get(client, "ping")
             data = response.json()
 
             # Accept various "pong" response formats:
@@ -289,7 +297,7 @@ async def get_hrv_data(
     """
     try:
         async with await _get_runalyze_client() as client:
-            response = await _runalyze_get(client, "/metrics/hrv")
+            response = await _runalyze_get(client, "metrics/hrv")
             raw_data = response.json()
 
             # Parse and sort by date descending
@@ -359,7 +367,7 @@ async def get_sleep_data(
     """
     try:
         async with await _get_runalyze_client() as client:
-            response = await _runalyze_get(client, "/metrics/sleep")
+            response = await _runalyze_get(client, "metrics/sleep")
             raw_data = response.json()
 
             # Parse and sort by date descending
@@ -434,7 +442,7 @@ async def get_runalyze_summary(
         async with await _get_runalyze_client() as client:
             # Fetch HRV data
             try:
-                hrv_response = await _runalyze_get(client, "/metrics/hrv")
+                hrv_response = await _runalyze_get(client, "metrics/hrv")
                 if hrv_response.status_code == 200:
                     hrv_data = hrv_response.json()
                     if hrv_data:
@@ -477,7 +485,7 @@ async def get_runalyze_summary(
 
             # Fetch sleep data
             try:
-                sleep_response = await _runalyze_get(client, "/metrics/sleep")
+                sleep_response = await _runalyze_get(client, "metrics/sleep")
                 if sleep_response.status_code == 200:
                     sleep_data = sleep_response.json()
                     if sleep_data:
@@ -563,7 +571,7 @@ async def get_runalyze_calculations(
         async with await _get_runalyze_client() as client:
             # Try /metrics/calculations endpoint
             try:
-                response = await _runalyze_get(client, "/metrics/calculations")
+                response = await _runalyze_get(client, "metrics/calculations")
                 if response.status_code == 200:
                     data = response.json()
                     if data:
@@ -582,7 +590,7 @@ async def get_runalyze_calculations(
             # Fallback: try individual endpoints if /metrics/calculations fails
             if calculations.effective_vo2max is None:
                 try:
-                    vo2max_response = await _runalyze_get(client, "/metrics/vo2max")
+                    vo2max_response = await _runalyze_get(client, "metrics/vo2max")
                     if vo2max_response.status_code == 200:
                         vo2max_data = vo2max_response.json()
                         if vo2max_data and isinstance(vo2max_data, list) and len(vo2max_data) > 0:
@@ -599,7 +607,7 @@ async def get_runalyze_calculations(
             # Try fitness endpoint for ATL/CTL/TSB
             if calculations.ctl is None:
                 try:
-                    fitness_response = await _runalyze_get(client, "/metrics/fitness")
+                    fitness_response = await _runalyze_get(client, "metrics/fitness")
                     if fitness_response.status_code == 200:
                         fitness_data = fitness_response.json()
                         if fitness_data:
@@ -650,7 +658,7 @@ async def get_runalyze_training_paces(
     try:
         async with await _get_runalyze_client() as client:
             # Try /metrics/paces or /training/paces endpoint
-            for endpoint in ["/metrics/paces", "/training/paces", "/paces"]:
+            for endpoint in ["metrics/paces", "training/paces", "paces"]:
                 try:
                     response = await _runalyze_get(client, endpoint)
                     if response.status_code == 200:

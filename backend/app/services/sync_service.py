@@ -358,13 +358,32 @@ class GarminSyncService:
         endpoint: str,
         fetcher: Callable[[date], Any],
     ) -> None:
-        """Sync daily Garmin endpoints and store raw data only."""
+        """Sync daily Garmin endpoints with optimized batch processing.
+
+        Performance optimizations:
+        1. Process dates in reverse order (most recent first)
+        2. Early termination: stop after N consecutive empty responses
+        3. Batch commits for better DB performance
+
+        For full backfill scenarios (e.g., 10 years = 3650 days),
+        this approach stops early when historical data runs out.
+        """
         import asyncio
 
         loop = asyncio.get_event_loop()
-        current_date = start_date
 
-        while current_date <= end_date:
+        # Process dates in reverse order (most recent first)
+        total_days = (end_date - start_date).days + 1
+        dates_to_sync = [end_date - timedelta(days=i) for i in range(total_days)]
+
+        # Early termination settings
+        max_consecutive_empty = settings.garmin_max_consecutive_empty  # default: 30
+        consecutive_empty = 0
+        batch_size = 50  # Commit every 50 records
+
+        items_in_batch = 0
+
+        for current_date in dates_to_sync:
             try:
                 data = await loop.run_in_executor(
                     None,
@@ -374,10 +393,27 @@ class GarminSyncService:
                     result.items_fetched += 1
                     await self._store_raw_event(endpoint, data, flush=False)
                     result.items_created += 1
+                    consecutive_empty = 0  # Reset on success
+                    items_in_batch += 1
+
+                    # Batch commit
+                    if items_in_batch >= batch_size:
+                        await self.session.commit()
+                        items_in_batch = 0
+                else:
+                    consecutive_empty += 1
+
             except Exception as e:
                 logger.warning(f"Failed to fetch {endpoint} for {current_date}: {e}")
+                consecutive_empty += 1
 
-            current_date += timedelta(days=1)
+            # Early termination: stop if too many consecutive empty days
+            if consecutive_empty >= max_consecutive_empty:
+                logger.info(
+                    f"Early termination for {endpoint}: {consecutive_empty} consecutive "
+                    f"empty responses at {current_date}. Likely reached data boundary."
+                )
+                break
 
         await self.session.commit()
 
@@ -777,6 +813,37 @@ class GarminSyncService:
                 activity.avg_power = int(session_data["avg_power"])
             if session_data.get("max_power"):
                 activity.max_power = int(session_data["max_power"])
+
+        # Update sensor detection flags from FIT device_info
+        sensors = parsed_data.get("sensors", {})
+        if sensors.get("has_stryd"):
+            activity.has_stryd = True
+            logger.info(f"Stryd detected for activity {activity.id}")
+
+            # Calculate Stryd metrics from records (session data often missing for Stryd)
+            power_values = [r["power"] for r in records if r.get("power")]
+            form_powers = [r["form_power"] for r in records if r.get("form_power")]
+            lss_values = [r["leg_spring_stiffness"] for r in records if r.get("leg_spring_stiffness")]
+
+            # Power (main running power from Stryd)
+            if power_values and not activity.avg_power:
+                activity.avg_power = int(sum(power_values) / len(power_values))
+                activity.max_power = max(power_values)
+                logger.info(f"Stryd Power: avg={activity.avg_power}W, max={activity.max_power}W")
+
+            # Form Power (Stryd-specific)
+            if form_powers:
+                activity.avg_form_power = int(sum(form_powers) / len(form_powers))
+                logger.info(f"Avg Form Power: {activity.avg_form_power}W")
+
+            # Leg Spring Stiffness
+            if lss_values:
+                activity.avg_leg_spring_stiffness = round(sum(lss_values) / len(lss_values), 2)
+                logger.info(f"Avg LSS: {activity.avg_leg_spring_stiffness} kN/m")
+
+        if sensors.get("has_external_hr"):
+            activity.has_external_hr = True
+            logger.info(f"External HR monitor detected for activity {activity.id}")
 
         # Calculate and store derived metrics (TRIMP, EF, etc.)
         await self._calculate_and_store_metrics(activity, records)

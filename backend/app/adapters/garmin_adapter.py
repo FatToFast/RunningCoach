@@ -508,14 +508,17 @@ class GarminConnectAdapter:
         status_code = 500
 
         try:
-            # Download FIT file bytes
-            fit_data = self._client.download_activity(
+            # Download FIT file bytes (may be ZIP-compressed)
+            raw_data = self._client.download_activity(
                 activity_id,
                 dl_fmt=self._client.ActivityDownloadFormat.ORIGINAL,
             )
 
-            if not fit_data:
+            if not raw_data:
                 raise GarminAPIError(f"No FIT data returned for activity {activity_id}")
+
+            # Extract FIT from ZIP if needed (Garmin returns ZIP archives)
+            fit_data = self._extract_fit_from_zip(raw_data)
 
             # Calculate hash for deduplication
             file_hash = hashlib.sha256(fit_data).hexdigest()
@@ -527,7 +530,7 @@ class GarminConnectAdapter:
             file_name = f"{activity_id}.fit"
             file_path = os.path.join(storage_dir, file_name)
 
-            # Save file
+            # Save extracted FIT file (not ZIP)
             with open(file_path, "wb") as f:
                 f.write(fit_data)
 
@@ -611,9 +614,13 @@ class GarminConnectAdapter:
                 "records": [],
                 "laps": [],
                 "session": {},
-                "device_info": {},
+                "device_info": [],  # List of all device_info records
                 "events": [],
                 "hrv": [],
+                "sensors": {  # Detected sensors
+                    "has_stryd": False,
+                    "has_external_hr": False,
+                },
             }
 
             for record in fit_file.get_messages():
@@ -633,7 +640,16 @@ class GarminConnectAdapter:
                 elif record.name == "session":
                     result["session"] = self._extract_session_fields(record_data)
                 elif record.name == "device_info":
-                    result["device_info"] = record_data
+                    result["device_info"].append(record_data)
+                    # Detect sensors from device_info
+                    manufacturer = record_data.get("manufacturer")
+                    device_type = record_data.get("device_type")
+                    # Stryd detection
+                    if manufacturer == "stryd":
+                        result["sensors"]["has_stryd"] = True
+                    # External HR monitor detection (device_type 120 = ANT+ HR)
+                    if device_type == 120:
+                        result["sensors"]["has_external_hr"] = True
                 elif record.name == "event":
                     result["events"].append(record_data)
                 elif record.name == "hrv":
@@ -681,7 +697,20 @@ class GarminConnectAdapter:
             "step_length",
             "temperature",
         ]
-        return {k: data.get(k) for k in fields if data.get(k) is not None}
+        result = {k: data.get(k) for k in fields if data.get(k) is not None}
+
+        # Handle Stryd-specific fields (different casing)
+        # Stryd uses "Power" instead of "power"
+        if result.get("power") is None and data.get("Power") is not None:
+            result["power"] = data.get("Power")
+        if data.get("Form Power") is not None:
+            result["form_power"] = data.get("Form Power")
+        if data.get("Leg Spring Stiffness") is not None:
+            result["leg_spring_stiffness"] = data.get("Leg Spring Stiffness")
+        if data.get("Air Power") is not None:
+            result["air_power"] = data.get("Air Power")
+
+        return result
 
     def _extract_lap_fields(self, data: dict[str, Any]) -> dict[str, Any]:
         """Extract relevant fields from a FIT lap message.

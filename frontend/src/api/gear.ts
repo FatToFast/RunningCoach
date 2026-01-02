@@ -68,7 +68,8 @@ export const gearApi = {
   // 활동에 연결된 장비 조회
   getActivityGear: async (activityId: number): Promise<GearSummary[]> => {
     const { data } = await apiClient.get(`/activities/${activityId}/gear`);
-    return data;
+    // API returns { activity_id, gears: [...], total }
+    return data.gears || [];
   },
 
   // Garmin에서 장비 동기화

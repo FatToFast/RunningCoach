@@ -14,7 +14,7 @@ from typing import Annotated, Any
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -429,8 +429,24 @@ async def disconnect_garmin(
 async def get_garmin_status(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
+    validate: bool = Query(
+        False,
+        description="If True, validates session with Garmin API (slower but accurate)",
+    ),
 ) -> GarminStatusResponse:
-    """Get current Garmin connection status."""
+    """Get current Garmin connection status.
+
+    Args:
+        current_user: Authenticated user.
+        db: Database session.
+        validate: If True, makes an API call to verify session is actually valid.
+                  Default False for fast status check.
+
+    Returns:
+        Connection status with session validity.
+    """
+    import asyncio
+
     result = await db.execute(
         select(GarminSession).where(GarminSession.user_id == current_user.id)
     )
@@ -439,8 +455,25 @@ async def get_garmin_status(
     if not session:
         return GarminStatusResponse(connected=False)
 
-    # Check if session_data exists and appears valid
+    # Fast check: session_data exists and not empty
     session_valid = session.is_valid
+
+    # Optional deep validation: actually test with Garmin API
+    if validate and session_valid:
+        try:
+            adapter = GarminConnectAdapter()
+            loop = asyncio.get_event_loop()
+            is_actually_valid = await loop.run_in_executor(
+                None,
+                lambda: adapter.validate_session(session.session_data),
+            )
+            session_valid = is_actually_valid
+        except GarminAuthError:
+            session_valid = False
+        except Exception as e:
+            logger.warning(f"Garmin session validation error: {e}")
+            # On unexpected error, keep the fast-check result
+            pass
 
     sync_result = await db.execute(
         select(GarminSyncState)

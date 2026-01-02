@@ -121,10 +121,63 @@ export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
   // 막대 높이 계산을 위한 기준점 (가장 느린 페이스 + 패딩)
   const baselinePace = maxPace + padding;
 
-  // 심박수 도메인 계산
+  // Y축 ticks를 15초 단위 라운드 페이스로 생성 (5:00, 5:15, 5:30 등)
+  const paceTicks = useMemo(() => {
+    const interval = 15; // 15초 단위
+    // 가장 빠른 페이스를 15초 단위로 내림 (예: 293초 -> 285초 = 4:45)
+    const roundedMinPace = Math.floor(minPace / interval) * interval;
+    // 가장 느린 페이스를 15초 단위로 올림 (예: 347초 -> 360초 = 6:00)
+    const roundedMaxPace = Math.ceil(maxPace / interval) * interval;
+
+    const ticks: number[] = [];
+    // 페이스 값에서 막대 높이로 변환 (baselinePace - pace)
+    for (let pace = roundedMaxPace; pace >= roundedMinPace; pace -= interval) {
+      const barHeight = baselinePace - pace;
+      if (barHeight >= 0 && barHeight <= baselinePace - minPace + padding) {
+        ticks.push(barHeight);
+      }
+    }
+    return ticks;
+  }, [minPace, maxPace, baselinePace, padding]);
+
+  // 심박수 도메인 계산 - 평균 페이스와 평균 심박수가 같은 Y축 위치에 오도록 스케일 조정
   const hrValues = filteredLaps.filter((l) => l.hr != null).map((l) => l.hr!);
-  const minHr = hrValues.length > 0 ? Math.min(...hrValues) - 5 : 100;
-  const maxHr = hrValues.length > 0 ? Math.max(...hrValues) + 5 : 180;
+  const { alignedMinHr, alignedMaxHr } = useMemo(() => {
+    if (hrValues.length === 0 || avgHr == null) {
+      return { alignedMinHr: 100, alignedMaxHr: 180 };
+    }
+
+    // 페이스 Y축에서 평균 페이스의 상대적 위치 계산 (0~1 범위)
+    const paceRange = baselinePace - minPace + padding;
+    const avgPaceBarHeight = baselinePace - avgPace;
+    const avgPaceRatio = avgPaceBarHeight / paceRange; // 평균 페이스의 Y축 비율
+
+    // 심박수 범위 계산
+    const actualMinHr = Math.min(...hrValues);
+    const actualMaxHr = Math.max(...hrValues);
+    const hrPadding = 5;
+
+    // 평균 심박수가 avgPaceRatio 위치에 오도록 심박수 도메인 계산
+    // avgPaceRatio = (avgHr - alignedMinHr) / (alignedMaxHr - alignedMinHr)
+    // 심박수 범위를 페이스와 동일한 비율로 설정
+    const hrAboveAvg = actualMaxHr - avgHr + hrPadding;
+    const hrBelowAvg = avgHr - actualMinHr + hrPadding;
+
+    // 평균이 avgPaceRatio 위치에 오려면:
+    // hrBelowAvg / totalRange = avgPaceRatio
+    // totalRange = hrBelowAvg / avgPaceRatio
+    const totalRangeFromBelow = hrBelowAvg / avgPaceRatio;
+    // 또는 hrAboveAvg / totalRange = (1 - avgPaceRatio)
+    const totalRangeFromAbove = hrAboveAvg / (1 - avgPaceRatio);
+
+    // 더 큰 범위를 사용해서 모든 데이터가 포함되도록
+    const totalRange = Math.max(totalRangeFromBelow, totalRangeFromAbove);
+
+    const newMinHr = avgHr - totalRange * avgPaceRatio;
+    const newMaxHr = avgHr + totalRange * (1 - avgPaceRatio);
+
+    return { alignedMinHr: Math.floor(newMinHr), alignedMaxHr: Math.ceil(newMaxHr) };
+  }, [hrValues, avgHr, baselinePace, minPace, avgPace, padding]);
 
   return (
     <div className={`card p-1 sm:p-1.5 ${className}`}>
@@ -171,14 +224,14 @@ export function KmPaceChart({ laps, className = '' }: KmPaceChartProps) {
               tickLine={false}
               axisLine={false}
               width={40}
-              ticks={[0, (baselinePace - minPace) / 2, baselinePace - minPace]}
+              ticks={paceTicks}
             />
-            {/* 심박수 Y축 (오른쪽) */}
+            {/* 심박수 Y축 (오른쪽) - 평균이 페이스 평균과 같은 위치에 오도록 */}
             {hasHrData && (
               <YAxis
                 yAxisId="hr"
                 orientation="right"
-                domain={[minHr, maxHr]}
+                domain={[alignedMinHr, alignedMaxHr]}
                 stroke="#8b949e"
                 tick={{ fill: '#ff6b6b' }}
                 fontSize={10}

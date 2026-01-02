@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from app.models.plan import Plan
     from app.models.analytics import AnalyticsSummary
     from app.models.ai import AIConversation, AIImport
+    from app.models.ai_snapshot import AITrainingSnapshot
     from app.models.strava import StravaSession, StravaSyncState
     from app.models.gear import Gear
     from app.models.strength import StrengthSession
@@ -38,8 +39,9 @@ class User(BaseModel):
         nullable=True,
     )
 
-    # Garmin 연동 최대 심박수 (Garmin Connect에서 설정된 값)
+    # Garmin 연동 심박수 설정 (Garmin Connect에서 설정된 값)
     max_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    resting_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Relationships
     garmin_session: Mapped[Optional["GarminSession"]] = relationship(
@@ -97,6 +99,10 @@ class User(BaseModel):
     )
     ai_imports: Mapped[list["AIImport"]] = relationship(
         "AIImport",
+        back_populates="user",
+    )
+    ai_training_snapshots: Mapped[list["AITrainingSnapshot"]] = relationship(
+        "AITrainingSnapshot",
         back_populates="user",
     )
     strava_session: Mapped[Optional["StravaSession"]] = relationship(

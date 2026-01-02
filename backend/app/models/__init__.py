@@ -8,6 +8,7 @@ from app.models.workout import Workout, WorkoutSchedule
 from app.models.plan import Plan, PlanWeek
 from app.models.analytics import AnalyticsSummary
 from app.models.ai import AIConversation, AIMessage, AIImport
+from app.models.ai_snapshot import AITrainingSnapshot
 from app.models.strava import StravaSession, StravaSyncState, StravaActivityMap
 from app.models.gear import Gear, ActivityGear, GearType, GearStatus
 from app.models.strength import StrengthSession, StrengthExercise
@@ -46,6 +47,7 @@ __all__ = [
     "AIConversation",
     "AIMessage",
     "AIImport",
+    "AITrainingSnapshot",
     # Strava
     "StravaSession",
     "StravaSyncState",

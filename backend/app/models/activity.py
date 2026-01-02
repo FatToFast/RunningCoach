@@ -74,6 +74,10 @@ class Activity(BaseModel):
     avg_vertical_oscillation: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     avg_stride_length: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
+    # Stryd metrics (from FIT file - Stryd power meter)
+    avg_form_power: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    avg_leg_spring_stiffness: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # kN/m
+
     # FIT file info
     fit_file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     fit_file_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

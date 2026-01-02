@@ -18,19 +18,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.database import get_db, async_session_maker
+from app.core.session import acquire_lock, release_lock, check_lock
 from app.models.garmin import GarminSession, GarminSyncState, GarminRawEvent
 from app.models.user import User
+from app.services.ai_snapshot import ensure_ai_training_snapshot
 from app.services.sync_service import GarminSyncService, create_sync_service
 from app.adapters.garmin_adapter import GarminConnectAdapter, GarminAuthError
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Track running sync jobs (in-memory for now)
-# WARNING: This only works for single-worker deployments.
-# For multi-worker/multi-instance, use Redis-based locking instead.
-# See: https://redis.io/docs/manual/patterns/distributed-locks/
-_running_jobs: dict[int, bool] = {}
+# Sync lock configuration
+SYNC_LOCK_TTL = 3600  # 1 hour max sync duration
+
+
+def _sync_lock_name(user_id: int) -> str:
+    """Get lock name for user sync."""
+    return f"sync:user:{user_id}"
 
 
 async def validate_garmin_session(
@@ -161,6 +165,7 @@ class SyncHistoryResponse(BaseModel):
 async def run_sync_background(
     user_id: int,
     endpoints: list[str],
+    lock_owner: str,
     full_backfill: bool = False,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -168,9 +173,17 @@ async def run_sync_background(
     """Run sync in background.
 
     This function runs in a separate task and performs the actual sync.
+    Uses Redis distributed lock for multi-worker safety.
+
+    Args:
+        user_id: User ID to sync.
+        endpoints: List of endpoints to sync.
+        lock_owner: Lock owner token (for releasing lock).
+        full_backfill: If True, sync all historical data.
+        start_date: Optional start date filter.
+        end_date: Optional end date filter.
     """
-    global _running_jobs
-    _running_jobs[user_id] = True
+    lock_name = _sync_lock_name(user_id)
 
     try:
         async with async_session_maker() as session:
@@ -208,10 +221,20 @@ async def run_sync_background(
                 except Exception as e:
                     logger.exception(f"Error syncing {endpoint} for user {user_id}")
 
+            try:
+                await ensure_ai_training_snapshot(session, user)
+            except Exception as e:
+                logger.warning(
+                    "Failed to refresh AI snapshot for user %s: %s",
+                    user_id,
+                    e,
+                )
+
     except Exception as e:
         logger.exception(f"Background sync error for user {user_id}")
     finally:
-        _running_jobs[user_id] = False
+        # Always release the lock when done
+        await release_lock(lock_name, lock_owner)
 
 
 # -------------------------------------------------------------------------
@@ -241,66 +264,79 @@ async def run_ingest(
     Returns:
         Ingestion job status.
     """
-    # Check if already running
-    if _running_jobs.get(current_user.id, False):
+    # Try to acquire distributed lock
+    lock_name = _sync_lock_name(current_user.id)
+    lock_owner = await acquire_lock(lock_name, ttl_seconds=SYNC_LOCK_TTL)
+
+    if not lock_owner:
         return IngestRunResponse(
             started=False,
             message="Sync already in progress",
             endpoints=[],
         )
 
-    # Validate Garmin session (with API call to verify not expired)
-    await validate_garmin_session(db, current_user.id, validate_with_api=True)
+    try:
+        # Validate Garmin session (with API call to verify not expired)
+        await validate_garmin_session(db, current_user.id, validate_with_api=True)
 
-    # Determine endpoints to sync
-    # - None or not provided: sync all endpoints (default)
-    # - Empty list []: explicitly means "do nothing" - return early
-    # - List with items: sync only those endpoints
-    all_endpoints = GarminSyncService.ENDPOINTS
+        # Determine endpoints to sync
+        # - None or not provided: sync all endpoints (default)
+        # - Empty list []: explicitly means "do nothing" - return early
+        # - List with items: sync only those endpoints
+        all_endpoints = GarminSyncService.ENDPOINTS
 
-    if request and request.endpoints is not None:
-        if len(request.endpoints) == 0:
-            # Explicit empty list means no sync requested
-            return IngestRunResponse(
-                started=False,
-                message="No endpoints specified for sync",
-                endpoints=[],
-            )
-        endpoints = request.endpoints
-    else:
-        endpoints = all_endpoints
+        if request and request.endpoints is not None:
+            if len(request.endpoints) == 0:
+                # Explicit empty list means no sync requested
+                await release_lock(lock_name, lock_owner)
+                return IngestRunResponse(
+                    started=False,
+                    message="No endpoints specified for sync",
+                    endpoints=[],
+                )
+            endpoints = request.endpoints
+        else:
+            endpoints = all_endpoints
 
-    # Validate endpoints
-    invalid = set(endpoints) - set(all_endpoints)
-    if invalid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid endpoints: {invalid}. Valid: {all_endpoints}",
-        )
-
-    # Validate date range
-    if request and request.start_date and request.end_date:
-        if request.start_date > request.end_date:
+        # Validate endpoints
+        invalid = set(endpoints) - set(all_endpoints)
+        if invalid:
+            await release_lock(lock_name, lock_owner)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="start_date must be before or equal to end_date",
+                detail=f"Invalid endpoints: {invalid}. Valid: {all_endpoints}",
             )
 
-    # Start background sync
-    background_tasks.add_task(
-        run_sync_background,
-        user_id=current_user.id,
-        endpoints=endpoints,
-        full_backfill=request.full_backfill if request else False,
-        start_date=request.start_date if request else None,
-        end_date=request.end_date if request else None,
-    )
+        # Validate date range
+        if request and request.start_date and request.end_date:
+            if request.start_date > request.end_date:
+                await release_lock(lock_name, lock_owner)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="start_date must be before or equal to end_date",
+                )
 
-    return IngestRunResponse(
-        started=True,
-        message="Sync started in background. Use /ingest/status to monitor progress.",
-        endpoints=endpoints,
-    )
+        # Start background sync (lock will be released by background task)
+        background_tasks.add_task(
+            run_sync_background,
+            user_id=current_user.id,
+            endpoints=endpoints,
+            lock_owner=lock_owner,
+            full_backfill=request.full_backfill if request else False,
+            start_date=request.start_date if request else None,
+            end_date=request.end_date if request else None,
+        )
+
+        return IngestRunResponse(
+            started=True,
+            message="Sync started in background. Use /ingest/status to monitor progress.",
+            endpoints=endpoints,
+        )
+
+    except Exception:
+        # Release lock on any error before background task starts
+        await release_lock(lock_name, lock_owner)
+        raise
 
 
 @router.post("/run/sync", response_model=list[SyncResultItem])
@@ -325,15 +361,15 @@ async def run_ingest_sync(
     Raises:
         HTTPException 409: If sync is already running for this user.
     """
-    # Check if already running (prevent concurrent syncs)
-    if _running_jobs.get(current_user.id, False):
+    # Try to acquire distributed lock
+    lock_name = _sync_lock_name(current_user.id)
+    lock_owner = await acquire_lock(lock_name, ttl_seconds=SYNC_LOCK_TTL)
+
+    if not lock_owner:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Sync already in progress. Use /ingest/status to check progress.",
         )
-
-    # Mark as running
-    _running_jobs[current_user.id] = True
 
     try:
         # Validate Garmin session (with API call to verify not expired)
@@ -389,10 +425,20 @@ async def run_ingest_sync(
                 )
             )
 
+        try:
+            await ensure_ai_training_snapshot(db, current_user)
+        except Exception as e:
+            logger.warning(
+                "Failed to refresh AI snapshot for user %s: %s",
+                current_user.id,
+                e,
+            )
+
         return results
 
     finally:
-        _running_jobs[current_user.id] = False
+        # Release lock when sync completes
+        await release_lock(lock_name, lock_owner)
 
 
 @router.get("/status", response_model=IngestStatusResponse)
@@ -425,8 +471,8 @@ async def get_ingest_status(
     )
     states = result.scalars().all()
 
-    # Check if running
-    is_running = _running_jobs.get(current_user.id, False)
+    # Check if running (via distributed lock)
+    is_running = await check_lock(_sync_lock_name(current_user.id))
 
     return IngestStatusResponse(
         connected=is_connected,

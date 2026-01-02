@@ -27,8 +27,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
   const lastSync = garminStatus?.sync_states
     ?.map((s) => s.last_success_at)
     .filter((d): d is string => Boolean(d))
-    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
-    [0];
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())?.[0];
 
   const handleSync = () => {
     if (!isSyncing && isConnected) {

@@ -157,6 +157,7 @@ from app.api.v1.aliases import alias_router
 from app.api.v1.endpoints import (
     activities,
     ai,
+    ai_snapshot,
     analytics,
     auth,
     calendar_notes,
@@ -212,6 +213,7 @@ api_router.include_router(analytics.router, prefix="/analytics", tags=["analytic
 # AI Conversations
 # -------------------------------------------------------------------------
 api_router.include_router(ai.router, prefix="/ai", tags=["ai"])
+api_router.include_router(ai_snapshot.router, prefix="/ai", tags=["ai"])
 
 # -------------------------------------------------------------------------
 # Workouts

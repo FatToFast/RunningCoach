@@ -124,3 +124,86 @@ async def refresh_session(session_id: str) -> bool:
     ttl = settings.session_ttl_seconds
     result = await redis_client.expire(f"session:{session_id}", ttl)
     return result
+
+
+# =============================================================================
+# Distributed Lock (for multi-worker/multi-instance deployments)
+# =============================================================================
+
+
+async def acquire_lock(
+    lock_name: str,
+    ttl_seconds: int = 3600,
+    owner: Optional[str] = None,
+) -> Optional[str]:
+    """Acquire a distributed lock using Redis SETNX.
+
+    Args:
+        lock_name: Name of the lock (e.g., "sync:user:123").
+        ttl_seconds: Lock expiration time in seconds (default: 1 hour).
+        owner: Optional owner identifier. If None, generates a random one.
+
+    Returns:
+        Lock owner token if acquired, None if lock already held.
+    """
+    redis_client = await get_redis()
+    lock_key = f"lock:{lock_name}"
+    owner = owner or secrets.token_urlsafe(16)
+
+    # SETNX with expiration
+    acquired = await redis_client.set(lock_key, owner, nx=True, ex=ttl_seconds)
+
+    if acquired:
+        logger.debug(f"Lock acquired: {lock_name} (owner={owner[:8]}...)")
+        return owner
+    else:
+        logger.debug(f"Lock already held: {lock_name}")
+        return None
+
+
+async def release_lock(lock_name: str, owner: str) -> bool:
+    """Release a distributed lock.
+
+    Uses Lua script to ensure atomic check-and-delete (only owner can release).
+
+    Args:
+        lock_name: Name of the lock.
+        owner: Owner token (returned from acquire_lock).
+
+    Returns:
+        True if lock was released, False if not found or owned by another.
+    """
+    redis_client = await get_redis()
+    lock_key = f"lock:{lock_name}"
+
+    # Lua script for atomic compare-and-delete
+    lua_script = """
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+    else
+        return 0
+    end
+    """
+
+    result = await redis_client.eval(lua_script, 1, lock_key, owner)
+
+    if result == 1:
+        logger.debug(f"Lock released: {lock_name}")
+        return True
+    else:
+        logger.warning(f"Lock not released (not owner or expired): {lock_name}")
+        return False
+
+
+async def check_lock(lock_name: str) -> bool:
+    """Check if a lock is currently held.
+
+    Args:
+        lock_name: Name of the lock.
+
+    Returns:
+        True if lock is held, False otherwise.
+    """
+    redis_client = await get_redis()
+    lock_key = f"lock:{lock_name}"
+    return await redis_client.exists(lock_key) > 0

@@ -374,9 +374,22 @@ def _build_metrics_response(activity: Activity) -> ActivityMetricResponse | None
     metric_data["intensity_factor"] = activity.intensity_factor
 
     # Add running dynamics from Activity (from FIT file)
-    metric_data["ground_time"] = activity.avg_ground_contact_time
-    metric_data["vertical_oscillation"] = activity.avg_vertical_oscillation
-    metric_data["stride_length"] = activity.avg_stride_length
+    # Note: DB stores values in mm, convert to cm/m for API response
+    metric_data["ground_time"] = activity.avg_ground_contact_time  # already in ms
+    metric_data["vertical_oscillation"] = (
+        round(activity.avg_vertical_oscillation / 10, 1)
+        if activity.avg_vertical_oscillation
+        else None
+    )  # mm -> cm
+    metric_data["stride_length"] = (
+        round(activity.avg_stride_length / 1000, 2)
+        if activity.avg_stride_length
+        else None
+    )  # mm -> m
+
+    # Stryd metrics (Form Power and Leg Spring Stiffness)
+    metric_data["form_power"] = activity.avg_form_power
+    metric_data["leg_spring_stiffness"] = activity.avg_leg_spring_stiffness
 
     # Calculate Power-to-HR ratio if we have both
     if activity.avg_power and activity.avg_hr and activity.avg_hr > 0:
@@ -738,13 +751,17 @@ class HRZonesResponse(BaseModel):
     total_time_in_zones: int
 
 
-# Standard HR zone definitions (percentage of max HR)
+# Garmin-style HR zone definitions using HRR (Heart Rate Reserve) method
+# Zone boundaries are percentages of HRR: resting_hr + (max_hr - resting_hr) * pct
+# These percentages match Garmin Connect's default 5-zone calculation
+# Derived from user's Garmin settings: max=175, resting=50, HRR=125
+# Z1: 88-105 → 30-44%, Z2: 106-122 → 45-58%, Z3: 123-140 → 58-72%, etc.
 HR_ZONE_DEFINITIONS = [
-    {"zone": 1, "name": "Recovery", "min_pct": 0.50, "max_pct": 0.60},
-    {"zone": 2, "name": "Aerobic", "min_pct": 0.60, "max_pct": 0.70},
-    {"zone": 3, "name": "Tempo", "min_pct": 0.70, "max_pct": 0.80},
-    {"zone": 4, "name": "Threshold", "min_pct": 0.80, "max_pct": 0.90},
-    {"zone": 5, "name": "VO2max", "min_pct": 0.90, "max_pct": 1.00},
+    {"zone": 1, "min_pct": 0.304, "max_pct": 0.44},  # Zone 1: ~30-44% HRR
+    {"zone": 2, "min_pct": 0.448, "max_pct": 0.576},  # Zone 2: ~45-58% HRR
+    {"zone": 3, "min_pct": 0.584, "max_pct": 0.72},  # Zone 3: ~58-72% HRR
+    {"zone": 4, "min_pct": 0.728, "max_pct": 0.856},  # Zone 4: ~73-86% HRR
+    {"zone": 5, "min_pct": 0.856, "max_pct": 1.00},  # Zone 5: ~86-100% HRR
 ]
 
 
@@ -753,24 +770,29 @@ async def get_activity_hr_zones(
     activity_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    max_hr: int | None = Query(None, ge=100, le=250, description="User's max HR. Default: user.max_hr (Garmin profile) or max from samples"),
+    max_hr: int | None = Query(None, ge=100, le=250, description="User's max HR. Default: user.max_hr or 220-age"),
+    resting_hr: int | None = Query(None, ge=30, le=100, description="User's resting HR. Default: user.resting_hr or 60"),
 ) -> HRZonesResponse:
     """Calculate HR zone distribution for an activity.
 
     FR-013: HR존별 시간 분포
 
-    Zones are calculated based on percentage of max HR:
-    - Zone 1 (Recovery): 50-60%
-    - Zone 2 (Aerobic): 60-70%
-    - Zone 3 (Tempo): 70-80%
-    - Zone 4 (Threshold): 80-90%
-    - Zone 5 (VO2max): 90-100%
+    Uses Garmin-style HRR (Heart Rate Reserve) method:
+    Zone HR = resting_hr + (max_hr - resting_hr) * percentage
+
+    Zones are calculated based on percentage of HRR:
+    - Zone 1: 50-60% HRR
+    - Zone 2: 60-70% HRR
+    - Zone 3: 70-80% HRR
+    - Zone 4: 80-90% HRR
+    - Zone 5: 90-100% HRR
 
     Args:
         activity_id: Activity ID.
         current_user: Authenticated user.
         db: Database session.
         max_hr: User's max heart rate (optional).
+        resting_hr: User's resting heart rate (optional).
 
     Returns:
         HR zone distribution.
@@ -814,21 +836,31 @@ async def get_activity_hr_zones(
 
     # Determine max HR (priority: query param > user.max_hr > max from samples)
     if max_hr is None:
-        # Try user's max_hr from Garmin profile first
         if current_user.max_hr:
             max_hr = current_user.max_hr
         else:
             # Fallback to max observed HR from this activity
             max_hr = max(hr_values)
 
-    # Calculate zone boundaries
+    # Determine resting HR (priority: query param > user.resting_hr > default 60)
+    if resting_hr is None:
+        if current_user.resting_hr:
+            resting_hr = current_user.resting_hr
+        else:
+            # Default resting HR if not set
+            resting_hr = 60
+
+    # Calculate HRR (Heart Rate Reserve)
+    hrr = max_hr - resting_hr
+
+    # Calculate zone boundaries using HRR method (Karvonen formula)
+    # Zone HR = resting_hr + HRR * percentage
     zones = []
     for zone_def in HR_ZONE_DEFINITIONS:
-        zone_min = int(max_hr * zone_def["min_pct"])
-        zone_max = int(max_hr * zone_def["max_pct"])
+        zone_min = int(resting_hr + hrr * zone_def["min_pct"])
+        zone_max = int(resting_hr + hrr * zone_def["max_pct"])
         zones.append({
             "zone": zone_def["zone"],
-            "name": zone_def["name"],
             "min_hr": zone_min,
             "max_hr": zone_max,
             "count": 0,
@@ -864,11 +896,12 @@ async def get_activity_hr_zones(
 
     # Calculate percentages and build response
     total_time = sum(z["count"] for z in zones)
+    zone_names = ["Zone 1", "Zone 2", "Zone 3", "Zone 4", "Zone 5"]
     zone_responses = []
     for z in zones:
         zone_responses.append(HRZoneResponse(
             zone=z["zone"],
-            name=z["name"],
+            name=zone_names[z["zone"] - 1],
             min_hr=z["min_hr"],
             max_hr=z["max_hr"],
             time_seconds=int(round(z["count"])),
@@ -966,6 +999,12 @@ async def get_activity_laps(
             lap_duration = int(lap.duration_seconds or 0)
             lap_end = lap_start + timedelta(seconds=lap_duration) if lap_duration > 0 else lap_start
 
+            # Calculate pace if not stored (e.g., track running without GPS speed)
+            avg_pace = lap.avg_pace_seconds
+            if avg_pace is None and lap.distance_meters and lap.duration_seconds:
+                if lap.distance_meters > 0:
+                    avg_pace = int(lap.duration_seconds / (lap.distance_meters / 1000))
+
             laps.append(LapResponse(
                 lap_number=lap.lap_number,
                 start_time=lap_start,
@@ -974,7 +1013,7 @@ async def get_activity_laps(
                 distance_meters=lap.distance_meters,
                 avg_hr=lap.avg_hr,
                 max_hr=lap.max_hr,
-                avg_pace_seconds=lap.avg_pace_seconds,
+                avg_pace_seconds=avg_pace,
                 elevation_gain=lap.total_ascent_meters,
                 avg_cadence=lap.avg_cadence,
             ))
@@ -1150,6 +1189,9 @@ class ActivityGearResponse(BaseModel):
     brand: str | None
     gear_type: str
     status: str
+    total_distance_meters: float | None = None
+    max_distance_meters: float | None = None
+    usage_percentage: float | None = None
 
     class Config:
         from_attributes = True
@@ -1204,17 +1246,152 @@ async def get_activity_gear(
     )
     gears = result.scalars().all()
 
-    return ActivityGearsResponse(
-        activity_id=activity_id,
-        gears=[
+    gear_responses = []
+    for g in gears:
+        # Calculate total distance (Garmin's tracked + local activities if any)
+        total_distance = g.initial_distance_meters or 0
+        max_distance = g.max_distance_meters or 800000  # Default 800km for shoes
+
+        # Calculate usage percentage
+        usage_pct = (total_distance / max_distance * 100) if max_distance > 0 else 0
+
+        gear_responses.append(
             ActivityGearResponse(
                 id=g.id,
                 name=g.name,
                 brand=g.brand,
                 gear_type=g.gear_type,
                 status=g.status,
+                total_distance_meters=total_distance,
+                max_distance_meters=max_distance,
+                usage_percentage=min(usage_pct, 100),
             )
-            for g in gears
-        ],
+        )
+
+    return ActivityGearsResponse(
+        activity_id=activity_id,
+        gears=gear_responses,
         total=len(gears),
     )
+
+
+# -------------------------------------------------------------------------
+# Re-parse FIT File (Development/Testing)
+# -------------------------------------------------------------------------
+
+
+class ReparseResponse(BaseModel):
+    """Response for FIT file reparse."""
+
+    activity_id: int
+    message: str
+    updated_fields: list[str]
+
+
+@router.post("/{activity_id}/reparse-fit", response_model=ReparseResponse)
+async def reparse_fit_file(
+    activity_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> ReparseResponse:
+    """Re-parse existing FIT file to update activity with new fields.
+
+    This endpoint re-parses the stored FIT file and updates the activity
+    with any newly added fields (e.g., Stryd metrics like LSS, Form Power).
+
+    Useful during development when new fields are added to the parser.
+
+    Args:
+        activity_id: Activity ID.
+        current_user: Authenticated user.
+        db: Database session.
+
+    Returns:
+        Updated fields summary.
+    """
+    import logging
+    from pathlib import Path
+
+    from app.adapters.garmin_adapter import GarminConnectAdapter
+
+    logger = logging.getLogger(__name__)
+
+    # Verify ownership
+    activity_result = await db.execute(
+        select(Activity).where(
+            Activity.id == activity_id,
+            Activity.user_id == current_user.id,
+        )
+    )
+    activity = activity_result.scalar_one_or_none()
+
+    if not activity:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Activity not found",
+        )
+
+    # Get FIT file path
+    if not activity.fit_file_path or not os.path.isfile(activity.fit_file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="FIT file not found for this activity",
+        )
+
+    # Read and parse FIT file
+    try:
+        with open(activity.fit_file_path, "rb") as f:
+            fit_data = f.read()
+
+        adapter = GarminConnectAdapter()  # Credentials not needed for parsing
+        parsed_data = adapter.parse_fit_file(fit_data)
+
+        updated_fields = []
+
+        # Update Stryd metrics
+        sensors = parsed_data.get("sensors", {})
+        records = parsed_data.get("records", [])
+
+        if sensors.get("has_stryd"):
+            activity.has_stryd = True
+            updated_fields.append("has_stryd")
+
+            # Calculate Stryd averages from records
+            form_powers = [r["form_power"] for r in records if r.get("form_power")]
+            lss_values = [r["leg_spring_stiffness"] for r in records if r.get("leg_spring_stiffness")]
+
+            if form_powers:
+                activity.avg_form_power = int(sum(form_powers) / len(form_powers))
+                updated_fields.append(f"avg_form_power={activity.avg_form_power}")
+                logger.info(f"Activity {activity_id}: Avg Form Power = {activity.avg_form_power}W")
+
+            if lss_values:
+                activity.avg_leg_spring_stiffness = round(sum(lss_values) / len(lss_values), 2)
+                updated_fields.append(f"avg_leg_spring_stiffness={activity.avg_leg_spring_stiffness}")
+                logger.info(f"Activity {activity_id}: Avg LSS = {activity.avg_leg_spring_stiffness} kN/m")
+
+        # Update session-level data
+        session_data = parsed_data.get("session", {})
+        if session_data:
+            if session_data.get("avg_ground_contact_time") and not activity.avg_ground_contact_time:
+                activity.avg_ground_contact_time = int(session_data["avg_ground_contact_time"])
+                updated_fields.append(f"avg_ground_contact_time={activity.avg_ground_contact_time}")
+
+            if session_data.get("avg_vertical_oscillation") and not activity.avg_vertical_oscillation:
+                activity.avg_vertical_oscillation = session_data["avg_vertical_oscillation"]
+                updated_fields.append(f"avg_vertical_oscillation={activity.avg_vertical_oscillation}")
+
+        await db.commit()
+
+        return ReparseResponse(
+            activity_id=activity_id,
+            message=f"Successfully re-parsed FIT file. Updated {len(updated_fields)} fields.",
+            updated_fields=updated_fields,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to reparse FIT file for activity {activity_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to parse FIT file: {str(e)}",
+        )
