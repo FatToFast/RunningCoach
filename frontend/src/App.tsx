@@ -16,6 +16,7 @@ const GearDetail = lazy(() => import('./pages/GearDetail').then(m => ({ default:
 const Strength = lazy(() => import('./pages/Strength').then(m => ({ default: m.Strength })));
 const Coach = lazy(() => import('./pages/Coach').then(m => ({ default: m.Coach })));
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
+const Workouts = lazy(() => import('./pages/Workouts').then(m => ({ default: m.Workouts })));
 
 // Loading fallback for lazy-loaded components
 const PageLoader = () => (
@@ -88,7 +89,7 @@ function App() {
               <Route path="/gear" element={<Gear />} />
               <Route path="/gear/:id" element={<GearDetail />} />
               <Route path="/strength" element={<Strength />} />
-              <Route path="/workouts" element={<PlaceholderPage title="Workouts" />} />
+              <Route path="/workouts" element={<Workouts />} />
               <Route path="/ai" element={<Coach />} />
               <Route path="/settings" element={<Settings />} />
               {/* Protected 404 catch-all (user is authenticated) */}

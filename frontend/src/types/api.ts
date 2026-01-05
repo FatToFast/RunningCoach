@@ -630,3 +630,89 @@ export interface ExportSummaryResponse {
   content: string;
   generated_at: string;
 }
+
+// -------------------------------------------------------------------------
+// Workout Types (워크아웃 템플릿 및 스케줄)
+// -------------------------------------------------------------------------
+
+export type WorkoutType = 'easy' | 'long' | 'tempo' | 'interval' | 'hills' | 'fartlek' | 'recovery';
+export type ScheduleStatus = 'scheduled' | 'completed' | 'skipped' | 'cancelled';
+
+export interface WorkoutStep {
+  type: string; // warmup, main, cooldown, rest, recovery
+  duration_minutes: number | null;
+  distance_km: number | null;
+  target_pace: string | null;
+  target_hr_zone: number | null;
+  description: string | null;
+}
+
+export interface Workout {
+  id: number;
+  name: string;
+  workout_type: string;
+  structure: WorkoutStep[] | null;
+  target: Record<string, unknown> | null;
+  notes: string | null;
+  garmin_workout_id: number | null;
+  plan_week_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkoutListResponse {
+  items: Workout[];
+  total: number;
+}
+
+export interface WorkoutSchedule {
+  id: number;
+  workout_id: number;
+  scheduled_date: string;
+  status: ScheduleStatus;
+  garmin_schedule_id: number | null;
+  completed_activity_id: number | null;
+  workout: Workout | null;
+}
+
+export interface ScheduleListResponse {
+  items: WorkoutSchedule[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export interface WorkoutCreate {
+  name: string;
+  workout_type: string;
+  structure?: WorkoutStep[];
+  target?: Record<string, unknown>;
+  notes?: string;
+}
+
+export interface ScheduleCreate {
+  workout_id: number;
+  scheduled_date: string;
+}
+
+// Garmin Workout Import
+export interface GarminWorkoutPreview {
+  garmin_workout_id: number;
+  name: string;
+  workout_type: string;
+  description: string | null;
+  estimated_duration_seconds: number | null;
+  step_count: number;
+  already_imported: boolean;
+}
+
+export interface GarminWorkoutsListResponse {
+  items: GarminWorkoutPreview[];
+  total: number;
+}
+
+export interface GarminWorkoutImportResponse {
+  imported: number;
+  skipped: number;
+  errors: string[];
+}

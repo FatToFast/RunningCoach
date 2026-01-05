@@ -641,3 +641,433 @@ async def delete_schedule(
 
     await db.delete(schedule)
     await db.commit()
+
+
+# -------------------------------------------------------------------------
+# Garmin Workout Import
+# -------------------------------------------------------------------------
+
+
+class GarminWorkoutPreview(BaseModel):
+    """Preview of a Garmin workout for import."""
+
+    garmin_workout_id: int
+    name: str
+    workout_type: str
+    description: str | None
+    estimated_duration_seconds: int | None
+    step_count: int
+    already_imported: bool
+
+
+class GarminWorkoutsListResponse(BaseModel):
+    """List of Garmin workouts available for import."""
+
+    items: list[GarminWorkoutPreview]
+    total: int
+
+
+class GarminWorkoutImportRequest(BaseModel):
+    """Request to import Garmin workouts."""
+
+    garmin_workout_ids: list[int]
+
+
+class GarminWorkoutImportResponse(BaseModel):
+    """Response from Garmin workout import."""
+
+    imported: int
+    skipped: int
+    errors: list[str]
+
+
+def _map_garmin_workout_type(garmin_type: str | None) -> str:
+    """Map Garmin workout type to our workout types."""
+    if not garmin_type:
+        return "easy"
+    garmin_type = garmin_type.lower()
+    mapping = {
+        "interval": "interval",
+        "tempo": "tempo",
+        "long_run": "long",
+        "recovery": "recovery",
+        "easy": "easy",
+        "fartlek": "fartlek",
+        "hill": "hills",
+        "hills": "hills",
+    }
+    return mapping.get(garmin_type, "easy")
+
+
+def _parse_pace_from_speed(speed_mps: float | None) -> str | None:
+    """Convert speed (m/s) to pace (min:sec/km)."""
+    if not speed_mps or speed_mps <= 0:
+        return None
+    # speed in m/s -> pace in sec/km
+    pace_seconds_per_km = 1000 / speed_mps
+    minutes = int(pace_seconds_per_km // 60)
+    seconds = int(pace_seconds_per_km % 60)
+    return f"{minutes}:{seconds:02d}"
+
+
+def _parse_single_step(step: dict) -> dict | None:
+    """Parse a single Garmin workout step into our format.
+
+    Args:
+        step: Garmin step data.
+
+    Returns:
+        Parsed step dict or None if invalid.
+    """
+    step_type_data = step.get("stepType", {})
+    step_type_key = step_type_data.get("stepTypeKey", "interval")
+
+    # Map Garmin step types to our types
+    type_mapping = {
+        "warmup": "warmup",
+        "cooldown": "cooldown",
+        "interval": "main",
+        "recovery": "recovery",
+        "rest": "rest",
+    }
+    mapped_type = type_mapping.get(step_type_key, "main")
+
+    # Parse end condition (duration or distance)
+    end_condition = step.get("endCondition", {})
+    end_condition_key = end_condition.get("conditionTypeKey", "")
+    end_value = step.get("endConditionValue", 0)
+
+    parsed_step = {
+        "type": mapped_type,
+        "duration_minutes": None,
+        "distance_km": None,
+        "target_pace": None,
+        "target_hr_zone": None,
+        "description": step.get("description"),
+    }
+
+    # Parse duration or distance
+    if end_condition_key == "distance":
+        # Value is in meters
+        parsed_step["distance_km"] = round(end_value / 1000, 2) if end_value else None
+    elif end_condition_key == "time":
+        # Value is in seconds
+        parsed_step["duration_minutes"] = round(end_value / 60, 1) if end_value else None
+
+    # Parse target (pace, HR zone, speed)
+    target_type = step.get("targetType", {})
+    target_type_key = target_type.get("workoutTargetTypeKey", "")
+    target_value = step.get("targetValue", {}) if isinstance(step.get("targetValue"), dict) else {}
+
+    # Target value can also be in targetValueOne/targetValueTwo for ranges
+    target_value_one = step.get("targetValueOne")
+    target_value_two = step.get("targetValueTwo")
+
+    if target_type_key == "pace.zone":
+        # Pace zone - use low/high values (in m/s)
+        low_speed = target_value.get("lowInMetersPerSecond") or target_value_one
+        high_speed = target_value.get("highInMetersPerSecond") or target_value_two
+        if low_speed and high_speed:
+            # Use average pace
+            avg_speed = (low_speed + high_speed) / 2
+            parsed_step["target_pace"] = _parse_pace_from_speed(avg_speed)
+        elif low_speed:
+            parsed_step["target_pace"] = _parse_pace_from_speed(low_speed)
+    elif target_type_key == "speed.zone":
+        # Speed zone - similar to pace
+        low_speed = target_value.get("lowInMetersPerSecond") or target_value_one
+        high_speed = target_value.get("highInMetersPerSecond") or target_value_two
+        if low_speed and high_speed:
+            avg_speed = (low_speed + high_speed) / 2
+            parsed_step["target_pace"] = _parse_pace_from_speed(avg_speed)
+        elif high_speed:
+            parsed_step["target_pace"] = _parse_pace_from_speed(high_speed)
+    elif target_type_key == "heart.rate.zone":
+        # HR zone - extract zone number
+        zone_number = target_value.get("zoneNumber")
+        if zone_number:
+            parsed_step["target_hr_zone"] = zone_number
+        elif target_value_one:
+            # Sometimes it's just a number indicating zone
+            parsed_step["target_hr_zone"] = int(target_value_one) if target_value_one <= 5 else None
+
+    return parsed_step
+
+
+def _parse_garmin_workout_steps(workout_data: dict) -> list[dict]:
+    """Parse Garmin workout steps into our format.
+
+    Handles nested RepeatGroupDTO structures for interval workouts.
+    """
+    steps = []
+    segments = workout_data.get("workoutSegments", [])
+
+    for segment in segments:
+        workout_steps = segment.get("workoutSteps", [])
+        for step in workout_steps:
+            step_type = step.get("type", "")
+
+            # Handle repeat groups (intervals)
+            if step_type == "RepeatGroupDTO":
+                repeat_count = step.get("numberOfIterations", 1)
+                nested_steps = step.get("workoutSteps", [])
+
+                # Add a marker for repeat group start
+                steps.append({
+                    "type": "main",
+                    "duration_minutes": None,
+                    "distance_km": None,
+                    "target_pace": None,
+                    "target_hr_zone": None,
+                    "description": f"🔄 {repeat_count}회 반복",
+                    "is_repeat_marker": True,
+                    "repeat_count": repeat_count,
+                })
+
+                # Parse nested steps within the repeat group
+                for nested_step in nested_steps:
+                    parsed = _parse_single_step(nested_step)
+                    if parsed:
+                        # Add repeat context to description if needed
+                        if parsed["description"]:
+                            parsed["description"] = f"[x{repeat_count}] {parsed['description']}"
+                        steps.append(parsed)
+            else:
+                # Regular step (warmup, cooldown, etc.)
+                parsed = _parse_single_step(step)
+                if parsed:
+                    steps.append(parsed)
+
+    return steps
+
+
+@router.get("/garmin/list", response_model=GarminWorkoutsListResponse)
+async def list_garmin_workouts(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(50, ge=1, le=100),
+) -> GarminWorkoutsListResponse:
+    """List workouts from Garmin Connect available for import.
+
+    Args:
+        current_user: Authenticated user.
+        db: Database session.
+        limit: Max workouts to fetch.
+
+    Returns:
+        List of Garmin workouts.
+    """
+    # Get Garmin session
+    session_result = await db.execute(
+        select(GarminSession).where(GarminSession.user_id == current_user.id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if not session or not session.is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin account not connected",
+        )
+
+    # Get already imported Garmin workout IDs
+    imported_result = await db.execute(
+        select(Workout.garmin_workout_id).where(
+            Workout.user_id == current_user.id,
+            Workout.garmin_workout_id.isnot(None),
+        )
+    )
+    imported_ids = {row[0] for row in imported_result.all()}
+
+    adapter = GarminConnectAdapter()
+    try:
+        adapter.restore_session(session.session_data)
+    except GarminAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Garmin session expired. Please reconnect.",
+        ) from exc
+
+    try:
+        loop = asyncio.get_event_loop()
+        garmin_workouts = await loop.run_in_executor(
+            None,
+            lambda: adapter.get_workouts(limit),
+        )
+    except GarminAPIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to fetch Garmin workouts: {exc}",
+        ) from exc
+
+    items = []
+    for gw in garmin_workouts:
+        garmin_id = gw.get("workoutId")
+        if not garmin_id:
+            continue
+
+        # Count steps
+        step_count = 0
+        for segment in gw.get("workoutSegments", []):
+            step_count += len(segment.get("workoutSteps", []))
+
+        items.append(
+            GarminWorkoutPreview(
+                garmin_workout_id=garmin_id,
+                name=gw.get("workoutName", "Untitled"),
+                workout_type=_map_garmin_workout_type(gw.get("subTypeKey")),
+                description=gw.get("description"),
+                estimated_duration_seconds=gw.get("estimatedDurationInSecs"),
+                step_count=step_count,
+                already_imported=garmin_id in imported_ids,
+            )
+        )
+
+    return GarminWorkoutsListResponse(items=items, total=len(items))
+
+
+@router.post("/garmin/import", response_model=GarminWorkoutImportResponse)
+async def import_garmin_workouts(
+    request: GarminWorkoutImportRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> GarminWorkoutImportResponse:
+    """Import selected workouts from Garmin Connect.
+
+    Args:
+        request: List of Garmin workout IDs to import.
+        current_user: Authenticated user.
+        db: Database session.
+
+    Returns:
+        Import result summary.
+    """
+    # Get Garmin session
+    session_result = await db.execute(
+        select(GarminSession).where(GarminSession.user_id == current_user.id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if not session or not session.is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin account not connected",
+        )
+
+    # Get already imported Garmin workout IDs
+    imported_result = await db.execute(
+        select(Workout.garmin_workout_id).where(
+            Workout.user_id == current_user.id,
+            Workout.garmin_workout_id.isnot(None),
+        )
+    )
+    imported_ids = {row[0] for row in imported_result.all()}
+
+    adapter = GarminConnectAdapter()
+    try:
+        adapter.restore_session(session.session_data)
+    except GarminAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Garmin session expired. Please reconnect.",
+        ) from exc
+
+    imported = 0
+    skipped = 0
+    errors = []
+
+    for garmin_id in request.garmin_workout_ids:
+        # Skip already imported
+        if garmin_id in imported_ids:
+            skipped += 1
+            continue
+
+        try:
+            loop = asyncio.get_event_loop()
+            garmin_workout = await loop.run_in_executor(
+                None,
+                lambda gid=garmin_id: adapter.get_workout_by_id(gid),
+            )
+
+            if not garmin_workout:
+                errors.append(f"Workout {garmin_id} not found")
+                continue
+
+            # Parse workout structure
+            structure = _parse_garmin_workout_steps(garmin_workout)
+
+            # Create local workout
+            workout = Workout(
+                user_id=current_user.id,
+                name=garmin_workout.get("workoutName", "Imported Workout"),
+                workout_type=_map_garmin_workout_type(garmin_workout.get("subTypeKey")),
+                structure=structure if structure else None,
+                notes=garmin_workout.get("description"),
+                garmin_workout_id=garmin_id,
+            )
+            db.add(workout)
+            imported += 1
+            imported_ids.add(garmin_id)  # Track to avoid duplicates in same batch
+
+        except GarminAPIError as exc:
+            errors.append(f"Failed to import {garmin_id}: {exc}")
+        except Exception as exc:
+            errors.append(f"Error importing {garmin_id}: {exc}")
+
+    await db.commit()
+
+    return GarminWorkoutImportResponse(
+        imported=imported,
+        skipped=skipped,
+        errors=errors,
+    )
+
+
+@router.get("/garmin/raw/{workout_id}")
+async def get_garmin_workout_raw(
+    workout_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get raw Garmin workout data for debugging.
+
+    Args:
+        workout_id: Garmin workout ID.
+        current_user: Authenticated user.
+        db: Database session.
+
+    Returns:
+        Raw Garmin workout data.
+    """
+    # Get Garmin session
+    session_result = await db.execute(
+        select(GarminSession).where(GarminSession.user_id == current_user.id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if not session or not session.is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin account not connected",
+        )
+
+    adapter = GarminConnectAdapter()
+    try:
+        adapter.restore_session(session.session_data)
+    except GarminAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Garmin session expired. Please reconnect.",
+        ) from exc
+
+    try:
+        loop = asyncio.get_event_loop()
+        garmin_workout = await loop.run_in_executor(
+            None,
+            lambda: adapter.get_workout_by_id(workout_id),
+        )
+        return garmin_workout
+    except GarminAPIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to fetch Garmin workout: {exc}",
+        ) from exc

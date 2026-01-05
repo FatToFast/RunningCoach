@@ -1120,6 +1120,62 @@ class GarminConnectAdapter:
             raise GarminAPIError(f"Failed to get SpO2 data: {e}") from e
 
     # -------------------------------------------------------------------------
+    # Workout Import
+    # -------------------------------------------------------------------------
+
+    def get_workouts(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Get workouts from Garmin Connect.
+
+        Args:
+            limit: Maximum number of workouts to fetch.
+
+        Returns:
+            List of workout dicts.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            data = self._client.get_workouts(0, limit)
+            status_code = 200
+            return data or []
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get workouts: {e}")
+            raise GarminAPIError(f"Failed to get workouts: {e}") from e
+        finally:
+            self._observe_api_call("get_workouts", status_code, start_time)
+
+    def get_workout_by_id(self, workout_id: int) -> dict[str, Any]:
+        """Get a specific workout from Garmin Connect.
+
+        Args:
+            workout_id: Garmin workout ID.
+
+        Returns:
+            Workout data dict.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            data = self._client.get_workout_by_id(workout_id)
+            status_code = 200
+            return data or {}
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get workout {workout_id}: {e}")
+            raise GarminAPIError(f"Failed to get workout: {e}") from e
+        finally:
+            self._observe_api_call("get_workout_by_id", status_code, start_time)
+
+    # -------------------------------------------------------------------------
     # Race-related Endpoints
     # -------------------------------------------------------------------------
 
