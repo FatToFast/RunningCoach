@@ -1,9 +1,10 @@
 """AI conversation endpoints for interactive training plan generation."""
 
+import json
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -14,6 +15,7 @@ from app.api.v1.endpoints.auth import get_current_user
 from app.core.ai_constants import (
     AI_MAX_TOKENS,
     AI_TEMPERATURE,
+    RUNNING_COACH_PLAN_PROMPT,
     RUNNING_COACH_SYSTEM_PROMPT,
 )
 from app.core.config import get_settings
@@ -44,7 +46,7 @@ class MessageResponse(BaseModel):
     id: int
     role: str
     content: str
-    tokens: int | None
+    token_count: int | None = None  # DB column is 'token_count'
     created_at: datetime
 
     class Config:
@@ -56,8 +58,8 @@ class ConversationResponse(BaseModel):
 
     id: int
     title: str | None
-    language: str
-    model: str
+    context_type: str | None = None  # DB: context_type (not language)
+    context_data: dict[str, Any] | None = None  # DB: context_data (not model)
     created_at: datetime
     updated_at: datetime
 
@@ -70,8 +72,8 @@ class ConversationDetailResponse(BaseModel):
 
     id: int
     title: str | None
-    language: str
-    model: str
+    context_type: str | None = None
+    context_data: dict[str, Any] | None = None
     messages: list[MessageResponse]
     total_messages: int
     has_more: bool
@@ -91,6 +93,8 @@ class ChatRequest(BaseModel):
 
     message: str
     context: dict[str, Any] | None = None
+    mode: Literal["chat", "plan"] | None = None
+    save_mode: Literal["draft", "approved", "active"] | None = None
 
 
 class ChatResponse(BaseModel):
@@ -99,6 +103,10 @@ class ChatResponse(BaseModel):
     conversation_id: int
     message: MessageResponse
     reply: MessageResponse
+    plan_id: int | None = None
+    import_id: int | None = None
+    plan_status: str | None = None
+    missing_fields: list[str] | None = None
 
 
 # -------------------------------------------------------------------------
@@ -408,19 +416,81 @@ async def chat(
         )
 
     # Get AI response first (before saving user message to avoid duplication in history)
+    plan_id = None
+    import_id = None
+    plan_status = None
+    missing_fields = None
+
     try:
-        ai_response = await _get_ai_response(
-            conversation=conversation,
-            user_message=request.message,
-            context=request.context,
-            db=db,
-        )
-    except Exception as e:
+        if request.mode == "plan":
+            ai_response = await _get_ai_plan_response(
+                conversation=conversation,
+                user_message=request.message,
+                context=request.context,
+                db=db,
+            )
+        else:
+            ai_response = await _get_ai_response(
+                conversation=conversation,
+                user_message=request.message,
+                context=request.context,
+                db=db,
+            )
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception("AI service error in conversation chat")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI service is temporarily unavailable. Please try again.",
         )
+
+    assistant_content = ai_response["content"]
+
+    if request.mode == "plan":
+        payload = ai_response.get("payload") or {}
+        status = payload.get("status")
+        assistant_content = payload.get("assistant_message") or "플랜 생성을 계속 진행합니다."
+
+        if status == "plan":
+            plan_data = payload.get("plan")
+            if not isinstance(plan_data, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="AI plan response missing plan data",
+                )
+            plan_data["source"] = "ai"
+            # Validate AI-generated plan JSON against schema
+            try:
+                from pydantic import ValidationError as PydanticValidationError
+                plan_request = PlanImportRequest.model_validate(plan_data)
+            except PydanticValidationError as e:
+                logger.warning(f"AI generated invalid plan JSON: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"AI generated plan with invalid format: {e.error_count()} validation errors. Please try again.",
+                )
+            import_result = await import_plan(plan_request, current_user, db)
+            plan_id = import_result.plan_id
+            import_id = import_result.import_id
+            plan_status = "draft"
+
+            save_mode = request.save_mode or "draft"
+            if save_mode in ("approved", "active"):
+                from app.api.v1.endpoints.plans import approve_plan, activate_plan
+
+                await approve_plan(plan_id, current_user, db)
+                plan_status = "approved"
+                if save_mode == "active":
+                    await activate_plan(plan_id, current_user, db)
+                    plan_status = "active"
+        elif status == "need_info":
+            missing_fields = payload.get("missing_fields") or []
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Invalid AI plan response format",
+            )
 
     # Save user message (after AI response to avoid duplication)
     user_message = AIMessage(
@@ -434,8 +504,8 @@ async def chat(
     assistant_message = AIMessage(
         conversation_id=conversation_id,
         role="assistant",
-        content=ai_response["content"],
-        tokens=ai_response.get("tokens"),
+        content=assistant_content,
+        token_count=ai_response.get("tokens"),
     )
     db.add(assistant_message)
 
@@ -450,6 +520,10 @@ async def chat(
         conversation_id=conversation_id,
         message=MessageResponse.model_validate(user_message),
         reply=MessageResponse.model_validate(assistant_message),
+        plan_id=plan_id,
+        import_id=import_id,
+        plan_status=plan_status,
+        missing_fields=missing_fields,
     )
 
 
@@ -475,30 +549,101 @@ async def quick_chat(
         User message and AI reply with new conversation ID.
     """
     # Create new conversation
+    # DB schema uses context_type and context_data instead of language/model
     conversation = AIConversation(
         user_id=current_user.id,
         title=request.message[:50] + "..." if len(request.message) > 50 else request.message,
-        language=settings.ai_default_language,
-        model=settings.openai_model,
+        context_type="plan_generation" if request.mode == "plan" else "chat",
+        context_data={
+            "language": settings.ai_default_language,
+            "model": settings.openai_model,
+            "mode": request.mode,
+        },
     )
     db.add(conversation)
     await db.flush()  # Need conversation.id for messages
 
     # Get AI response first (before saving user message to avoid duplication in history)
+    plan_id = None
+    import_id = None
+    plan_status = None
+    missing_fields = None
+
     try:
-        ai_response = await _get_ai_response(
-            conversation=conversation,
-            user_message=request.message,
-            context=request.context,
-            db=db,
-        )
-    except Exception as e:
+        if request.mode == "plan":
+            ai_response = await _get_ai_plan_response(
+                conversation=conversation,
+                user_message=request.message,
+                context=request.context,
+                db=db,
+            )
+        else:
+            ai_response = await _get_ai_response(
+                conversation=conversation,
+                user_message=request.message,
+                context=request.context,
+                db=db,
+            )
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
         logger.exception("AI service error in quick chat")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI service is temporarily unavailable. Please try again.",
         )
+
+    assistant_content = ai_response["content"]
+
+    if request.mode == "plan":
+        payload = ai_response.get("payload") or {}
+        status = payload.get("status")
+        assistant_content = payload.get("assistant_message") or "플랜 생성을 계속 진행합니다."
+
+        if status == "plan":
+            plan_data = payload.get("plan")
+            if not isinstance(plan_data, dict):
+                await db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="AI plan response missing plan data",
+                )
+            plan_data["source"] = "ai"
+            # Validate AI-generated plan JSON against schema
+            try:
+                from pydantic import ValidationError as PydanticValidationError
+                plan_request = PlanImportRequest.model_validate(plan_data)
+            except PydanticValidationError as e:
+                await db.rollback()
+                logger.warning(f"AI generated invalid plan JSON: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"AI generated plan with invalid format: {e.error_count()} validation errors. Please try again.",
+                )
+            import_result = await import_plan(plan_request, current_user, db)
+            plan_id = import_result.plan_id
+            import_id = import_result.import_id
+            plan_status = "draft"
+
+            save_mode = request.save_mode or "draft"
+            if save_mode in ("approved", "active"):
+                from app.api.v1.endpoints.plans import approve_plan, activate_plan
+
+                await approve_plan(plan_id, current_user, db)
+                plan_status = "approved"
+                if save_mode == "active":
+                    await activate_plan(plan_id, current_user, db)
+                    plan_status = "active"
+        elif status == "need_info":
+            missing_fields = payload.get("missing_fields") or []
+        else:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Invalid AI plan response format",
+            )
 
     # Save user message (after AI response to avoid duplication)
     user_message = AIMessage(
@@ -512,8 +657,8 @@ async def quick_chat(
     assistant_message = AIMessage(
         conversation_id=conversation.id,
         role="assistant",
-        content=ai_response["content"],
-        tokens=ai_response.get("tokens"),
+        content=assistant_content,
+        token_count=ai_response.get("tokens"),
     )
     db.add(assistant_message)
 
@@ -525,12 +670,24 @@ async def quick_chat(
         conversation_id=conversation.id,
         message=MessageResponse.model_validate(user_message),
         reply=MessageResponse.model_validate(assistant_message),
+        plan_id=plan_id,
+        import_id=import_id,
+        plan_status=plan_status,
+        missing_fields=missing_fields,
     )
 
 
 # -------------------------------------------------------------------------
 # Internal AI Service
 # -------------------------------------------------------------------------
+
+
+def _extract_json_payload(content: str) -> dict[str, Any]:
+    start = content.find("{")
+    end = content.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found in AI response")
+    return json.loads(content[start : end + 1])
 
 
 async def _get_ai_response(
@@ -618,6 +775,82 @@ async def _get_ai_response(
     }
 
 
+async def _get_ai_plan_response(
+    conversation: AIConversation,
+    user_message: str,
+    context: dict[str, Any] | None,
+    db: AsyncSession,
+) -> dict[str, Any]:
+    """Get AI plan response in JSON format."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    metrics = get_metrics_backend()
+
+    history_limit = settings.ai_max_history_messages
+    msg_result = await db.execute(
+        select(AIMessage)
+        .where(AIMessage.conversation_id == conversation.id)
+        .order_by(AIMessage.created_at.desc())
+        .limit(history_limit)
+    )
+    history_raw = list(reversed(msg_result.scalars().all()))
+
+    history: list = []
+    for msg in history_raw:
+        if history and history[-1].role == msg.role and history[-1].content == msg.content:
+            continue
+        history.append(msg)
+
+    messages = [{"role": "system", "content": RUNNING_COACH_PLAN_PROMPT}]
+
+    if context:
+        context_str = f"[사용자 컨텍스트: {context}]"
+        messages.append({"role": "system", "content": context_str})
+
+    for msg in history:
+        messages.append({"role": msg.role, "content": msg.content})
+
+    messages.append({"role": "user", "content": user_message})
+
+    start_time = time.perf_counter()
+    status_code = 500
+    try:
+        response = await client.chat.completions.create(
+            model=settings.openai_model,
+            messages=messages,
+            max_tokens=AI_MAX_TOKENS,
+            temperature=AI_TEMPERATURE,
+        )
+        status_code = 200
+    except Exception:
+        status_code = 500
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        metrics.observe_external_api("openai", "chat.completions", status_code, duration_ms)
+        logger.info(
+            "OpenAI API chat.completions status=%s duration_ms=%.2f",
+            status_code,
+            duration_ms,
+        )
+
+    content = response.choices[0].message.content or ""
+    try:
+        payload = _extract_json_payload(content)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI plan response is not valid JSON",
+        ) from exc
+
+    return {
+        "content": content,
+        "payload": payload,
+        "tokens": response.usage.total_tokens if response.usage else None,
+    }
+
+
 # -------------------------------------------------------------------------
 # Import/Export Endpoints
 # -------------------------------------------------------------------------
@@ -680,21 +913,33 @@ async def import_plan(
         # Calculate plan start_date and end_date
         # Rules:
         # 1. start_date provided: use as-is
-        # 2. start_date not provided + goal_date provided: start_date = goal_date - (weeks * 7 days)
-        # 3. Neither provided: start_date = today, end_date = today + (weeks * 7 days)
-        plan_duration = timedelta(weeks=len(request.weeks))
+        # 2. start_date not provided + goal_date provided: start_date = goal_date - (weeks * 7 - 1) days
+        # 3. Neither provided: start_date = today, end_date = today + (weeks * 7 - 1) days
+        #
+        # NOTE: end_date is INCLUSIVE. For N weeks:
+        #   - Week 1: day 1-7, Week 2: day 8-14, ..., Week N: day (N-1)*7+1 to N*7
+        #   - end_date = start_date + (N * 7 - 1) days
+        num_weeks = len(request.weeks)
+        plan_duration_days = num_weeks * 7 - 1  # Inclusive: last day of last week
 
         if start_date_parsed:
             plan_start_date = start_date_parsed
-            plan_end_date = goal_date_parsed if goal_date_parsed else (plan_start_date + plan_duration)
+            plan_end_date = goal_date_parsed if goal_date_parsed else (plan_start_date + timedelta(days=plan_duration_days))
         elif goal_date_parsed:
-            # Backtrack from goal date
+            # Backtrack from goal date (goal_date = end_date)
             plan_end_date = goal_date_parsed
-            plan_start_date = goal_date_parsed - plan_duration
+            plan_start_date = goal_date_parsed - timedelta(days=plan_duration_days)
         else:
             # Default: start today
             plan_start_date = date.today()
-            plan_end_date = plan_start_date + plan_duration
+            plan_end_date = plan_start_date + timedelta(days=plan_duration_days)
+
+        # Validate: goal_date should not be before start_date
+        if goal_date_parsed and goal_date_parsed < plan_start_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"goal_date ({goal_date_parsed}) cannot be before start_date ({plan_start_date})",
+            )
 
         # Create plan (map request fields to model fields)
         plan = Plan(
@@ -742,11 +987,16 @@ async def import_plan(
                 db.add(workout)
                 workouts_created += 1
 
-        # Log import
+        # Log import with DB schema fields
         ai_import = AIImport(
             user_id=current_user.id,
             source=request.source,
-            payload=request.model_dump(),
+            import_type="plan",  # DB requires import_type
+            raw_content=json.dumps(request.model_dump(), ensure_ascii=False),  # Original input
+            parsed_data=request.model_dump(),  # Validated payload
+            status="success",  # Import succeeded
+            result_plan_id=plan.id,  # Link to created plan
+            processed_at=datetime.now(timezone.utc),
         )
         db.add(ai_import)
         await db.flush()
@@ -930,7 +1180,7 @@ def _format_markdown_summary(data: dict) -> str:
         f"- 총 거리: {data['recent_6_weeks']['total_distance_km']}km",
         f"- 총 시간: {data['recent_6_weeks']['total_duration_hours']}시간",
         f"- 평균 페이스: {data['recent_6_weeks']['avg_pace_per_km']}",
-        f"- 평균 심박수: {data['recent_6_weeks']['avg_hr']}bpm",
+        f"- 평균 심박수: {data['recent_6_weeks']['avg_hr']}bpm" if data['recent_6_weeks']['avg_hr'] else "- 평균 심박수: N/A",
         "",
         "## TREND 12 WEEKS (12주 추세)",
         f"- 총 활동 수: {data['trend_12_weeks']['total_activities']}회",

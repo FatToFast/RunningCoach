@@ -13,7 +13,7 @@ export function Layout() {
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-cyan animate-pulse">불러오는 중...</div>
+        <div className="text-accent animate-pulse">불러오는 중...</div>
       </div>
     );
   }
@@ -32,7 +32,7 @@ export function Layout() {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center p-6">
-          <p className="text-red-400 mb-2">연결 오류가 발생했습니다</p>
+          <p className="text-danger mb-2">연결 오류가 발생했습니다</p>
           <button
             onClick={() => window.location.reload()}
             className="btn btn-primary text-sm"

@@ -43,7 +43,7 @@ export function useSendMessage(conversationId: number) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (message: string) => aiApi.sendMessage(conversationId, message),
+    mutationFn: (request: ChatRequest) => aiApi.sendMessage(conversationId, request),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
     },
@@ -65,5 +65,12 @@ export function useChat() {
 export function useExportSummary() {
   return useMutation({
     mutationFn: (format: 'markdown' | 'json' = 'markdown') => aiApi.exportSummary(format),
+  });
+}
+
+export function useCoachContext(activityId?: number) {
+  return useQuery({
+    queryKey: ['ai', 'coach-context', activityId],
+    queryFn: () => aiApi.getCoachContext(activityId),
   });
 }

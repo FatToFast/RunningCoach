@@ -51,7 +51,7 @@ export function Sidebar({ isOpen = false, onClose }: SidebarProps) {
       {/* Sidebar */}
       <aside
         className={clsx(
-          'fixed top-16 bottom-0 w-64 bg-[var(--color-bg-secondary)] border-r border-[var(--color-border)] overflow-y-auto z-40 transition-transform duration-300',
+          'fixed top-16 bottom-0 w-64 bg-[var(--color-bg-elevated)] border-r border-[var(--color-border)] overflow-y-auto z-40 transition-transform duration-300',
           // Desktop: always visible
           'lg:left-0 lg:translate-x-0',
           // Mobile: slide in/out
@@ -80,8 +80,8 @@ export function Sidebar({ isOpen = false, onClose }: SidebarProps) {
                 clsx(
                   'flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all',
                   isActive
-                    ? 'bg-[var(--color-accent-cyan)]/10 text-cyan border border-[var(--color-accent-cyan)]/30'
-                    : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]'
+                    ? 'bg-[var(--color-accent-soft)] text-accent-strong border border-[var(--color-border-accent)]'
+                    : 'text-secondary hover:text-ink hover:bg-[var(--color-bg-secondary)]'
                 )
               }
             >
@@ -92,7 +92,7 @@ export function Sidebar({ isOpen = false, onClose }: SidebarProps) {
         </nav>
 
         {/* Quick Actions */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-[var(--color-border)] bg-[var(--color-bg-tertiary)]">
+        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
           <button
             onClick={handleAICoachClick}
             className="btn btn-primary w-full"

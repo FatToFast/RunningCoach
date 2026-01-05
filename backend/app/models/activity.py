@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import BaseModel
@@ -18,13 +18,17 @@ class Activity(BaseModel):
     """Running/workout activity from Garmin."""
 
     __tablename__ = "activities"
+    __table_args__ = (
+        UniqueConstraint("user_id", "garmin_id", name="uq_activities_user_garmin_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
     )
-    garmin_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    # garmin_id is unique per user (not globally) - see UniqueConstraint below
+    garmin_id: Mapped[int] = mapped_column(BigInteger, index=True)
 
     # Basic info
     activity_type: Mapped[str] = mapped_column(String(50), index=True)

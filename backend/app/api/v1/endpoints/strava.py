@@ -22,8 +22,17 @@ from app.models.strava import StravaActivityMap, StravaSession, StravaSyncState
 from app.models.user import User
 from app.observability import get_metrics_backend
 
-# In-memory store for OAuth state tokens (use Redis in production)
-# Maps state_token -> user_id with expiration
+# TODO: PRODUCTION - Migrate to Redis for multi-worker/multi-instance deployments
+# In-memory store for OAuth state tokens (OK for single-worker development only)
+# Maps state_token -> (user_id, expiration_timestamp)
+# For production with multiple workers or instances, implement Redis-based storage:
+#   - Use Redis SETEX for state storage with TTL
+#   - Key format: f"oauth:state:{state_token}"
+#   - Value: user_id (int)
+#   - TTL: OAUTH_STATE_TTL (600 seconds)
+# Example:
+#   await redis.setex(f"oauth:state:{state_token}", OAUTH_STATE_TTL, user_id)
+#   user_id = await redis.get(f"oauth:state:{state}")
 _oauth_states: dict[str, tuple[int, float]] = {}
 
 router = APIRouter()
@@ -130,6 +139,7 @@ class SyncRunResponse(BaseModel):
     started: bool
     message: str
     pending_count: int
+    queued_count: int
 
 
 class SyncStatusResponse(BaseModel):
@@ -139,6 +149,9 @@ class SyncStatusResponse(BaseModel):
     last_success_at: datetime | None
     pending_uploads: int
     completed_uploads: int
+    queued_jobs: int
+    uploading_jobs: int
+    failed_jobs: int
 
 
 class UploadStatusResponse(BaseModel):
@@ -456,14 +469,20 @@ async def run_strava_sync(
 
     FR-040: Strava 자동 동기화
 
+    Queues all pending activities (with FIT files) for upload to Strava.
+    Activities are processed asynchronously by the ARQ worker.
+
     Args:
         current_user: Authenticated user.
         db: Database session.
-        force: Force re-upload.
+        force: Force re-upload (not yet implemented - requires deleting existing maps).
 
     Returns:
-        Sync job status.
+        Sync job status with counts.
     """
+    from app.models.strava import StravaUploadJob, StravaUploadStatus
+    from app.services.strava_upload import StravaUploadService
+
     # Check Strava connection
     session_result = await db.execute(
         select(StravaSession).where(StravaSession.user_id == current_user.id)
@@ -476,33 +495,33 @@ async def run_strava_sync(
             detail="Strava account not connected",
         )
 
-    # Count pending uploads using SQL COUNT (efficient, doesn't load all records)
-    if force:
-        # All activities
-        count_query = select(func.count(Activity.id)).where(
-            Activity.user_id == current_user.id
+    # Count pending uploads (activities with FIT files, not uploaded, not queued)
+    pending_query = (
+        select(func.count(Activity.id))
+        .outerjoin(StravaActivityMap)
+        .outerjoin(StravaUploadJob)
+        .where(
+            Activity.user_id == current_user.id,
+            Activity.has_fit_file == True,
+            StravaActivityMap.id == None,
+            StravaUploadJob.id == None,
         )
-    else:
-        # Activities not yet uploaded
-        count_query = (
-            select(func.count(Activity.id))
-            .outerjoin(StravaActivityMap)
-            .where(
-                Activity.user_id == current_user.id,
-                StravaActivityMap.id == None,
-            )
-        )
-
-    pending_result = await db.execute(count_query)
+    )
+    pending_result = await db.execute(pending_query)
     pending_count = pending_result.scalar() or 0
 
-    # TODO: Queue Celery task for background sync
-    # task = sync_to_strava.delay(user_id=current_user.id, force=force)
+    # Queue activities for upload
+    upload_service = StravaUploadService(db)
+    queued_count = await upload_service.enqueue_pending_activities(
+        user_id=current_user.id,
+        since=None,  # Queue all pending
+    )
 
     return SyncRunResponse(
         started=True,
-        message="Strava sync job queued",
+        message=f"Queued {queued_count} activities for Strava upload",
         pending_count=pending_count,
+        queued_count=queued_count,
     )
 
 
@@ -518,21 +537,27 @@ async def get_sync_status(
         db: Database session.
 
     Returns:
-        Sync status.
+        Sync status including job queue statistics.
     """
+    from app.models.strava import StravaUploadJob, StravaUploadStatus
+    from app.services.strava_upload import StravaUploadService
+
     # Get sync state
     sync_result = await db.execute(
         select(StravaSyncState).where(StravaSyncState.user_id == current_user.id)
     )
     sync_state = sync_result.scalar_one_or_none()
 
-    # Count pending (not uploaded)
+    # Count pending (activities with FIT, not uploaded, not in queue)
     pending_result = await db.execute(
         select(func.count(Activity.id))
         .outerjoin(StravaActivityMap)
+        .outerjoin(StravaUploadJob)
         .where(
             Activity.user_id == current_user.id,
+            Activity.has_fit_file == True,
             StravaActivityMap.id == None,
+            StravaUploadJob.id == None,
         )
     )
     pending_count = pending_result.scalar() or 0
@@ -545,11 +570,19 @@ async def get_sync_status(
     )
     completed_count = completed_result.scalar() or 0
 
+    # Get job statistics
+    upload_service = StravaUploadService(db)
+    job_stats = await upload_service.get_job_stats(current_user.id)
+
     return SyncStatusResponse(
         last_sync_at=sync_state.last_sync_at if sync_state else None,
         last_success_at=sync_state.last_success_at if sync_state else None,
         pending_uploads=pending_count,
         completed_uploads=completed_count,
+        queued_jobs=job_stats.get(StravaUploadStatus.QUEUED.value, 0),
+        uploading_jobs=job_stats.get(StravaUploadStatus.UPLOADING.value, 0)
+        + job_stats.get(StravaUploadStatus.POLLING.value, 0),
+        failed_jobs=job_stats.get(StravaUploadStatus.FAILED.value, 0),
     )
 
 

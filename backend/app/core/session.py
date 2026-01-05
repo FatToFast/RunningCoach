@@ -207,3 +207,38 @@ async def check_lock(lock_name: str) -> bool:
     redis_client = await get_redis()
     lock_key = f"lock:{lock_name}"
     return await redis_client.exists(lock_key) > 0
+
+
+async def extend_lock(lock_name: str, owner: str, ttl_seconds: int) -> bool:
+    """Extend a distributed lock's TTL.
+
+    Uses Lua script to ensure atomic check-and-extend (only owner can extend).
+
+    Args:
+        lock_name: Name of the lock.
+        owner: Owner token (returned from acquire_lock).
+        ttl_seconds: New TTL in seconds.
+
+    Returns:
+        True if lock was extended, False if not found or owned by another.
+    """
+    redis_client = await get_redis()
+    lock_key = f"lock:{lock_name}"
+
+    # Lua script for atomic compare-and-expire
+    lua_script = """
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("expire", KEYS[1], ARGV[2])
+    else
+        return 0
+    end
+    """
+
+    result = await redis_client.eval(lua_script, 1, lock_key, owner, ttl_seconds)
+
+    if result == 1:
+        logger.debug(f"Lock extended: {lock_name} (new TTL={ttl_seconds}s)")
+        return True
+    else:
+        logger.warning(f"Lock not extended (not owner or expired): {lock_name}")
+        return False

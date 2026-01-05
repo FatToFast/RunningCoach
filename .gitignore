@@ -121,3 +121,6 @@ secrets/
 
 # Playwright MCP screenshots
 .playwright-mcp/
+
+# FIT data files (user data)
+backend/data/fit_files/

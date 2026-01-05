@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.database import get_db, async_session_maker
-from app.core.session import acquire_lock, release_lock, check_lock
+from app.core.session import acquire_lock, release_lock, check_lock, extend_lock
 from app.models.garmin import GarminSession, GarminSyncState, GarminRawEvent
 from app.models.user import User
 from app.services.ai_snapshot import ensure_ai_training_snapshot
@@ -29,7 +29,10 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Sync lock configuration
-SYNC_LOCK_TTL = 3600  # 1 hour max sync duration
+# Increased to 3 hours to accommodate large backfills (500+ activities)
+# For very long syncs (1000+ activities), consider periodic lock extension
+# using extend_lock() every 10-15 minutes during sync
+SYNC_LOCK_TTL = 10800  # 3 hours max sync duration
 
 
 def _sync_lock_name(user_id: int) -> str:

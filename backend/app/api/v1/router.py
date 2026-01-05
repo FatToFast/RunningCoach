@@ -57,6 +57,7 @@ AI Planning:
   GET    /api/v1/ai/conversations/{id}   - 대화 상세
   POST   /api/v1/ai/import               - 수동 플랜 JSON import
   GET    /api/v1/ai/export               - ChatGPT 분석용 요약 생성
+  GET    /api/v1/ai/coach/context        - AI 코치 컨텍스트
 
 Workouts:
   POST   /api/v1/workouts                - 워크아웃 생성
@@ -157,6 +158,7 @@ from app.api.v1.aliases import alias_router
 from app.api.v1.endpoints import (
     activities,
     ai,
+    ai_coach,
     ai_snapshot,
     analytics,
     auth,
@@ -214,6 +216,7 @@ api_router.include_router(analytics.router, prefix="/analytics", tags=["analytic
 # -------------------------------------------------------------------------
 api_router.include_router(ai.router, prefix="/ai", tags=["ai"])
 api_router.include_router(ai_snapshot.router, prefix="/ai", tags=["ai"])
+api_router.include_router(ai_coach.router, prefix="/ai", tags=["ai"])
 
 # -------------------------------------------------------------------------
 # Workouts

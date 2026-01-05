@@ -23,6 +23,38 @@ from app.observability import get_metrics_backend
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+DEFAULT_ESTIMATED_PACE_SECONDS = 360  # 6:00/km fallback for distance-only steps
+
+
+def _parse_single_pace(value: str) -> int | None:
+    value = value.strip()
+    if not value:
+        return None
+    if ":" in value:
+        parts = value.split(":")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            return int(parts[0]) * 60 + int(parts[1])
+    if value.isdigit():
+        return int(value)
+    return None
+
+
+def _parse_pace_seconds(pace: str | None) -> int | None:
+    if not pace:
+        return None
+    cleaned = pace.strip().lower()
+    cleaned = cleaned.replace("/km", "").replace("km", "")
+    for sep in ("~", "–", "—"):
+        cleaned = cleaned.replace(sep, "-")
+    if "-" in cleaned:
+        parts = [p.strip() for p in cleaned.split("-") if p.strip()]
+        values = [_parse_single_pace(p) for p in parts]
+        values = [v for v in values if v is not None]
+        if values:
+            return int(sum(values) / len(values))
+        return None
+    return _parse_single_pace(cleaned)
+
 
 class GarminAdapterError(Exception):
     """Base exception for Garmin adapter errors."""
@@ -67,6 +99,10 @@ class GarminAdapterProtocol(Protocol):
 
     async def get_heart_rate(self, target_date: date) -> dict[str, Any]:
         """Get heart rate data for a specific date."""
+        ...
+
+    async def upload_running_workout_template(self, workout: Any) -> int:
+        """Upload a running workout template."""
         ...
 
 
@@ -814,6 +850,137 @@ class GarminConnectAdapter:
         fit_data, file_path, file_hash = self.download_fit_file(activity_id, save_dir)
         parsed_data = self.parse_fit_file(fit_data)
         return parsed_data, file_path, file_hash
+
+    # -------------------------------------------------------------------------
+    # Workout Upload
+    # -------------------------------------------------------------------------
+
+    def upload_running_workout_template(self, workout: Any) -> int:
+        """Upload a running workout template to Garmin Connect.
+
+        Args:
+            workout: Workout model with structure steps.
+
+        Returns:
+            Garmin workout ID.
+
+        Raises:
+            GarminAPIError: If upload fails or workout is invalid.
+        """
+        self._ensure_authenticated()
+
+        if not workout or not getattr(workout, "structure", None):
+            raise GarminAPIError("Workout structure is required for Garmin upload")
+
+        try:
+            from garminconnect.workout import (
+                ConditionType,
+                ExecutableStep,
+                RunningWorkout,
+                StepType,
+                TargetType,
+                WorkoutSegment,
+            )
+        except ImportError as exc:
+            raise GarminAPIError(
+                "garminconnect workout models unavailable (pydantic missing?)"
+            ) from exc
+
+        step_type_map = {
+            "warmup": (StepType.WARMUP, "warmup", 1),
+            "cooldown": (StepType.COOLDOWN, "cooldown", 2),
+            "main": (StepType.INTERVAL, "interval", 3),
+            "interval": (StepType.INTERVAL, "interval", 3),
+            "recovery": (StepType.RECOVERY, "recovery", 4),
+            "rest": (StepType.REST, "rest", 5),
+        }
+
+        fallback_pace = DEFAULT_ESTIMATED_PACE_SECONDS
+        steps = []
+        total_duration = 0.0
+
+        for index, step in enumerate(workout.structure, start=1):
+            step_type_key = (step.get("type") or "main").lower()
+            step_type = step_type_map.get(step_type_key, step_type_map["main"])
+
+            duration_minutes = step.get("duration_minutes")
+            distance_km = step.get("distance_km")
+            target_pace = _parse_pace_seconds(step.get("target_pace"))
+
+            if target_pace:
+                fallback_pace = target_pace
+
+            if distance_km:
+                end_condition = {
+                    "conditionTypeId": ConditionType.DISTANCE,
+                    "conditionTypeKey": "distance",
+                    "displayOrder": 1,
+                    "displayable": True,
+                }
+                end_value = float(distance_km) * 1000
+                duration_seconds = float(distance_km) * float(fallback_pace)
+            else:
+                end_condition = {
+                    "conditionTypeId": ConditionType.TIME,
+                    "conditionTypeKey": "time",
+                    "displayOrder": 2,
+                    "displayable": True,
+                }
+                duration_seconds = float(duration_minutes or 0) * 60
+                if duration_seconds <= 0:
+                    duration_seconds = 300.0
+                end_value = duration_seconds
+
+            total_duration += duration_seconds
+
+            steps.append(
+                ExecutableStep(
+                    stepOrder=index,
+                    stepType={
+                        "stepTypeId": step_type[0],
+                        "stepTypeKey": step_type[1],
+                        "displayOrder": step_type[2],
+                    },
+                    endCondition=end_condition,
+                    endConditionValue=end_value,
+                    targetType={
+                        "workoutTargetTypeId": TargetType.NO_TARGET,
+                        "workoutTargetTypeKey": "no.target",
+                        "displayOrder": 1,
+                    },
+                )
+            )
+
+        if total_duration <= 0:
+            total_duration = float(len(steps) * 300)
+
+        running_workout = RunningWorkout(
+            workoutName=workout.name,
+            estimatedDurationInSecs=int(total_duration),
+            workoutSegments=[
+                WorkoutSegment(
+                    segmentOrder=1,
+                    sportType={
+                        "sportTypeId": 1,
+                        "sportTypeKey": "running",
+                        "displayOrder": 1,
+                    },
+                    workoutSteps=steps,
+                )
+            ],
+        )
+
+        response = self._client.upload_running_workout(running_workout)
+        workout_id = None
+        for key in ("workoutId", "workout_id", "id"):
+            if isinstance(response, dict) and response.get(key):
+                workout_id = response.get(key)
+                break
+
+        if not workout_id:
+            raise GarminAPIError(f"Garmin workout upload failed: {response}")
+
+        return int(workout_id)
 
     # -------------------------------------------------------------------------
     # Additional Health/Fitness Data Endpoints

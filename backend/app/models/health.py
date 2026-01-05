@@ -94,6 +94,9 @@ class HealthMetric(BaseModel):
     """Generic health/fitness metrics from Garmin (Body Battery, Stress, HRV, etc.)."""
 
     __tablename__ = "health_metrics"
+    __table_args__ = (
+        UniqueConstraint("user_id", "metric_type", "metric_time", name="uq_health_metric_user_type_time"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(

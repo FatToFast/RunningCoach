@@ -39,9 +39,22 @@ class User(BaseModel):
         nullable=True,
     )
 
+    # User profile for training calculations
+    birth_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    gender: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # "male", "female", or None
+
     # Garmin 연동 심박수 설정 (Garmin Connect에서 설정된 값)
     max_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     resting_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    threshold_pace: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # threshold pace in sec/km
+
+    @property
+    def age(self) -> Optional[int]:
+        """Calculate user's age from birth year."""
+        if self.birth_year:
+            from datetime import date
+            return date.today().year - self.birth_year
+        return None
 
     # Relationships
     garmin_session: Mapped[Optional["GarminSession"]] = relationship(

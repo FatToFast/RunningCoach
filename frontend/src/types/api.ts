@@ -44,9 +44,13 @@ export interface HealthStatus {
 }
 
 export interface FitnessStatus {
-  ctl: number | null;
-  atl: number | null;
+  ctl: number | null; // Absolute CTL value
+  atl: number | null; // Absolute ATL value
   tsb: number | null;
+  ctl_percent: number | null; // CTL as % of all-time max (Runalyze-style)
+  atl_percent: number | null; // ATL as % of all-time max (Runalyze-style)
+  max_ctl: number | null; // All-time max CTL
+  max_atl: number | null; // All-time max ATL
   weekly_trimp: number | null;
   weekly_tss: number | null;
   // Extended Runalyze-style metrics
@@ -151,6 +155,8 @@ export interface CTLATLPoint {
   ctl: number | null;
   atl: number | null;
   tsb: number | null;
+  ctl_percent: number | null; // CTL as % of all-time max
+  atl_percent: number | null; // ATL as % of all-time max
 }
 
 export interface TrendsResponse {
@@ -613,4 +619,14 @@ export interface NoteTypeInfo {
 
 export interface NoteTypesResponse {
   types: NoteTypeInfo[];
+}
+
+// -------------------------------------------------------------------------
+// AI Export Types (ChatGPT 분석용)
+// -------------------------------------------------------------------------
+
+export interface ExportSummaryResponse {
+  format: 'markdown' | 'json';
+  content: string;
+  generated_at: string;
 }

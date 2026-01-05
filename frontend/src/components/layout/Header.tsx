@@ -56,7 +56,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
   };
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 bg-[var(--color-bg-secondary)] border-b border-[var(--color-border)]">
+    <header className="fixed top-0 left-0 right-0 z-50 bg-[var(--color-bg-elevated)]/95 backdrop-blur border-b border-[var(--color-border)] shadow-sm">
       <div className="h-16 px-4 lg:px-6 flex items-center justify-between">
         {/* Mobile Menu & Logo */}
         <div className="flex items-center gap-3">
@@ -70,8 +70,8 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
             <Menu className="w-5 h-5" />
           </button>
 
-          <h1 className="font-display text-xl font-bold tracking-tight">
-            RUNNING<span className="text-cyan">COACH</span>
+          <h1 className="font-display text-xl font-semibold tracking-tight text-ink">
+            Running<span className="text-accent">Coach</span>
           </h1>
 
           {/* Connection Status & Sync Button */}
@@ -80,7 +80,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
               <>
                 <span className="badge badge-live hidden sm:inline-flex">GARMIN</span>
                 {lastSync && (
-                  <span className="text-xs text-[var(--color-text-secondary)] hidden lg:inline">
+                  <span className="text-xs text-secondary hidden lg:inline">
                     {new Date(lastSync).toLocaleTimeString()}
                   </span>
                 )}
@@ -107,7 +107,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
             ) : (
               <Link
                 to="/settings"
-                className="text-xs text-[var(--color-accent-amber)] hover:text-[var(--color-accent-amber-dim)] flex items-center gap-1 font-medium"
+                className="text-xs text-warning hover:text-accent-strong flex items-center gap-1 font-medium"
               >
                 <span className="hidden sm:inline">Garmin 연결 필요</span>
                 <span className="sm:hidden">연결</span>
@@ -147,7 +147,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
 
             {/* Dropdown */}
             {showUserMenu && (
-              <div className="absolute right-0 mt-2 w-48 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-lg shadow-lg overflow-hidden">
+              <div className="absolute right-0 mt-2 w-48 bg-[var(--color-bg-elevated)] border border-[var(--color-border)] rounded-lg shadow-lg overflow-hidden">
                 {user && (
                   <div className="px-4 py-3 border-b border-[var(--color-border)]">
                     <p className="text-sm font-medium truncate">
@@ -158,7 +158,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
                 )}
                 <button
                   onClick={handleLogout}
-                  className="w-full px-4 py-2.5 text-left text-sm text-red-400 hover:bg-[var(--color-bg-tertiary)] flex items-center gap-2 transition-colors"
+                  className="w-full px-4 py-2.5 text-left text-sm text-danger hover:bg-[var(--color-bg-secondary)] flex items-center gap-2 transition-colors"
                 >
                   <LogOut className="w-4 h-4" />
                   로그아웃

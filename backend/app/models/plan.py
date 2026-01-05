@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import BaseModel
 
 if TYPE_CHECKING:
+    from app.models.ai import AIImport
     from app.models.user import User
     from app.models.workout import Workout
 
@@ -55,6 +56,11 @@ class Plan(BaseModel):
         back_populates="plan",
         cascade="all, delete-orphan",
         order_by="PlanWeek.week_index",
+    )
+    ai_imports: Mapped[list["AIImport"]] = relationship(
+        "AIImport",
+        foreign_keys="AIImport.result_plan_id",
+        back_populates="result_plan",
     )
 
     def __repr__(self) -> str:

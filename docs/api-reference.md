@@ -801,7 +801,7 @@ HR존별 시간 분포를 계산합니다.
       "id": 101,
       "role": "user",
       "content": "이번 주 템포런 계획을 조정해줘",
-      "tokens": 12,
+      "token_count": 12,
       "created_at": "2024-12-01T09:10:00Z"
     }
   ],
@@ -829,9 +829,17 @@ Request Body:
 ```json
 {
   "message": "이번 주 템포런 계획을 조정해줘",
-  "context": { "language": "ko", "goal": "10k PR" }
+  "context": { "language": "ko", "goal": "10k PR" },
+  "mode": "chat",
+  "save_mode": "draft"
 }
 ```
+
+**Parameters:**
+- `message` (required): 사용자 메시지
+- `context` (optional): 추가 컨텍스트 정보
+- `mode` (optional): `"chat"` (기본값) 또는 `"plan"` (훈련 계획 생성 모드)
+- `save_mode` (optional): 계획 저장 모드 - `"draft"` (기본값), `"approved"`, `"active"`
 
 Response:
 ```json
@@ -841,16 +849,20 @@ Response:
     "id": 101,
     "role": "user",
     "content": "이번 주 템포런 계획을 조정해줘",
-    "tokens": 12,
+    "token_count": 12,
     "created_at": "2024-12-01T09:10:00Z"
   },
   "reply": {
     "id": 102,
     "role": "assistant",
     "content": "이번 주는 템포런을 1회로 줄이고 회복주로 조정할게요.",
-    "tokens": 38,
+    "token_count": 38,
     "created_at": "2024-12-01T09:10:02Z"
-  }
+  },
+  "plan_id": null,
+  "import_id": null,
+  "plan_status": null,
+  "missing_fields": null
 }
 ```
 
@@ -890,10 +902,72 @@ Response:
 ```
 
 **Note:**
-- `start_date`는 import 시점(오늘) 기준으로 자동 설정
-- `end_date`는 `goal_date` 또는 `weeks * 7일`로 계산
+- `start_date` 규칙:
+  1. `start_date` 제공 시: 그대로 사용
+  2. `start_date` 없음 + `goal_date` 제공: `start_date = goal_date - (weeks * 7 - 1)일`
+  3. 둘 다 없음: `start_date = 오늘`, `end_date = 오늘 + (weeks * 7 - 1)일`
+- `end_date`는 **inclusive** (마지막 주의 마지막 날 포함)
+- `goal_date`가 `start_date`보다 이르면 400 에러 반환
 - Workout `structure`는 **단계 목록**(list of steps)입니다 (`{"steps": [...]}` 형태가 아님)
 - Workout `notes`는 전용 필드로 저장됩니다 (`target.notes`가 아님)
+
+### GET `/ai/export` (ChatGPT 분석용 요약)
+
+훈련 데이터 요약을 생성하여 ChatGPT 등 외부 AI에 붙여넣기 할 수 있는 형식으로 반환합니다.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | 설명 |
+|-----------|------|---------|------|
+| format | string | `"markdown"` | 출력 형식: `"markdown"` 또는 `"json"` |
+| include_sensitive | bool | `false` | 개인정보 포함 여부 (true: 실제 이름, false: "Runner") |
+
+**Response:**
+
+```json
+{
+  "format": "markdown",
+  "content": "# 러닝 훈련 데이터 요약\n\n## PROFILE\n- 이름: Runner\n...",
+  "generated_at": "2026-01-06T10:30:00Z"
+}
+```
+
+**Markdown 출력 예시:**
+
+```markdown
+# 러닝 훈련 데이터 요약
+
+## PROFILE
+- 이름: Runner
+- 타임존: Asia/Seoul
+
+## RECENT 6 WEEKS (최근 6주)
+- 총 활동 수: 18회
+- 총 거리: 120.5km
+- 총 시간: 12.3시간
+- 평균 페이스: 5:42/km
+- 평균 심박수: 152bpm
+
+## TREND 12 WEEKS (12주 추세)
+- 총 활동 수: 36회
+- 총 거리: 240.2km
+- 주간 평균 거리: 20.0km
+
+## ALL-TIME (전체 이력)
+- 총 활동 수: 150회
+- 총 거리: 1500.0km
+- 총 시간: 150.0시간
+
+## FITNESS METRICS (피트니스 지표)
+- CTL (Chronic Training Load): 45.2
+- ATL (Acute Training Load): 52.1
+- TSB (Training Stress Balance): -6.9
+```
+
+**Note:**
+- 데이터가 없는 필드는 `N/A`로 표시됩니다
+- `include_sensitive=false` (기본값)일 때 이름은 "Runner"로 익명화됩니다
+- Frontend에서 복사 시 `response.content`만 클립보드에 복사해야 합니다
 
 ---
 
@@ -906,7 +980,7 @@ Response:
 | GET | `/workouts/{id}` | 워크아웃 상세 |
 | PATCH | `/workouts/{id}` | 워크아웃 수정 |
 | DELETE | `/workouts/{id}` | 워크아웃 삭제 |
-| POST | `/workouts/{id}/push` | Garmin에 전송 (미구현) |
+| POST | `/workouts/{id}/push` | Garmin에 전송 |
 | GET | `/workouts/schedules/list` | 스케줄 목록 (페이지네이션) |
 | POST | `/workouts/schedules` | 날짜 스케줄링 |
 | PATCH | `/workouts/schedules/{schedule_id}/status` | 스케줄 상태 변경 |

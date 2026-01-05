@@ -24,15 +24,15 @@ export function StatCard({
   const isNegative = change && change < 0;
 
   return (
-    <div className="card p-3 sm:p-4">
-      <div className="flex items-start justify-between mb-2 sm:mb-4">
-        <span className="text-[10px] sm:text-xs text-muted uppercase tracking-wider">{label}</span>
+    <div className={clsx('card-elevated p-4', variant === 'accent' && 'border-accent')}>
+      <div className="flex items-start justify-between mb-3">
+        <span className="text-[10px] sm:text-xs text-muted uppercase tracking-[0.2em]">{label}</span>
         {Icon && (
           <Icon
             className={clsx(
               'w-4 h-4 sm:w-5 sm:h-5',
-              variant === 'accent' && 'text-cyan',
-              variant === 'warning' && 'text-amber',
+              variant === 'accent' && 'text-accent',
+              variant === 'warning' && 'text-warning',
               variant === 'default' && 'text-muted'
             )}
           />
@@ -42,9 +42,9 @@ export function StatCard({
       <div className="flex items-baseline gap-1 sm:gap-2">
         <span
           className={clsx(
-            'font-mono text-xl sm:text-2xl lg:text-3xl font-bold',
-            variant === 'accent' && 'text-cyan',
-            variant === 'warning' && 'text-amber'
+            'font-mono text-2xl sm:text-3xl lg:text-4xl font-semibold text-ink',
+            variant === 'accent' && 'text-accent',
+            variant === 'warning' && 'text-warning'
           )}
         >
           {value}
@@ -57,8 +57,8 @@ export function StatCard({
           <span
             className={clsx(
               'text-[10px] sm:text-xs font-medium',
-              isPositive && 'text-green-400',
-              isNegative && 'text-red-400',
+              isPositive && 'text-positive',
+              isNegative && 'text-danger',
               !isPositive && !isNegative && 'text-muted'
             )}
           >

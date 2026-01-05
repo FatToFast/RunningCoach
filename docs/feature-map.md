@@ -13,7 +13,7 @@
 - AI: POST `/ai/chat`, GET `/ai/conversations`, POST `/ai/conversations`, GET `/ai/conversations/{id}`, DELETE `/ai/conversations/{id}`, POST `/ai/conversations/{id}/chat`, POST `/ai/import`, GET `/ai/export`
 - Workouts: GET `/workouts`, POST `/workouts`, GET `/workouts/{id}`, PATCH `/workouts/{id}`, DELETE `/workouts/{id}`, POST `/workouts/{id}/push`, GET `/workouts/schedules/list`, POST `/workouts/schedules`, PATCH `/workouts/schedules/{schedule_id}/status`, DELETE `/workouts/schedules/{schedule_id}`
 - Plans: GET `/plans`, POST `/plans`, GET `/plans/{id}`, PATCH `/plans/{id}`, DELETE `/plans/{id}`, POST `/plans/{id}/approve`, POST `/plans/{id}/activate`, POST `/plans/{id}/weeks`
-- Strava: GET `/strava/connect`, POST `/strava/callback`, POST `/strava/refresh`, GET `/strava/status`, DELETE `/strava/disconnect`, POST `/strava/sync/run`, GET `/strava/sync/status`, GET `/strava/activities`, POST `/strava/activities/{activity_id}/upload`
+- Strava: GET `/strava/connect`, POST `/strava/callback`, POST `/strava/refresh`, GET `/strava/status`, DELETE `/strava/disconnect`, POST `/strava/sync/run` (큐잉), GET `/strava/sync/status` (큐 상태 포함), GET `/strava/activities`, POST `/strava/activities/{activity_id}/upload`
 - Runalyze: GET `/runalyze/status`, GET `/runalyze/hrv`, GET `/runalyze/sleep`, GET `/runalyze/summary`, GET `/runalyze/calculations`, GET `/runalyze/training-paces`
 - Gear: GET `/gear`, GET `/gear/stats`, GET `/gear/{gear_id}`, POST `/gear`, PATCH `/gear/{gear_id}`, POST `/gear/{gear_id}/retire`, DELETE `/gear/{gear_id}`, POST `/gear/{gear_id}/activities/{activity_id}`, DELETE `/gear/{gear_id}/activities/{activity_id}`, GET `/gear/{gear_id}/activities`
 - Aliases: GET `/aliases`
@@ -29,7 +29,7 @@
 - AI: `/ai/conversations` → `ConversationListResponse`, `/ai/conversations`(POST) → `ConversationResponse`, `/ai/conversations/{id}` → `ConversationDetailResponse`, `/ai/conversations/{id}/chat` → `ChatResponse`, `/ai/chat` → `ChatResponse`, `/ai/import` → `PlanImportResponse`, `/ai/export` → `ExportSummaryResponse`
 - Workouts: `/workouts` → `WorkoutListResponse`, `/workouts`(POST) → `WorkoutResponse`, `/workouts/{id}` → `WorkoutResponse`, `/workouts/{id}/push` → `GarminPushResponse`, `/workouts/schedules/list` → `ScheduleListResponse`, `/workouts/schedules` → `ScheduleResponse`
 - Plans: `/plans` → `PlanListResponse`, `/plans`(POST) → `PlanResponse`, `/plans/{id}` → `PlanDetailResponse`, `/plans/{id}`(PATCH) → `PlanResponse`, `/plans/{id}/approve` → `PlanResponse`, `/plans/{id}/activate` → `PlanResponse`, `/plans/{id}/weeks` → `PlanWeekResponse`
-- Strava: `/strava/connect` → `StravaConnectResponse`, `/strava/callback` → `StravaCallbackResponse`, `/strava/status` → `StravaStatusResponse`, `/strava/refresh` → `RefreshResponse`, `/strava/sync/run` → `SyncRunResponse`, `/strava/sync/status` → `SyncStatusResponse`, `/strava/activities` → `list[UploadStatusResponse]`, `/strava/activities/{activity_id}/upload` → `UploadStatusResponse`
+- Strava: `/strava/connect` → `StravaConnectResponse`, `/strava/callback` → `StravaCallbackResponse`, `/strava/status` → `StravaStatusResponse`, `/strava/refresh` → `RefreshResponse`, `/strava/sync/run` → `SyncRunResponse` (queued_count 추가), `/strava/sync/status` → `SyncStatusResponse` (queued_jobs, uploading_jobs, failed_jobs 추가), `/strava/activities` → `list[UploadStatusResponse]`, `/strava/activities/{activity_id}/upload` → `UploadStatusResponse`
 - Runalyze: `/runalyze/status` → `RunalyzeStatusResponse`, `/runalyze/hrv` → `HRVResponse`, `/runalyze/sleep` → `SleepResponse`, `/runalyze/summary` → `RunalyzeSummary`, `/runalyze/calculations` → `RunalyzeCalculations`, `/runalyze/training-paces` → `RunalyzeTrainingPaces | null`
 - Gear: `/gear` → `GearListResponse`, `/gear/stats` → `GearStatsResponse`, `/gear/{gear_id}` → `GearDetailResponse`, `/gear`(POST) → `GearDetailResponse`, `/gear/{gear_id}`(PATCH) → `GearDetailResponse`
 - 참고: 일부 엔드포인트는 204(No Content) 또는 파일 스트림(FileResponse)을 반환
@@ -268,7 +268,10 @@ FIT 파일 스트림 (binary)
 ## 대시보드/캘린더
 - API: `/api/v1/dashboard/*`
 - Backend: `backend/app/api/v1/endpoints/dashboard.py`, `backend/app/services/dashboard.py`
-- Frontend: `frontend/src/pages/Dashboard.tsx`, `frontend/src/pages/Calendar.tsx`, `frontend/src/components/dashboard/StatCard.tsx`, `frontend/src/components/dashboard/MileageChart.tsx`, `frontend/src/components/dashboard/RecentActivities.tsx`, `frontend/src/components/dashboard/FitnessGauge.tsx`, `frontend/src/hooks/useDashboard.ts`, `frontend/src/api/dashboard.ts`
+- Frontend:
+  - Pages: `frontend/src/pages/Dashboard.tsx`, `frontend/src/pages/Calendar.tsx`
+  - Components: `frontend/src/components/dashboard/CompactStats.tsx`, `frontend/src/components/dashboard/CompactMileage.tsx`, `frontend/src/components/dashboard/CompactFitness.tsx`, `frontend/src/components/dashboard/CompactActivities.tsx`, `frontend/src/components/dashboard/FitnessGauge.tsx`, `frontend/src/components/dashboard/TrainingPacesCard.tsx`
+  - Hooks/API: `frontend/src/hooks/useDashboard.ts`, `frontend/src/api/dashboard.ts`
 
 ## Analytics/트렌드
 - API: `/api/v1/analytics/*`
@@ -297,6 +300,27 @@ FIT 파일 스트림 (binary)
 - API: `/api/v1/strava/*`
 - Backend: `backend/app/api/v1/endpoints/strava.py`
 - Models: `backend/app/models/strava.py`
+- Upload Service: `backend/app/services/strava_upload.py`
+- Worker: `backend/app/workers/strava_worker.py`
+
+### Strava 자동 업로드 파이프라인
+1. **Garmin 동기화 완료** → `sync_service._queue_strava_uploads()` 호출
+2. **업로드 대상 선별**: FIT 파일 있음 + StravaActivityMap 없음 + StravaUploadJob 없음
+3. **StravaUploadJob 생성** (status=queued)
+4. **ARQ 워커가 큐에서 작업 가져와 처리** (2분마다 스케줄)
+5. **Strava API 업로드** → upload_id 폴링 → 성공 시 StravaActivityMap 생성
+
+### 설정 옵션
+- `STRAVA_AUTO_UPLOAD`: 기본 ON (true)
+- `STRAVA_UPLOAD_CONCURRENCY`: 동시 업로드 수 (기본 3)
+- `STRAVA_UPLOAD_RETRY_DELAYS`: 재시도 지연 (기본 "60,300,1800,7200")
+- `STRAVA_UPLOAD_MAX_RETRIES`: 최대 재시도 횟수 (기본 4)
+
+### 워커 실행
+```bash
+# Redis 필요
+arq app.workers.strava_worker.WorkerSettings
+```
 
 ## Runalyze 연동
 - API: `/api/v1/runalyze/*`

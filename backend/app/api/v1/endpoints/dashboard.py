@@ -28,74 +28,79 @@ settings = get_settings()
 
 
 async def _fetch_runalyze_data() -> tuple[dict | None, dict | None]:
-    """Fetch calculations and training paces from Runalyze API.
+    """Fetch calculations and training paces from Runalyze.
+
+    Uses web scraping to fetch CTL/ATL/TSB and other metrics since
+    the official Runalyze API doesn't support reading these values.
 
     Returns:
         Tuple of (calculations_dict, training_paces_dict) or (None, None) on error.
     """
-    if not settings.runalyze_api_token:
-        return None, None
+    from app.services.runalyze import fetch_runalyze_metrics
 
     calculations = None
     training_paces = None
 
+    # Try web scraping method first (requires username/password)
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.runalyze_api_base_url,
-            headers={"token": settings.runalyze_api_token},
-            timeout=10.0,
-        ) as client:
-            # Fetch calculations
-            try:
-                calc_response = await client.get("/metrics/calculations")
-                if calc_response.status_code == 200:
-                    calculations = calc_response.json()
-            except Exception:
-                pass
-
-            # Fallback: try fitness endpoint for ATL/CTL/TSB
-            if not calculations:
-                try:
-                    fitness_response = await client.get("/metrics/fitness")
-                    if fitness_response.status_code == 200:
-                        fitness_data = fitness_response.json()
-                        if fitness_data:
-                            if isinstance(fitness_data, list) and len(fitness_data) > 0:
-                                latest = sorted(
-                                    fitness_data,
-                                    key=lambda x: x.get("date", x.get("date_time", "")),
-                                    reverse=True,
-                                )[0]
-                                calculations = {
-                                    "ctl": latest.get("ctl") or latest.get("fitness"),
-                                    "atl": latest.get("atl") or latest.get("fatigue"),
-                                    "tsb": latest.get("tsb") or latest.get("form"),
-                                }
-                            elif isinstance(fitness_data, dict):
-                                calculations = {
-                                    "ctl": fitness_data.get("ctl") or fitness_data.get("fitness"),
-                                    "atl": fitness_data.get("atl") or fitness_data.get("fatigue"),
-                                    "tsb": fitness_data.get("tsb") or fitness_data.get("form"),
-                                }
-                except Exception:
-                    pass
-
-            # Fetch training paces
-            for endpoint in ["/metrics/paces", "/training/paces", "/paces"]:
-                try:
-                    paces_response = await client.get(endpoint)
-                    if paces_response.status_code == 200:
-                        paces_data = paces_response.json()
-                        if paces_data:
-                            training_paces = paces_data[0] if isinstance(paces_data, list) else paces_data
-                            if training_paces.get("vdot"):
-                                break
-                            training_paces = None
-                except Exception:
-                    continue
-
+        metrics = await fetch_runalyze_metrics()
+        if metrics:
+            calculations = {
+                "ctl": metrics.ctl,
+                "atl": metrics.atl,
+                "tsb": metrics.tsb,
+                "vo2max": metrics.vo2max,
+                "effective_vo2max": metrics.vo2max,
+                "marathon_shape": metrics.marathon_shape,
+                "monotony": metrics.monotony,
+                "training_strain": metrics.training_strain,
+                "workload_ratio": metrics.acwr,
+                "ac_ratio": metrics.acwr,
+            }
     except Exception:
         pass
+
+    # Fallback: Try API token method (limited functionality)
+    if not calculations and settings.runalyze_api_token:
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.runalyze_api_base_url,
+                headers={"token": settings.runalyze_api_token},
+                timeout=10.0,
+            ) as client:
+                # Try various endpoints (no leading slash to preserve base_url path)
+                for endpoint in ["metrics/calculations", "metrics/fitness"]:
+                    try:
+                        response = await client.get(endpoint)
+                        if response.status_code == 200:
+                            data = response.json()
+                            if isinstance(data, list) and data:
+                                data = data[0]
+                            if data:
+                                calculations = {
+                                    "ctl": data.get("ctl") or data.get("fitness"),
+                                    "atl": data.get("atl") or data.get("fatigue"),
+                                    "tsb": data.get("tsb") or data.get("form"),
+                                }
+                                break
+                    except Exception:
+                        continue
+
+                # Try to fetch training paces (no leading slash)
+                for endpoint in ["metrics/paces", "training/paces", "paces"]:
+                    try:
+                        response = await client.get(endpoint)
+                        if response.status_code == 200:
+                            data = response.json()
+                            if isinstance(data, list) and data:
+                                data = data[0]
+                            if data and data.get("vdot"):
+                                training_paces = data
+                                break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
 
     return calculations, training_paces
 
@@ -169,9 +174,13 @@ class HealthStatus(BaseModel):
 class FitnessStatus(BaseModel):
     """Current fitness metrics (including Runalyze-style extended metrics)."""
 
-    ctl: float | None  # Chronic Training Load (Fitness)
-    atl: float | None  # Acute Training Load (Fatigue)
+    ctl: float | None  # Chronic Training Load (Fitness) - absolute value
+    atl: float | None  # Acute Training Load (Fatigue) - absolute value
     tsb: float | None  # Training Stress Balance
+    ctl_percent: float | None = None  # CTL as % of all-time max (Runalyze style)
+    atl_percent: float | None = None  # ATL as % of all-time max (Runalyze style)
+    max_ctl: float | None = None  # All-time max CTL
+    max_atl: float | None = None  # All-time max ATL
     weekly_trimp: float | None
     weekly_tss: float | None
     # Extended Runalyze-style metrics
@@ -467,14 +476,18 @@ async def get_dashboard_summary(
         vo2max=round(float(latest_vo2max), 1) if latest_vo2max else None,
     )
 
-    # Fitness status
-    fitness_result = await db.execute(
-        select(FitnessMetricDaily)
-        .where(FitnessMetricDaily.user_id == current_user.id)
-        .order_by(FitnessMetricDaily.date.desc())
-        .limit(1)
-    )
-    latest_fitness = fitness_result.scalar_one_or_none()
+    # Fetch Runalyze data first (preferred source)
+    runalyze_calc, runalyze_paces = await _fetch_runalyze_data()
+
+    # Calculate locally as fallback if Runalyze unavailable
+    from app.services.dashboard import DashboardService
+    from sqlalchemy.orm import Session as SyncSession
+
+    def calculate_fitness_sync(sync_db: SyncSession):
+        service = DashboardService(sync_db, current_user.id)
+        return service._calculate_fitness_metrics(today)
+
+    local_fitness = await db.run_sync(calculate_fitness_sync)
 
     # Period TRIMP/TSS (기간 내 훈련 부하)
     trimp_result = await db.execute(
@@ -488,31 +501,49 @@ async def get_dashboard_summary(
     )
     trimp_tss = trimp_result.one()
 
-    # Fetch Runalyze data (calculations and training paces)
-    runalyze_calc, runalyze_paces = await _fetch_runalyze_data()
+    # Get latest VO2max from activities as fallback if Runalyze unavailable
+    activity_vo2max_result = await db.execute(
+        select(Activity.vo2max)
+        .where(
+            Activity.user_id == current_user.id,
+            Activity.vo2max.isnot(None),
+        )
+        .order_by(Activity.start_time.desc())
+        .limit(1)
+    )
+    activity_vo2max = activity_vo2max_result.scalar_one_or_none()
 
-    # Build fitness status with Runalyze extended metrics
-    # Note: Proper None-safe access - check runalyze_calc first before calling .get()
+    # Build fitness status - Runalyze first, local calculation as fallback
     fitness_status = FitnessStatus(
-        # Use Runalyze data if available, otherwise fall back to local DB
-        ctl=(runalyze_calc.get("ctl") if runalyze_calc else None) or (latest_fitness.ctl if latest_fitness else None),
-        atl=(runalyze_calc.get("atl") if runalyze_calc else None) or (latest_fitness.atl if latest_fitness else None),
-        tsb=(runalyze_calc.get("tsb") if runalyze_calc else None) or (latest_fitness.tsb if latest_fitness else None),
-        weekly_trimp=round(trimp_tss[0], 1) if trimp_tss[0] else None,
+        # CTL/ATL/TSB: Runalyze API 우선, 없으면 로컬 계산
+        ctl=(runalyze_calc.get("ctl") if runalyze_calc else None) or local_fitness.get("ctl"),
+        atl=(runalyze_calc.get("atl") if runalyze_calc else None) or local_fitness.get("atl"),
+        tsb=(runalyze_calc.get("tsb") if runalyze_calc else None) or local_fitness.get("tsb"),
+        # CTL/ATL as percentage of all-time max (Runalyze-style display)
+        ctl_percent=local_fitness.get("ctl_percent"),
+        atl_percent=local_fitness.get("atl_percent"),
+        max_ctl=local_fitness.get("max_ctl"),
+        max_atl=local_fitness.get("max_atl"),
+        weekly_trimp=local_fitness.get("weekly_trimp") or (round(trimp_tss[0], 1) if trimp_tss[0] else None),
         weekly_tss=round(trimp_tss[1], 1) if trimp_tss[1] else None,
-        # Extended Runalyze-style metrics (only from Runalyze)
-        effective_vo2max=(runalyze_calc.get("effective_vo2max") or runalyze_calc.get("vo2max")) if runalyze_calc else None,
-        marathon_shape=runalyze_calc.get("marathon_shape") if runalyze_calc else None,
-        workload_ratio=(runalyze_calc.get("workload_ratio") or runalyze_calc.get("ac_ratio")) if runalyze_calc else None,
+        # Extended Runalyze-style metrics (Runalyze API first, activity data as fallback)
+        effective_vo2max=(
+            (runalyze_calc.get("effective_vo2max") or runalyze_calc.get("vo2max")) if runalyze_calc else None
+        ) or (round(activity_vo2max, 1) if activity_vo2max else None),
+        marathon_shape=(runalyze_calc.get("marathon_shape") if runalyze_calc else None) or local_fitness.get("marathon_shape"),
+        # ACWR: Runalyze 우선, 없으면 로컬 계산 (ATL/CTL)
+        workload_ratio=(
+            (runalyze_calc.get("workload_ratio") or runalyze_calc.get("ac_ratio")) if runalyze_calc else None
+        ) or local_fitness.get("workload_ratio"),
         rest_days=runalyze_calc.get("rest_days") if runalyze_calc else None,
         monotony=runalyze_calc.get("monotony") if runalyze_calc else None,
         training_strain=runalyze_calc.get("training_strain") if runalyze_calc else None,
     )
 
-    # Build training paces from Runalyze
-    # Note: Only create TrainingPaces if Runalyze provides valid data
-    # Returning null is more honest than hardcoded defaults when data is unavailable
+    # Build training paces from Runalyze or calculate from VO2max using Daniels' formula
     training_paces = None
+
+    # Try Runalyze paces first
     if runalyze_paces and runalyze_paces.get("vdot"):
         # All pace fields must be present for a valid TrainingPaces response
         easy_min = _parse_pace(runalyze_paces.get("easy_min"))
@@ -542,6 +573,28 @@ async def get_dashboard_summary(
                 interval_max=interval_max,
                 repetition_min=repetition_min,
                 repetition_max=repetition_max,
+            )
+
+    # Fallback: Calculate from VO2max using Daniels' Running Formula
+    if training_paces is None:
+        def calculate_daniels_paces_sync(sync_db: SyncSession):
+            service = DashboardService(sync_db, current_user.id)
+            return service.calculate_training_paces()
+
+        daniels_paces = await db.run_sync(calculate_daniels_paces_sync)
+        if daniels_paces:
+            training_paces = TrainingPaces(
+                vdot=daniels_paces["vdot"],
+                easy_min=daniels_paces["easy_min"],
+                easy_max=daniels_paces["easy_max"],
+                marathon_min=daniels_paces["marathon_min"],
+                marathon_max=daniels_paces["marathon_max"],
+                threshold_min=daniels_paces["threshold_min"],
+                threshold_max=daniels_paces["threshold_max"],
+                interval_min=daniels_paces["interval_min"],
+                interval_max=daniels_paces["interval_max"],
+                repetition_min=daniels_paces["repetition_min"],
+                repetition_max=daniels_paces["repetition_max"],
             )
 
     # Upcoming workouts (기준일 이후 예정된 운동 - today 또는 target_date 기준)
@@ -639,26 +692,37 @@ async def get_trends(
         if s.avg_pace_seconds
     ]
 
-    # Get fitness metrics for CTL/ATL/TSB
-    fitness_result = await db.execute(
-        select(FitnessMetricDaily)
-        .where(
-            FitnessMetricDaily.user_id == current_user.id,
-            FitnessMetricDaily.date >= start_date,
-        )
-        .order_by(FitnessMetricDaily.date.asc())
-    )
-    fitness_metrics = fitness_result.scalars().all()
+    # Get fitness metrics for CTL/ATL/TSB using real-time calculation
+    # This ensures the chart always shows up-to-date values calculated the same way
+    # as the dashboard summary
+    from app.services.dashboard import DashboardService
 
-    ctl_atl = [
-        {
-            "date": f.date.isoformat(),
-            "ctl": f.ctl,
-            "atl": f.atl,
-            "tsb": f.tsb,
-        }
-        for f in fitness_metrics
-    ]
+    user_id = current_user.id
+
+    # Calculate CTL/ATL/TSB for each day in the range
+    # Include both absolute values and percentages for chart display
+    def calculate_daily_ctl_atl(sync_session):
+        dashboard_service = DashboardService(
+            db=sync_session,
+            user_id=user_id,
+        )
+
+        results = []
+        current_date = start_date
+        while current_date <= end_date:
+            metrics = dashboard_service._calculate_fitness_metrics(current_date)
+            results.append({
+                "date": current_date.isoformat(),
+                "ctl": metrics["ctl"],
+                "atl": metrics["atl"],
+                "tsb": metrics["tsb"],
+                "ctl_percent": metrics.get("ctl_percent"),
+                "atl_percent": metrics.get("atl_percent"),
+            })
+            current_date += timedelta(days=1)
+        return results
+
+    ctl_atl = await db.run_sync(calculate_daily_ctl_atl)
 
     # Get resting HR trend from HRRecord (daily values)
     start_datetime = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)

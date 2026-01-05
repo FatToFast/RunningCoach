@@ -60,13 +60,13 @@ export function MileageChart({ data, period }: MileageChartProps) {
         >
           <XAxis
             dataKey="label"
-            stroke="#484f58"
+            stroke="var(--color-text-muted)"
             fontSize={10}
             tickLine={false}
-            axisLine={{ stroke: '#30363d' }}
+            axisLine={{ stroke: 'var(--color-border)' }}
           />
           <YAxis
-            stroke="#484f58"
+            stroke="var(--color-text-muted)"
             fontSize={10}
             tickLine={false}
             axisLine={false}
@@ -76,8 +76,8 @@ export function MileageChart({ data, period }: MileageChartProps) {
           />
           <Tooltip
             contentStyle={{
-              background: '#1c2128',
-              border: '1px solid #30363d',
+              background: 'var(--color-bg-elevated)',
+              border: '1px solid var(--color-border)',
               borderRadius: '8px',
               fontSize: '12px',
             }}
@@ -88,7 +88,7 @@ export function MileageChart({ data, period }: MileageChartProps) {
             {data.map((entry, index) => (
               <Cell
                 key={`cell-${index}`}
-                fill={entry.isCurrent ? '#00d4ff' : 'rgba(0, 212, 255, 0.4)'}
+                fill={entry.isCurrent ? 'var(--color-accent)' : 'var(--color-accent-muted)'}
               />
             ))}
           </Bar>

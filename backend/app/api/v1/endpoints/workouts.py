@@ -1,18 +1,22 @@
 """Workout and Schedule endpoints."""
 
+import asyncio
 from datetime import date, datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_user
+from app.adapters.garmin_adapter import GarminAuthError, GarminConnectAdapter, GarminAPIError
 from app.core.database import get_db
+from app.models.garmin import GarminSession
 from app.models.user import User
-from app.models.workout import Workout, WorkoutSchedule
+from app.models.workout import Workout, WorkoutSchedule, WorkoutScheduleStatus
 
 router = APIRouter()
 
@@ -93,6 +97,7 @@ class ScheduleResponse(BaseModel):
     scheduled_date: date
     status: str
     garmin_schedule_id: int | None
+    completed_activity_id: int | None = None
     workout: WorkoutResponse | None = None
 
     class Config:
@@ -348,15 +353,60 @@ async def push_to_garmin(
             detail="Workout not found",
         )
 
-    # TODO: Implement Garmin workout push via adapter
-    # garmin_id = await garmin_adapter.create_workout(workout)
-    # workout.garmin_workout_id = garmin_id
-    # await db.commit()
+    if workout.garmin_workout_id:
+        return GarminPushResponse(
+            success=True,
+            garmin_workout_id=workout.garmin_workout_id,
+            message="Workout already pushed to Garmin",
+        )
+
+    if not workout.structure:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Workout structure is missing",
+        )
+
+    session_result = await db.execute(
+        select(GarminSession).where(GarminSession.user_id == current_user.id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if not session or not session.is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin account not connected",
+        )
+
+    adapter = GarminConnectAdapter()
+    try:
+        adapter.restore_session(session.session_data)
+    except GarminAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Garmin session expired. Please reconnect via /auth/garmin/connect",
+        ) from exc
+
+    try:
+        loop = asyncio.get_event_loop()
+        garmin_id = await loop.run_in_executor(
+            None,
+            lambda w=workout: adapter.upload_running_workout_template(w),
+        )
+    except GarminAPIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to upload workout to Garmin: {exc}",
+        ) from exc
+
+    workout.garmin_workout_id = garmin_id
+    workout.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(workout)
 
     return GarminPushResponse(
-        success=False,
-        garmin_workout_id=None,
-        message="Garmin push not yet implemented",
+        success=True,
+        garmin_workout_id=garmin_id,
+        message="Workout uploaded to Garmin",
     )
 
 
@@ -373,7 +423,7 @@ async def list_schedules(
     per_page: int = Query(20, ge=1, le=100),
     start_date: date | None = None,
     end_date: date | None = None,
-    status_filter: str | None = None,
+    status_filter: WorkoutScheduleStatus | None = None,
 ) -> ScheduleListResponse:
     """List scheduled workouts with pagination.
 
@@ -400,19 +450,19 @@ async def list_schedules(
     if end_date:
         base_query = base_query.where(WorkoutSchedule.scheduled_date <= end_date)
     if status_filter:
-        base_query = base_query.where(WorkoutSchedule.status == status_filter)
+        base_query = base_query.where(WorkoutSchedule.status == status_filter.value)
 
     # Count total
     count_query = select(func.count()).select_from(base_query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Paginate
+    # Paginate with stable ordering (tie-breaker: id for consistent pagination)
     offset = (page - 1) * per_page
     query = (
         base_query
         .options(selectinload(WorkoutSchedule.workout))
-        .order_by(WorkoutSchedule.scheduled_date.asc())
+        .order_by(WorkoutSchedule.scheduled_date.asc(), WorkoutSchedule.id.asc())
         .offset(offset)
         .limit(per_page)
     )
@@ -428,6 +478,7 @@ async def list_schedules(
                 scheduled_date=s.scheduled_date,
                 status=s.status,
                 garmin_schedule_id=s.garmin_schedule_id,
+                completed_activity_id=s.completed_activity_id,
                 workout=WorkoutResponse.model_validate(s.workout) if s.workout else None,
             )
             for s in schedules
@@ -471,27 +522,24 @@ async def schedule_workout(
             detail="Workout not found",
         )
 
-    # Check for duplicate schedule (same workout on same date)
-    existing_result = await db.execute(
-        select(WorkoutSchedule).where(
-            WorkoutSchedule.workout_id == request.workout_id,
-            WorkoutSchedule.scheduled_date == request.scheduled_date,
-            WorkoutSchedule.status == "scheduled",
-        )
+    # DB unique constraint (workout_id, scheduled_date) prevents duplicates
+    # IntegrityError will be raised if duplicate exists
+    schedule = WorkoutSchedule(
+        workout_id=request.workout_id,
+        scheduled_date=request.scheduled_date,
+        status=WorkoutScheduleStatus.SCHEDULED.value,
     )
-    if existing_result.scalar_one_or_none():
+    db.add(schedule)
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Workout already scheduled for {request.scheduled_date}",
         )
 
-    schedule = WorkoutSchedule(
-        workout_id=request.workout_id,
-        scheduled_date=request.scheduled_date,
-        status="scheduled",
-    )
-    db.add(schedule)
-    await db.commit()
     await db.refresh(schedule)
 
     return ScheduleResponse(
@@ -500,21 +548,29 @@ async def schedule_workout(
         scheduled_date=schedule.scheduled_date,
         status=schedule.status,
         garmin_schedule_id=schedule.garmin_schedule_id,
+        completed_activity_id=schedule.completed_activity_id,
     )
+
+
+class ScheduleStatusUpdate(BaseModel):
+    """Request to update schedule status."""
+
+    status: WorkoutScheduleStatus
+    completed_activity_id: int | None = None  # Required when status=COMPLETED
 
 
 @router.patch("/schedules/{schedule_id}/status")
 async def update_schedule_status(
     schedule_id: int,
-    new_status: str = Query(..., pattern="^(scheduled|completed|skipped|cancelled)$"),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    request: ScheduleStatusUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
 ) -> ScheduleResponse:
     """Update schedule status.
 
     Args:
         schedule_id: Schedule ID.
-        new_status: New status.
+        request: Status update data.
         current_user: Authenticated user.
         db: Database session.
 
@@ -537,7 +593,9 @@ async def update_schedule_status(
             detail="Schedule not found",
         )
 
-    schedule.status = new_status
+    schedule.status = request.status.value
+    if request.completed_activity_id is not None:
+        schedule.completed_activity_id = request.completed_activity_id
     schedule.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(schedule)
@@ -548,6 +606,7 @@ async def update_schedule_status(
         scheduled_date=schedule.scheduled_date,
         status=schedule.status,
         garmin_schedule_id=schedule.garmin_schedule_id,
+        completed_activity_id=schedule.completed_activity_id,
     )
 
 

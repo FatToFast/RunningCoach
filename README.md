@@ -11,13 +11,21 @@ RunningCoach는 Garmin 데이터를 기반으로 AI가 생성한 과학적 훈�
 - **Garmin 연동**: 활동, 수면, 심박수 데이터 자동 동기화
 - **대시보드**: 주간/월간 요약 및 트렌드 분석
 - **워크아웃 관리**: 워크아웃 생성 및 Garmin 전송
-- **AI 훈련 계획** (예정): 가이드라인 기반 개인화 훈련 계획
+- **AI 코치**: OpenAI 기반 대화형 러닝 코치
+- **활동 분석**: HR 존 분석, 랩 데이터, 상세 지도
+- **Strava 연동**: 활동 자동 업로드
+- **Runalyze 연동**: 건강 지표 및 훈련 계산 데이터
+- **기어 관리**: 러닝화 및 장비 추적
 
 ## Documentation
 
 - [Blueprint](docs/blueprint.md) - 프로젝트 청사진
 - [MVP](docs/MVP.md) - MVP 명세
 - [PRD](docs/PRD.md) - 제품 요구사항 문서
+- [API Reference](docs/api-reference.md) - API 상세 문서
+- [Debug Patterns](docs/debug-patterns.md) - 발견된 버그 패턴과 해결책
+- [Feature Map](docs/feature-map.md) - 기능별 파일 맵
+- [Changelog](docs/CHANGELOG.md) - 변경 이력
 
 ## Tech Stack
 
@@ -30,9 +38,11 @@ RunningCoach는 Garmin 데이터를 기반으로 AI가 생성한 과학적 훈�
 - garminconnect
 
 ### Frontend
-- SvelteKit (예정)
+- React + TypeScript
+- Vite
 - TailwindCSS
-- ECharts
+- Recharts
+- React Query (TanStack Query)
 
 ### Infrastructure
 - Docker + Docker Compose
@@ -130,7 +140,7 @@ RunningCoach/
 │   ├── tests/
 │   ├── pyproject.toml
 │   └── Dockerfile
-├── frontend/              # SvelteKit (예정)
+├── frontend/              # React + TypeScript + Vite
 ├── docs/
 │   ├── blueprint.md
 │   ├── MVP.md

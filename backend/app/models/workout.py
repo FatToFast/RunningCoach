@@ -1,17 +1,28 @@
 """Workout and schedule models."""
 
 from datetime import date
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import BigInteger, Date, ForeignKey, String
+from sqlalchemy import BigInteger, Date, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import BaseModel
 
 if TYPE_CHECKING:
+    from app.models.activity import Activity
     from app.models.user import User
     from app.models.plan import PlanWeek
+
+
+class WorkoutScheduleStatus(str, Enum):
+    """Workout schedule status enum."""
+
+    SCHEDULED = "scheduled"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
 
 
 class Workout(BaseModel):
@@ -64,6 +75,14 @@ class WorkoutSchedule(BaseModel):
     """Scheduled workout on a specific date."""
 
     __tablename__ = "workout_schedules"
+    __table_args__ = (
+        # Prevent duplicate scheduling: same workout on same date
+        UniqueConstraint(
+            "workout_id", "scheduled_date",
+            name="uq_workout_schedule_workout_date",
+        ),
+        Index("ix_workout_schedules_status", "status"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     workout_id: Mapped[int] = mapped_column(
@@ -74,15 +93,26 @@ class WorkoutSchedule(BaseModel):
     scheduled_date: Mapped[date] = mapped_column(Date, index=True)
     status: Mapped[str] = mapped_column(
         String(20),
-        default="scheduled",
+        default=WorkoutScheduleStatus.SCHEDULED.value,
         index=True,
-    )  # scheduled, completed, skipped, cancelled
+    )
 
     # Garmin sync status
     garmin_schedule_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
-    # Relationship
+    # Link to completed activity (set when status becomes COMPLETED)
+    completed_activity_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("activities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Relationships
     workout: Mapped["Workout"] = relationship("Workout", back_populates="schedules")
+    completed_activity: Mapped[Optional["Activity"]] = relationship(
+        "Activity",
+        foreign_keys=[completed_activity_id],
+    )
 
     def __repr__(self) -> str:
         return f"<WorkoutSchedule(workout_id={self.workout_id}, date={self.scheduled_date})>"

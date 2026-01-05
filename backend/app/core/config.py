@@ -66,7 +66,20 @@ class Settings(BaseSettings):
     garmin_max_consecutive_empty: int = 30  # Stop backfill after N empty days
 
     # FIT Storage (default to ./data/fit for local dev, override in production)
-    fit_storage_path: str = "./data/fit"
+    fit_storage_path: str = "./data/fit_files"
+
+    @property
+    def fit_storage_path_absolute(self) -> str:
+        """Get absolute path for FIT storage.
+
+        Resolves relative paths based on the backend directory to ensure
+        consistent behavior across different working directories.
+        """
+        if os.path.isabs(self.fit_storage_path):
+            return self.fit_storage_path
+        # Resolve relative to backend directory (where app/ is located)
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        return os.path.join(backend_dir, self.fit_storage_path)
 
     # OpenAI
     openai_api_key: Optional[str] = None
@@ -84,10 +97,16 @@ class Settings(BaseSettings):
     strava_client_id: Optional[str] = None
     strava_client_secret: Optional[str] = None
     strava_redirect_uri: Optional[str] = None
+    strava_auto_upload: bool = True  # Auto-upload to Strava after Garmin sync
+    strava_upload_concurrency: int = 3  # Max concurrent uploads
+    strava_upload_retry_delays: str = "60,300,1800,7200"  # Retry delays in seconds (1m, 5m, 30m, 2h)
+    strava_upload_max_retries: int = 4
 
     # Runalyze
     runalyze_api_token: Optional[str] = None
     runalyze_api_base_url: str = "https://runalyze.com/api/v1"
+    runalyze_username: Optional[str] = None
+    runalyze_password: Optional[str] = None
 
     # Sync
     sync_cron: Optional[str] = None  # e.g., "0 */6 * * *" for every 6 hours

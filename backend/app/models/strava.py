@@ -1,9 +1,10 @@
 """Strava integration models."""
 
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import BaseModel
@@ -11,6 +12,16 @@ from app.models.base import BaseModel
 if TYPE_CHECKING:
     from app.models.user import User
     from app.models.activity import Activity
+
+
+class StravaUploadStatus(str, Enum):
+    """Status of a Strava upload job."""
+
+    QUEUED = "queued"
+    UPLOADING = "uploading"
+    POLLING = "polling"  # Waiting for Strava to process
+    UPLOADED = "uploaded"
+    FAILED = "failed"
 
 
 class StravaSession(BaseModel):
@@ -88,3 +99,72 @@ class StravaActivityMap(BaseModel):
 
     def __repr__(self) -> str:
         return f"<StravaActivityMap(activity_id={self.activity_id}, strava_id={self.strava_activity_id})>"
+
+
+class StravaUploadJob(BaseModel):
+    """Queue for Strava upload jobs.
+
+    This table serves as a persistent queue for Strava uploads, allowing
+    for reliable retry handling and status tracking.
+    """
+
+    __tablename__ = "strava_upload_jobs"
+    __table_args__ = (
+        Index("ix_strava_upload_jobs_status_next_retry", "status", "next_retry_at"),
+        Index("ix_strava_upload_jobs_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    activity_id: Mapped[int] = mapped_column(
+        ForeignKey("activities.id", ondelete="CASCADE"),
+        unique=True,  # Prevent duplicate jobs for same activity
+        index=True,
+    )
+
+    # Job status
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default=StravaUploadStatus.QUEUED.value,
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+
+    # Strava upload tracking
+    strava_upload_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    strava_activity_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+    # Error tracking
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_error_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Timestamps
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship("User")
+    activity: Mapped["Activity"] = relationship("Activity")
+
+    def __repr__(self) -> str:
+        return (
+            f"<StravaUploadJob(id={self.id}, activity_id={self.activity_id}, "
+            f"status={self.status}, attempts={self.attempts})>"
+        )

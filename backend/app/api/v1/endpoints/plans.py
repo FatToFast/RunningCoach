@@ -1,5 +1,6 @@
 """Training Plan endpoints."""
 
+import asyncio
 from datetime import date, datetime, timezone
 from typing import Annotated, Any
 
@@ -10,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_user
+from app.adapters.garmin_adapter import GarminAuthError, GarminConnectAdapter, GarminAPIError
 from app.core.database import get_db
+from app.models.garmin import GarminSession
 from app.models.plan import Plan, PlanWeek
 from app.models.user import User
 from app.models.workout import Workout
@@ -426,10 +429,12 @@ async def activate_plan(
         Activated plan.
     """
     result = await db.execute(
-        select(Plan).where(
+        select(Plan)
+        .where(
             Plan.id == plan_id,
             Plan.user_id == current_user.id,
         )
+        .options(selectinload(Plan.weeks).selectinload(PlanWeek.workouts))
     )
     plan = result.scalar_one_or_none()
 
@@ -445,11 +450,59 @@ async def activate_plan(
             detail="Plan must be approved before activation",
         )
 
-    # TODO: Push all workouts to Garmin and schedule them
-    # for week in plan.weeks:
-    #     for workout in week.workouts:
-    #         await garmin_adapter.create_workout(workout)
-    #         await garmin_adapter.schedule_workout(workout, scheduled_date)
+    session_result = await db.execute(
+        select(GarminSession).where(GarminSession.user_id == current_user.id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if not session or not session.is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin account not connected",
+        )
+
+    adapter = GarminConnectAdapter()
+    try:
+        adapter.restore_session(session.session_data)
+    except GarminAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Garmin session expired. Please reconnect via /auth/garmin/connect",
+        ) from exc
+
+    loop = asyncio.get_event_loop()
+    failed: list[dict[str, Any]] = []
+
+    for week in plan.weeks:
+        for workout in week.workouts:
+            if workout.garmin_workout_id:
+                continue
+            if workout.workout_type == "rest" or not workout.structure:
+                continue
+            try:
+                garmin_id = await loop.run_in_executor(
+                    None,
+                    lambda w=workout: adapter.upload_running_workout_template(w),
+                )
+                workout.garmin_workout_id = garmin_id
+                workout.updated_at = datetime.now(timezone.utc)
+                await db.commit()
+            except GarminAPIError as exc:
+                failed.append(
+                    {
+                        "workout_id": workout.id,
+                        "error": str(exc),
+                    }
+                )
+
+    if failed:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "message": "Failed to upload some workouts to Garmin",
+                "failed_workouts": failed,
+            },
+        )
 
     plan.status = "active"
     plan.updated_at = datetime.now(timezone.utc)

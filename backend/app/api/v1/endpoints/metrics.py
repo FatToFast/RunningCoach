@@ -1,18 +1,20 @@
 """Unified metrics endpoints.
 
 Paths:
-  GET /api/v1/metrics         - 가능한 모든 지표 목록
-  GET /api/v1/metrics/body    - 체성분 기록 (v1.0)
-  GET /api/v1/metrics/fitness - 피트니스 지표 (v1.0)
+  GET /api/v1/metrics              - 가능한 모든 지표 목록
+  GET /api/v1/metrics/body         - 체성분 기록 (v1.0)
+  GET /api/v1/metrics/fitness      - 피트니스 지표 (v1.0)
+  POST /api/v1/metrics/fitness/backfill - 피트니스 지표 일괄 계산
 """
 
-from datetime import date, datetime
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session as SyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.database import get_db
@@ -251,3 +253,58 @@ async def list_fitness_metrics(
         page=page,
         per_page=per_page,
     )
+
+
+class BackfillResponse(BaseModel):
+    """Response for backfill operation."""
+
+    success: bool
+    records_created: int
+    message: str
+
+
+@router.post("/fitness/backfill", response_model=BackfillResponse)
+async def backfill_fitness_metrics(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    start_date: date | None = Query(None, description="Start date (default: earliest activity)"),
+    end_date: date | None = Query(None, description="End date (default: today)"),
+) -> BackfillResponse:
+    """Backfill fitness metrics (CTL/ATL/TSB) for date range.
+
+    This recalculates and stores daily fitness metrics for all dates
+    in the specified range. Useful after initial sync or when
+    recalculation is needed.
+
+    Args:
+        current_user: Authenticated user.
+        db: Database session.
+        start_date: Start date (default: earliest activity date).
+        end_date: End date (default: today).
+
+    Returns:
+        Backfill operation result.
+    """
+
+    from app.services.dashboard import DashboardService
+
+    def run_backfill(sync_session: SyncSession) -> int:
+        """Run backfill in sync session."""
+        dashboard = DashboardService(sync_session, current_user.id)
+        return dashboard.backfill_fitness_metrics(start_date, end_date)
+
+    try:
+        # Run sync code in async context
+        records_created = await db.run_sync(run_backfill)
+
+        return BackfillResponse(
+            success=True,
+            records_created=records_created,
+            message=f"Successfully backfilled {records_created} fitness metric records",
+        )
+    except Exception as e:
+        return BackfillResponse(
+            success=False,
+            records_created=0,
+            message=f"Backfill failed: {str(e)}",
+        )

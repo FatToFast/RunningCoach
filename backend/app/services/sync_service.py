@@ -26,6 +26,7 @@ from app.models import (
     HRRecord,
     BodyComposition,
 )
+from app.models.health import HealthMetric, FitnessMetricDaily
 from app.models.activity import ActivitySample, ActivityLap, ActivityMetric
 from app.models.gear import Gear, ActivityGear, GearType, GearStatus
 from app.adapters.garmin_adapter import GarminConnectAdapter
@@ -91,8 +92,9 @@ class GarminSyncService:
         self.session = session
         self.adapter = adapter
         self.user = user
-        # Use settings.fit_storage_path if not explicitly provided
-        self.fit_storage_path = Path(fit_storage_path or settings.fit_storage_path)
+        # Use settings.fit_storage_path_absolute if not explicitly provided
+        # This ensures consistent absolute paths regardless of working directory
+        self.fit_storage_path = Path(fit_storage_path or settings.fit_storage_path_absolute)
         self.fit_storage_path.mkdir(parents=True, exist_ok=True)
         self.metrics = get_metrics_backend()
 
@@ -259,7 +261,15 @@ class GarminSyncService:
         except Exception as e:
             logger.exception(f"Error syncing {endpoint}")
             result.error = str(e)
-            await self._update_sync_state(endpoint, success=False)
+            # Rollback the session to clear any pending errors before updating state
+            try:
+                await self.session.rollback()
+            except Exception:
+                pass
+            try:
+                await self._update_sync_state(endpoint, success=False)
+            except Exception as state_error:
+                logger.warning(f"Failed to update sync state after error: {state_error}")
 
         duration_ms = (time.perf_counter() - start_time) * 1000
         self.metrics.observe_sync_job(
@@ -311,13 +321,19 @@ class GarminSyncService:
             if not garmin_id:
                 continue
 
+            # Fetch activity details and store as raw event for data preservation
+            details = None
             try:
                 details = await loop.run_in_executor(
                     None,
                     lambda act_id=garmin_id: self.adapter.get_activity_details(act_id),
                 )
+                # Store activity details as raw event (for data recovery/reprocessing)
                 if details:
-                    await self._store_raw_event("activity_details", details, flush=False)
+                    await self._store_raw_event(
+                        f"activity_details/{garmin_id}",
+                        details,
+                    )
             except Exception as e:
                 logger.warning(f"Failed to fetch activity details for {garmin_id}: {e}")
 
@@ -341,14 +357,53 @@ class GarminSyncService:
                 activity = await self._create_activity(act_data, raw_event_id=raw_event.id)
                 result.items_created += 1
 
-            # Download FIT file if not already downloaded
-            if not activity.has_fit_file:
+            # Download FIT file if not already downloaded or if local file is missing
+            need_download = not activity.has_fit_file
+            if activity.fit_file_path:
+                # Check if existing file actually exists on disk
+                if not Path(activity.fit_file_path).exists():
+                    logger.info(f"FIT file missing for activity {garmin_id}, re-downloading")
+                    need_download = True
+            if need_download:
                 await self._download_fit_file(activity, garmin_id)
 
             # Link activity to gear (shoes, etc.)
             await self._link_activity_gear(activity, garmin_id)
 
         await self.session.commit()
+
+        # Update today's fitness metrics after activity sync
+        await self._update_fitness_metrics_after_sync()
+
+        # Queue new activities for Strava upload if auto-upload is enabled
+        await self._queue_strava_uploads(result)
+
+    async def _update_fitness_metrics_after_sync(self) -> None:
+        """Update FitnessMetricDaily for today after activity sync.
+
+        Uses synchronous session for DashboardService compatibility.
+        """
+        from sqlalchemy.orm import Session as SyncSession
+        from app.services.dashboard import DashboardService
+
+        try:
+            user_id = self.user.id
+
+            def update_metrics(sync_session: SyncSession) -> None:
+                dashboard = DashboardService(sync_session, user_id)
+                today = date.today()
+                dashboard.save_fitness_metrics_for_date(today)
+                # Also update yesterday in case activities were backdated
+                yesterday = today - timedelta(days=1)
+                dashboard.save_fitness_metrics_for_date(yesterday)
+
+            # Execute using async session's run_sync
+            await self.session.run_sync(update_metrics)
+            await self.session.commit()
+            logger.debug(f"Updated fitness metrics for user {self.user.id}")
+        except Exception as e:
+            logger.warning(f"Failed to update fitness metrics: {e}")
+            # Don't fail the sync for this
 
     async def _sync_daily_raw(
         self,
@@ -449,12 +504,14 @@ class GarminSyncService:
         start_date: date,
         end_date: date,
     ) -> None:
-        await self._sync_daily_raw(
+        """Sync body battery data and store to HealthMetric table."""
+        await self._sync_daily_health_metric(
             result,
             start_date,
             end_date,
             "body_battery",
             self.adapter.get_body_battery,
+            self._extract_body_battery_metrics,
         )
 
     async def _sync_stress(
@@ -463,12 +520,14 @@ class GarminSyncService:
         start_date: date,
         end_date: date,
     ) -> None:
-        await self._sync_daily_raw(
+        """Sync stress data and store to HealthMetric table."""
+        await self._sync_daily_health_metric(
             result,
             start_date,
             end_date,
             "stress",
             self.adapter.get_stress_data,
+            self._extract_stress_metrics,
         )
 
     async def _sync_hrv(
@@ -477,13 +536,297 @@ class GarminSyncService:
         start_date: date,
         end_date: date,
     ) -> None:
-        await self._sync_daily_raw(
+        """Sync HRV data and store to HealthMetric table."""
+        await self._sync_daily_health_metric(
             result,
             start_date,
             end_date,
             "hrv",
             self.adapter.get_hrv_data,
+            self._extract_hrv_metrics,
         )
+
+    async def _sync_daily_health_metric(
+        self,
+        result: SyncResult,
+        start_date: date,
+        end_date: date,
+        endpoint: str,
+        fetcher: Callable[[date], Any],
+        extractor: Callable[[dict[str, Any], date], list[dict[str, Any]]],
+    ) -> None:
+        """Sync daily health metrics with normalized storage.
+
+        Extends _sync_daily_raw to also store normalized data to HealthMetric table.
+        """
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+
+        total_days = (end_date - start_date).days + 1
+        dates_to_sync = [end_date - timedelta(days=i) for i in range(total_days)]
+
+        max_consecutive_empty = settings.garmin_max_consecutive_empty
+        consecutive_empty = 0
+        batch_size = 50
+        items_in_batch = 0
+
+        for current_date in dates_to_sync:
+            try:
+                data = await loop.run_in_executor(
+                    None,
+                    lambda d=current_date: fetcher(d),
+                )
+                if data:
+                    result.items_fetched += 1
+                    raw_event = await self._store_raw_event(endpoint, data, flush=False)
+                    result.items_created += 1
+                    consecutive_empty = 0
+                    items_in_batch += 1
+
+                    # Extract and store normalized health metrics
+                    try:
+                        metrics = extractor(data, current_date)
+                        for metric_data in metrics:
+                            await self._store_health_metric(
+                                metric_data,
+                                raw_event_id=raw_event.id if raw_event else None,
+                            )
+                    except Exception as e:
+                        logger.warning(f"Failed to extract {endpoint} metrics for {current_date}: {e}")
+
+                    if items_in_batch >= batch_size:
+                        await self.session.commit()
+                        items_in_batch = 0
+                else:
+                    consecutive_empty += 1
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch {endpoint} for {current_date}: {e}")
+                consecutive_empty += 1
+
+            if consecutive_empty >= max_consecutive_empty:
+                logger.info(
+                    f"Early termination for {endpoint}: {consecutive_empty} consecutive "
+                    f"empty responses at {current_date}. Likely reached data boundary."
+                )
+                break
+
+        await self.session.commit()
+
+    def _extract_body_battery_metrics(
+        self, data: dict[str, Any], metric_date: date
+    ) -> list[dict[str, Any]]:
+        """Extract body battery metrics from Garmin data.
+
+        Garmin body battery data structure:
+        {
+            "data": [{
+                "date": "2024-01-01",
+                "charged": 50,  # Total charged during day
+                "drained": 60,  # Total drained during day
+                "bodyBatteryValuesArray": [[timestamp_ms, value], ...]
+            }]
+        }
+        """
+        metrics = []
+        items = data.get("data", [])
+        if not items:
+            return metrics
+
+        for item in items:
+            item_date_str = item.get("date")
+            if item_date_str:
+                item_date = date.fromisoformat(item_date_str)
+            else:
+                item_date = metric_date
+
+            # Daily summary values
+            charged = item.get("charged")
+            drained = item.get("drained")
+
+            # Get latest body battery value from time series
+            values_array = item.get("bodyBatteryValuesArray", [])
+            latest_value = None
+            if values_array:
+                # Find last non-null value
+                for timestamp_ms, value in reversed(values_array):
+                    if value is not None:
+                        latest_value = value
+                        break
+
+            if latest_value is not None:
+                metrics.append({
+                    "metric_type": "body_battery",
+                    "metric_time": datetime.combine(item_date, datetime.max.time(), tzinfo=timezone.utc),
+                    "value": float(latest_value),
+                    "unit": "points",
+                    "payload": {
+                        "charged": charged,
+                        "drained": drained,
+                        "date": item_date.isoformat(),
+                    },
+                })
+
+            # Also store charged/drained as separate metrics for trend analysis
+            if charged is not None:
+                metrics.append({
+                    "metric_type": "body_battery_charged",
+                    "metric_time": datetime.combine(item_date, datetime.max.time(), tzinfo=timezone.utc),
+                    "value": float(charged),
+                    "unit": "points",
+                    "payload": {"date": item_date.isoformat()},
+                })
+
+            if drained is not None:
+                metrics.append({
+                    "metric_type": "body_battery_drained",
+                    "metric_time": datetime.combine(item_date, datetime.max.time(), tzinfo=timezone.utc),
+                    "value": float(drained),
+                    "unit": "points",
+                    "payload": {"date": item_date.isoformat()},
+                })
+
+        return metrics
+
+    def _extract_stress_metrics(
+        self, data: dict[str, Any], metric_date: date
+    ) -> list[dict[str, Any]]:
+        """Extract stress metrics from Garmin data.
+
+        Garmin stress data structure:
+        {
+            "calendarDate": "2024-01-01",
+            "avgStressLevel": 35,
+            "maxStressLevel": 75,
+            "stressValuesArray": [[timestamp_ms, value], ...]
+        }
+        """
+        metrics = []
+
+        date_str = data.get("calendarDate")
+        if date_str:
+            item_date = date.fromisoformat(date_str)
+        else:
+            item_date = metric_date
+
+        avg_stress = data.get("avgStressLevel")
+        max_stress = data.get("maxStressLevel")
+
+        if avg_stress is not None:
+            metrics.append({
+                "metric_type": "stress_avg",
+                "metric_time": datetime.combine(item_date, datetime.max.time(), tzinfo=timezone.utc),
+                "value": float(avg_stress),
+                "unit": "level",
+                "payload": {
+                    "max_stress": max_stress,
+                    "date": item_date.isoformat(),
+                },
+            })
+
+        if max_stress is not None:
+            metrics.append({
+                "metric_type": "stress_max",
+                "metric_time": datetime.combine(item_date, datetime.max.time(), tzinfo=timezone.utc),
+                "value": float(max_stress),
+                "unit": "level",
+                "payload": {"date": item_date.isoformat()},
+            })
+
+        return metrics
+
+    def _extract_hrv_metrics(
+        self, data: dict[str, Any], metric_date: date
+    ) -> list[dict[str, Any]]:
+        """Extract HRV metrics from Garmin data.
+
+        Garmin HRV data structure may vary, common fields:
+        {
+            "hrvSummary": {
+                "calendarDate": "2024-01-01",
+                "weeklyAvg": 45,
+                "lastNightAvg": 42,
+                "lastNight5MinHigh": 55,
+                "status": "BALANCED"
+            }
+        }
+        or direct fields depending on API version.
+        """
+        metrics = []
+
+        # Try to get HRV summary
+        hrv_summary = data.get("hrvSummary", data)
+        if not hrv_summary:
+            return metrics
+
+        date_str = hrv_summary.get("calendarDate")
+        if date_str:
+            item_date = date.fromisoformat(date_str)
+        else:
+            item_date = metric_date
+
+        # Last night average HRV
+        last_night_avg = hrv_summary.get("lastNightAvg")
+        if last_night_avg is not None:
+            metrics.append({
+                "metric_type": "hrv_night_avg",
+                "metric_time": datetime.combine(item_date, datetime.max.time(), tzinfo=timezone.utc),
+                "value": float(last_night_avg),
+                "unit": "ms",
+                "payload": {
+                    "weekly_avg": hrv_summary.get("weeklyAvg"),
+                    "last_night_5min_high": hrv_summary.get("lastNight5MinHigh"),
+                    "status": hrv_summary.get("status"),
+                    "date": item_date.isoformat(),
+                },
+            })
+
+        # Weekly average HRV
+        weekly_avg = hrv_summary.get("weeklyAvg")
+        if weekly_avg is not None:
+            metrics.append({
+                "metric_type": "hrv_weekly_avg",
+                "metric_time": datetime.combine(item_date, datetime.max.time(), tzinfo=timezone.utc),
+                "value": float(weekly_avg),
+                "unit": "ms",
+                "payload": {"date": item_date.isoformat()},
+            })
+
+        return metrics
+
+    async def _store_health_metric(
+        self,
+        metric_data: dict[str, Any],
+        raw_event_id: Optional[int] = None,
+    ) -> None:
+        """Store a health metric to the HealthMetric table.
+
+        Uses PostgreSQL upsert for efficient insert-or-update.
+        """
+        stmt = insert(HealthMetric).values(
+            user_id=self.user.id,
+            metric_type=metric_data["metric_type"],
+            metric_time=metric_data["metric_time"],
+            value=metric_data.get("value"),
+            unit=metric_data.get("unit"),
+            payload=metric_data.get("payload"),
+            raw_event_id=raw_event_id,
+        )
+        update_values = {
+            "value": stmt.excluded.value,
+            "unit": stmt.excluded.unit,
+            "payload": stmt.excluded.payload,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if raw_event_id is not None:
+            update_values["raw_event_id"] = stmt.excluded.raw_event_id
+
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_health_metric_user_type_time",
+            set_=update_values,
+        )
+        await self.session.execute(stmt)
 
     async def _sync_respiration(
         self,
@@ -611,7 +954,7 @@ class GarminSyncService:
             user_id=self.user.id,
             garmin_id=data.get("activityId"),
             raw_event_id=raw_event_id,
-            activity_type=data.get("activityType", {}).get("typeKey", "running"),
+            activity_type=data.get("activityType", {}).get("typeKey", "unknown"),
             name=data.get("activityName"),
             description=data.get("description"),  # User notes/memo from Garmin
             start_time=start_time,
@@ -638,12 +981,65 @@ class GarminSyncService:
         return activity
 
     async def _update_activity(self, activity: Activity, data: dict[str, Any]) -> None:
-        """Update an existing activity with new data."""
-        # Update fields that may have changed
-        activity.name = data.get("activityName") or activity.name
-        activity.description = data.get("description") or activity.description
-        activity.calories = data.get("calories") or activity.calories
-        activity.vo2max = data.get("vO2MaxValue") or activity.vo2max
+        """Update an existing activity with new data.
+
+        Updates all fields that may have changed since the activity was created.
+        This ensures data consistency when Garmin updates activity details
+        (e.g., after GPS data processing, user edits, or delayed metric calculations).
+        """
+        # Basic info
+        if data.get("activityName"):
+            activity.name = data["activityName"]
+        if data.get("description") is not None:  # Allow empty string to clear
+            activity.description = data["description"]
+
+        # Duration and distance
+        if data.get("duration"):
+            activity.duration_seconds = int(data["duration"])
+        if data.get("elapsedDuration"):
+            activity.elapsed_seconds = int(data["elapsedDuration"])
+        if data.get("distance") is not None:
+            activity.distance_meters = data["distance"]
+
+        # Calories and metrics
+        if data.get("calories") is not None:
+            activity.calories = data["calories"]
+
+        # Heart rate
+        if data.get("averageHR") is not None:
+            activity.avg_hr = data["averageHR"]
+        if data.get("maxHR") is not None:
+            activity.max_hr = data["maxHR"]
+
+        # Pace calculation from speed
+        avg_speed = data.get("averageSpeed")
+        max_speed = data.get("maxSpeed")
+        if avg_speed and avg_speed > 0:
+            activity.avg_pace_seconds = int(1000 / avg_speed)
+        if max_speed and max_speed > 0:
+            activity.best_pace_seconds = int(1000 / max_speed)
+
+        # Elevation
+        if data.get("elevationGain") is not None:
+            activity.elevation_gain = data["elevationGain"]
+        if data.get("elevationLoss") is not None:
+            activity.elevation_loss = data["elevationLoss"]
+
+        # Cadence
+        if data.get("averageRunningCadenceInStepsPerMinute"):
+            activity.avg_cadence = int(data["averageRunningCadenceInStepsPerMinute"])
+        if data.get("maxRunningCadenceInStepsPerMinute"):
+            activity.max_cadence = int(data["maxRunningCadenceInStepsPerMinute"])
+
+        # Training effects
+        if data.get("aerobicTrainingEffect") is not None:
+            activity.training_effect_aerobic = data["aerobicTrainingEffect"]
+        if data.get("anaerobicTrainingEffect") is not None:
+            activity.training_effect_anaerobic = data["anaerobicTrainingEffect"]
+
+        # VO2max
+        if data.get("vO2MaxValue") is not None:
+            activity.vo2max = data["vO2MaxValue"]
 
     async def _download_fit_file(self, activity: Activity, garmin_id: int) -> None:
         """Download, parse, and store FIT file for an activity."""
@@ -671,15 +1067,26 @@ class GarminSyncService:
             activity.fit_file_hash = file_hash
             activity.has_fit_file = True
 
-            # Create raw file record
-            raw_file = GarminRawFile(
-                user_id=self.user.id,
-                activity_id=activity.id,
-                file_type="fit",
-                file_path=file_path,
-                file_hash=file_hash,
-            )
-            self.session.add(raw_file)
+            # Upsert raw file record (avoid unique constraint violation on re-download)
+            existing_raw_file = self.session.execute(
+                select(GarminRawFile).where(GarminRawFile.activity_id == activity.id)
+            ).scalar_one_or_none()
+
+            if existing_raw_file:
+                # Update existing record
+                existing_raw_file.file_path = file_path
+                existing_raw_file.file_hash = file_hash
+                existing_raw_file.fetched_at = datetime.now(timezone.utc)
+            else:
+                # Create new record
+                raw_file = GarminRawFile(
+                    user_id=self.user.id,
+                    activity_id=activity.id,
+                    file_type="fit",
+                    file_path=file_path,
+                    file_hash=file_hash,
+                )
+                self.session.add(raw_file)
 
             # Parse FIT file and store samples/laps
             try:
@@ -884,8 +1291,9 @@ class GarminSyncService:
                         hr_ratio = (avg_hr - rest_hr) / hr_reserve
                         hr_ratio = max(0, min(1, hr_ratio))  # Clamp 0-1
                         duration_min = activity.duration_seconds / 60
-                        # Banister's TRIMP formula (gender factor 1.92 for male, 1.67 for female)
-                        gender_factor = 1.92  # Default to male
+                        # Banister's TRIMP formula
+                        # Gender factor: 1.92 for male, 1.67 for female
+                        gender_factor = 1.67 if self.user.gender == "female" else 1.92
                         trimp = duration_min * hr_ratio * 0.64 * math.exp(gender_factor * hr_ratio)
                         trimp = round(trimp, 1)
 
@@ -901,8 +1309,14 @@ class GarminSyncService:
                     speed_m_min = (activity.distance_meters / activity.duration_seconds) * 60
                     efficiency_factor = round(speed_m_min / activity.avg_hr, 3)
 
-            # Get TSS from activity (already calculated from FIT)
+            # Calculate TSS
+            # For cycling: use power-based TSS from FIT file
+            # For running: calculate rTSS (running TSS) based on pace
             tss = activity.training_stress_score
+
+            # If no TSS from device, calculate rTSS for running activities
+            if tss is None and activity.distance_meters and activity.duration_seconds:
+                tss = self._calculate_running_tss(activity)
 
             # Get training effect (average of aerobic and anaerobic)
             training_effect = None
@@ -939,6 +1353,57 @@ class GarminSyncService:
 
         except Exception as e:
             logger.warning(f"Failed to calculate metrics for activity {activity.id}: {e}")
+
+    def _calculate_running_tss(self, activity: Activity) -> float | None:
+        """Calculate running TSS (rTSS) based on pace and threshold pace.
+
+        rTSS = (duration_sec * IF^2) / 3600 * 100
+        where IF = actual_pace / threshold_pace (inverted since lower pace is faster)
+
+        Uses a simplified approach based on intensity factor relative to threshold.
+        Default threshold pace: 5:00/km (300 sec/km) if not set.
+        """
+        if not activity.distance_meters or not activity.duration_seconds:
+            return None
+
+        try:
+            # Calculate actual pace (seconds per km)
+            distance_km = activity.distance_meters / 1000
+            if distance_km <= 0:
+                return None
+
+            actual_pace = activity.duration_seconds / distance_km
+
+            # Get threshold pace from user or use default
+            # Default threshold pace: 5:00/km (300 sec/km) for recreational runner
+            # This should ideally come from user profile or VDOT calculation
+            threshold_pace = 300.0  # 5:00/km default
+
+            # Check if user has threshold pace set (from VDOT or manual)
+            if hasattr(self.user, 'threshold_pace') and self.user.threshold_pace:
+                threshold_pace = self.user.threshold_pace
+
+            # Calculate Intensity Factor (IF)
+            # For running, IF = threshold_pace / actual_pace (inverted)
+            # Faster pace = higher IF
+            if actual_pace <= 0:
+                return None
+
+            intensity_factor = threshold_pace / actual_pace
+
+            # Cap IF at reasonable bounds (0.5 to 1.5)
+            intensity_factor = max(0.5, min(1.5, intensity_factor))
+
+            # Calculate rTSS
+            # rTSS = (duration_hours * IF^2) * 100
+            duration_hours = activity.duration_seconds / 3600
+            rtss = duration_hours * (intensity_factor ** 2) * 100
+
+            return round(rtss, 1)
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate rTSS for activity {activity.id}: {e}")
+            return None
 
     async def _sync_sleep(
         self,
@@ -1051,16 +1516,34 @@ class GarminSyncService:
         hr_date: date,
         raw_event_id: Optional[int] = None,
     ) -> None:
-        """Store or update heart rate record using upsert."""
+        """Store or update heart rate record using upsert.
+
+        Garmin HR data fields:
+        - restingHeartRate: Resting HR for the day
+        - maxHeartRate: Max HR recorded during the day
+        - heartRateValues: Time series samples [[timestamp_ms, hr], ...]
+        """
+        # Calculate average HR from samples if available
+        avg_hr = None
+        samples = data.get("heartRateValues")
+        if samples and isinstance(samples, list):
+            valid_hr = [hr for _, hr in samples if hr and hr > 0]
+            if valid_hr:
+                avg_hr = round(sum(valid_hr) / len(valid_hr))
+
+        # Make timestamps timezone-aware
+        start_time = datetime.combine(hr_date, datetime.min.time(), tzinfo=timezone.utc)
+        end_time = datetime.combine(hr_date, datetime.max.time(), tzinfo=timezone.utc)
+
         stmt = insert(HRRecord).values(
             user_id=self.user.id,
             date=hr_date,
-            start_time=datetime.combine(hr_date, datetime.min.time()),
-            end_time=datetime.combine(hr_date, datetime.max.time()),
-            avg_hr=data.get("restingHeartRate"),
+            start_time=start_time,
+            end_time=end_time,
+            avg_hr=avg_hr,
             max_hr=data.get("maxHeartRate"),
             resting_hr=data.get("restingHeartRate"),
-            samples=data.get("heartRateValues"),
+            samples=samples,
             raw_event_id=raw_event_id,
         )
         update_values = {
@@ -1363,6 +1846,69 @@ class GarminSyncService:
             },
         )
         await self.session.execute(stmt)
+
+    async def _queue_strava_uploads(self, sync_result: SyncResult) -> None:
+        """Queue newly synced activities for Strava upload.
+
+        This is called after activity sync completes. It checks if:
+        1. Auto-upload is enabled in settings
+        2. User has a connected Strava account
+        3. Activities have FIT files and haven't been uploaded yet
+
+        Args:
+            sync_result: Result from activity sync containing counts.
+        """
+        # Skip if no new activities
+        if sync_result.items_created == 0:
+            return
+
+        # Check if auto-upload is enabled
+        if not settings.strava_auto_upload:
+            logger.debug("Strava auto-upload disabled in settings")
+            return
+
+        try:
+            # Check if user has Strava connected
+            from app.models.strava import StravaSession
+            strava_result = await self.session.execute(
+                select(StravaSession).where(
+                    and_(
+                        StravaSession.user_id == self.user.id,
+                        StravaSession.access_token != None,
+                    )
+                )
+            )
+            strava_session = strava_result.scalar_one_or_none()
+
+            if not strava_session:
+                logger.debug(f"User {self.user.id} has no Strava connection, skipping auto-upload")
+                return
+
+            # Get last Strava sync time
+            from app.models.strava import StravaSyncState
+            sync_state_result = await self.session.execute(
+                select(StravaSyncState).where(StravaSyncState.user_id == self.user.id)
+            )
+            sync_state = sync_state_result.scalar_one_or_none()
+            since = sync_state.last_success_at if sync_state else None
+
+            # Queue pending activities
+            from app.services.strava_upload import StravaUploadService
+            upload_service = StravaUploadService(self.session)
+            queued_count = await upload_service.enqueue_pending_activities(
+                user_id=self.user.id,
+                since=since,
+            )
+
+            if queued_count > 0:
+                logger.info(
+                    f"Queued {queued_count} activities for Strava upload after Garmin sync "
+                    f"(user {self.user.id})"
+                )
+
+        except Exception as e:
+            # Don't fail the sync if Strava queueing fails
+            logger.warning(f"Failed to queue Strava uploads: {e}")
 
 
 async def create_sync_service(

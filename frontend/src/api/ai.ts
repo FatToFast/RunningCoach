@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import type { ExportSummaryResponse } from '../types/api';
 
 export interface Message {
   id: number;
@@ -29,17 +30,63 @@ export interface ConversationListResponse {
 export interface ChatRequest {
   message: string;
   context?: Record<string, unknown>;
+  mode?: 'chat' | 'plan';
+  save_mode?: 'draft' | 'approved' | 'active';
 }
 
 export interface ChatResponse {
   conversation_id: number;
   message: Message;
   reply: Message;
+  plan_id?: number | null;
+  import_id?: number | null;
+  plan_status?: 'draft' | 'approved' | 'active' | null;
+  missing_fields?: string[] | null;
 }
 
 export interface ConversationCreateRequest {
   title?: string;
   language?: string;
+}
+
+export interface CoachRaceSummary {
+  id: number;
+  name: string;
+  race_date: string;
+  days_until: number;
+  distance_km: number | null;
+  distance_label: string | null;
+  location: string | null;
+  goal_time_seconds: number | null;
+  goal_description: string | null;
+  is_primary: boolean;
+}
+
+export interface CoachActivitySummary {
+  activity_id: number;
+  activity_type: string;
+  name: string | null;
+  start_time: string;
+  distance_km: number | null;
+  duration_min: number | null;
+  avg_pace_seconds: number | null;
+  avg_hr: number | null;
+  max_hr: number | null;
+  avg_cadence: number | null;
+  training_effect: number | null;
+  trimp: number | null;
+  tss: number | null;
+  efficiency_factor: number | null;
+  sample_count: number;
+  pace_std_seconds: number | null;
+  hr_std: number | null;
+  cadence_std: number | null;
+}
+
+export interface CoachContextResponse {
+  snapshot: Record<string, unknown>;
+  primary_race: CoachRaceSummary | null;
+  activity: CoachActivitySummary | null;
 }
 
 export const aiApi = {
@@ -69,10 +116,8 @@ export const aiApi = {
   },
 
   // 메시지 전송 (기존 대화)
-  sendMessage: async (conversationId: number, message: string): Promise<ChatResponse> => {
-    const { data } = await apiClient.post(`/ai/conversations/${conversationId}/chat`, {
-      message,
-    });
+  sendMessage: async (conversationId: number, request: ChatRequest): Promise<ChatResponse> => {
+    const { data } = await apiClient.post(`/ai/conversations/${conversationId}/chat`, request);
     return data;
   },
 
@@ -83,9 +128,17 @@ export const aiApi = {
   },
 
   // 훈련 요약 내보내기
-  exportSummary: async (format: 'markdown' | 'json' = 'markdown'): Promise<string> => {
-    const { data } = await apiClient.get('/ai/export', {
+  exportSummary: async (format: 'markdown' | 'json' = 'markdown'): Promise<ExportSummaryResponse> => {
+    const { data } = await apiClient.get<ExportSummaryResponse>('/ai/export', {
       params: { format },
+    });
+    return data;
+  },
+
+  // AI 코치 컨텍스트
+  getCoachContext: async (activityId?: number): Promise<CoachContextResponse> => {
+    const { data } = await apiClient.get('/ai/coach/context', {
+      params: activityId ? { activity_id: activityId } : undefined,
     });
     return data;
   },

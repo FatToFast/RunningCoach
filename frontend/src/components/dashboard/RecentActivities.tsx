@@ -28,7 +28,7 @@ export function RecentActivities({ activities }: RecentActivitiesProps) {
         <h3 className="font-display text-base sm:text-lg font-semibold">최근 활동</h3>
         <Link
           to="/activities"
-          className="text-cyan text-xs sm:text-sm hover:underline flex items-center gap-1 focus:outline-none focus:ring-2 focus:ring-cyan/50 rounded px-1"
+          className="text-accent text-xs sm:text-sm hover:underline flex items-center gap-1 focus:outline-none focus:ring-2 focus:ring-[var(--color-border-accent)] rounded px-1"
         >
           전체보기 <ArrowRight className="w-3 h-3 sm:w-4 sm:h-4" />
         </Link>
@@ -52,7 +52,7 @@ export function RecentActivities({ activities }: RecentActivitiesProps) {
             {activities.map((activity) => (
               <tr
                 key={activity.id}
-                className="hover:bg-[var(--color-bg-tertiary)] transition-colors cursor-pointer"
+                className="hover:bg-[var(--color-bg-secondary)] transition-colors cursor-pointer"
                 onClick={() => window.location.href = `/activities/${activity.id}`}
               >
                 <td className="py-2 font-mono text-muted whitespace-nowrap">
@@ -71,7 +71,7 @@ export function RecentActivities({ activities }: RecentActivitiesProps) {
                 <td className="py-2 text-right font-mono">
                   {activity.avg_pace_seconds != null ? formatPace(activity.avg_pace_seconds) : '--'}
                 </td>
-                <td className="py-2 text-right font-mono text-red-400 whitespace-nowrap">
+                <td className="py-2 text-right font-mono text-danger whitespace-nowrap">
                   {activity.avg_hr != null ? (
                     <>
                       {activity.avg_hr}
@@ -81,7 +81,7 @@ export function RecentActivities({ activities }: RecentActivitiesProps) {
                     </>
                   ) : '--'}
                 </td>
-                <td className="py-2 text-right font-mono text-amber-400">
+                <td className="py-2 text-right font-mono text-warning">
                   {activity.trimp != null ? Math.round(activity.trimp) : '--'}
                 </td>
               </tr>
@@ -96,26 +96,26 @@ export function RecentActivities({ activities }: RecentActivitiesProps) {
           <Link
             key={activity.id}
             to={`/activities/${activity.id}`}
-            className="block p-2.5 bg-[var(--color-bg-tertiary)] rounded-lg hover:bg-[var(--color-bg-tertiary)]/80 transition-colors"
+            className="block p-2.5 bg-[var(--color-bg-secondary)] rounded-lg hover:bg-[var(--color-bg-tertiary)] transition-colors"
           >
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
                 <span className="font-mono text-muted text-[11px]">
                   {formatDateRunalyze(activity.start_time)}
                 </span>
-                <span className="bg-cyan/20 text-cyan px-1 py-0.5 rounded text-[10px] font-medium">
+                <span className="bg-accent-soft text-accent px-1 py-0.5 rounded text-[10px] font-medium">
                   {getActivityTypeShort(activity.activity_type, activity.name)}
                 </span>
               </div>
               {activity.trimp != null && (
-                <span className="text-amber-400 font-mono text-[11px]">{Math.round(activity.trimp)}</span>
+                <span className="text-warning font-mono text-[11px]">{Math.round(activity.trimp)}</span>
               )}
             </div>
             <div className="flex items-center justify-between text-[11px] font-mono">
               <span>{activity.distance_km?.toFixed(1) ?? '--'} km</span>
               <span className="text-muted">{formatDuration(activity.duration_seconds)}</span>
               <span>{formatPace(activity.avg_pace_seconds)}</span>
-              <span className="text-red-400">
+              <span className="text-danger">
                 {activity.avg_hr ?? '--'}
                 {activity.avg_hr_percent != null && (
                   <span className="text-muted">({activity.avg_hr_percent}%)</span>

@@ -18,9 +18,37 @@ import {
   useDeleteConversation,
   useSendMessage,
   useChat,
-  useExportSummary
+  useExportSummary,
+  useCoachContext
 } from '../hooks/useAI';
 import type { Message } from '../api/ai';
+
+type PlanSaveMode = 'draft' | 'approved' | 'active';
+
+function parsePlanCommand(message: string): {
+  mode: 'chat' | 'plan';
+  saveMode?: PlanSaveMode;
+  cleanedMessage: string;
+} {
+  if (!message.startsWith('/plan')) {
+    return { mode: 'chat', cleanedMessage: message };
+  }
+
+  const [command, ...rest] = message.split(' ');
+  let saveMode: PlanSaveMode = 'draft';
+
+  if (command.includes(':active')) {
+    saveMode = 'active';
+  } else if (command.includes(':approved')) {
+    saveMode = 'approved';
+  }
+
+  return {
+    mode: 'plan',
+    saveMode,
+    cleanedMessage: rest.join(' ').trim(),
+  };
+}
 
 export function Coach() {
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
@@ -30,6 +58,7 @@ export function Coach() {
 
   const { data: conversationsData, isLoading: conversationsLoading } = useConversations();
   const { data: conversationDetail, isLoading: detailLoading } = useConversation(selectedConversationId);
+  const { data: coachContext } = useCoachContext();
 
   const createConversation = useCreateConversation();
   const deleteConversation = useDeleteConversation();
@@ -70,13 +99,27 @@ export function Coach() {
     if (!inputMessage.trim()) return;
 
     const message = inputMessage.trim();
+    const context = (coachContext ?? undefined) as Record<string, unknown> | undefined;
+    const parsed = parsePlanCommand(message);
     setInputMessage('');
 
     try {
+      if (parsed.mode === 'plan' && !parsed.cleanedMessage) {
+        alert('플랜 생성 요청 내용을 입력해주세요. 예: /plan 12주 마라톤 3:30 목표');
+        return;
+      }
+
+      const request = {
+        message: parsed.cleanedMessage || message,
+        context,
+        mode: parsed.mode,
+        save_mode: parsed.saveMode,
+      };
+
       if (selectedConversationId) {
-        await sendMessage.mutateAsync(message);
+        await sendMessage.mutateAsync(request);
       } else {
-        const response = await chat.mutateAsync({ message });
+        const response = await chat.mutateAsync(request);
         setSelectedConversationId(response.conversation_id);
       }
     } catch (error) {
@@ -92,11 +135,14 @@ export function Coach() {
 
   const handleExportSummary = async () => {
     try {
-      const summary = await exportSummary.mutateAsync('markdown');
-      navigator.clipboard.writeText(typeof summary === 'string' ? summary : JSON.stringify(summary, null, 2));
+      const response = await exportSummary.mutateAsync('markdown');
+      // ExportSummaryResponse에서 content만 추출하여 복사
+      const content = typeof response === 'string' ? response : response.content;
+      await navigator.clipboard.writeText(content);
       alert('훈련 요약이 클립보드에 복사되었습니다.');
     } catch (error) {
       console.error('Failed to export summary:', error);
+      alert('클립보드 복사에 실패했습니다.');
     }
   };
 

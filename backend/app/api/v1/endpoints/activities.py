@@ -2,15 +2,17 @@
 
 import math
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, Integer
+from sqlalchemy.sql.functions import coalesce
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import get_settings
@@ -189,8 +191,8 @@ async def list_activities(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     activity_type: str | None = Query(None, description="Filter by activity type"),
-    start_date: datetime | None = Query(None, description="Filter start date (from)"),
-    end_date: datetime | None = Query(None, description="Filter end date (to)"),
+    start_date: datetime | None = Query(None, description="Filter start date (from, in user timezone)"),
+    end_date: datetime | None = Query(None, description="Filter end date (to, in user timezone)"),
     sort_by: str = Query("start_time", pattern="^(start_time|distance|duration)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> ActivityListResponse:
@@ -198,37 +200,90 @@ async def list_activities(
 
     FR-011: 활동 목록 - 페이지네이션, 필터, 정렬
 
+    Date filtering uses user's timezone setting. If the user filters for
+    "2024-01-15", this means activities from 00:00 to 23:59:59 in their timezone.
+
     Args:
         current_user: Authenticated user.
         db: Database session.
         page: Page number.
         per_page: Items per page.
         activity_type: Filter by type.
-        start_date: Filter from date.
-        end_date: Filter to date.
+        start_date: Filter from date (interpreted in user's timezone).
+        end_date: Filter to date (interpreted in user's timezone).
         sort_by: Sort field.
         sort_order: Sort order.
 
     Returns:
         Paginated activity list.
     """
-    # Base query
-    query = select(Activity).where(Activity.user_id == current_user.id)
+    # Get user timezone for date filtering
+    user_tz = ZoneInfo(current_user.timezone or "Asia/Seoul")
+
+    # Convert date filters to user timezone-aware datetime range
+    # If client sends naive datetime or date, interpret it in user's timezone
+    start_datetime: datetime | None = None
+    end_datetime: datetime | None = None
+
+    if start_date:
+        # If naive datetime, localize to user timezone
+        if start_date.tzinfo is None:
+            start_datetime = start_date.replace(tzinfo=user_tz)
+        else:
+            start_datetime = start_date
+
+    if end_date:
+        # If naive datetime, localize to user timezone
+        # Also extend to end of day (23:59:59.999999) for inclusive date range
+        if end_date.tzinfo is None:
+            end_datetime = end_date.replace(tzinfo=user_tz)
+        else:
+            end_datetime = end_date
+
+    # Base query with load_only for list view performance
+    # Only load columns needed for ActivitySummary response
+    query = (
+        select(Activity)
+        .where(Activity.user_id == current_user.id)
+        .options(
+            load_only(
+                Activity.id,
+                Activity.garmin_id,
+                Activity.activity_type,
+                Activity.name,
+                Activity.start_time,
+                Activity.duration_seconds,
+                Activity.distance_meters,
+                Activity.avg_hr,
+                Activity.avg_pace_seconds,
+                Activity.calories,
+            )
+        )
+    )
 
     # Apply filters
     if activity_type:
         query = query.where(Activity.activity_type == activity_type)
-    if start_date:
-        query = query.where(Activity.start_time >= start_date)
-    if end_date:
-        query = query.where(Activity.start_time <= end_date)
+    if start_datetime:
+        query = query.where(Activity.start_time >= start_datetime)
+    if end_datetime:
+        query = query.where(Activity.start_time <= end_datetime)
 
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
+    # Count total - build simple count query with same filters
+    # Avoids subquery overhead by using direct count with WHERE conditions
+    count_query = select(func.count(Activity.id)).where(Activity.user_id == current_user.id)
+    if activity_type:
+        count_query = count_query.where(Activity.activity_type == activity_type)
+    if start_datetime:
+        count_query = count_query.where(Activity.start_time >= start_datetime)
+    if end_datetime:
+        count_query = count_query.where(Activity.start_time <= end_datetime)
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Apply sorting
+    # Apply sorting with tie-breaker (Activity.id) for stable pagination
+    # Without tie-breaker, records with same sort value may appear on multiple pages
+    # or be skipped entirely when paginating
     sort_column = {
         "start_time": Activity.start_time,
         "distance": Activity.distance_meters,
@@ -236,9 +291,9 @@ async def list_activities(
     }[sort_by]
 
     if sort_order == "desc":
-        query = query.order_by(sort_column.desc())
+        query = query.order_by(sort_column.desc(), Activity.id.desc())
     else:
-        query = query.order_by(sort_column.asc())
+        query = query.order_by(sort_column.asc(), Activity.id.asc())
 
     # Apply pagination
     offset = (page - 1) * per_page
@@ -527,14 +582,14 @@ async def get_activity_samples(
     if downsample and total_count > downsample:
         # Downsampling mode: evenly sample from full dataset
         # Note: limit/offset are ignored in downsample mode
+        # Strategy: Always include first and last samples, evenly sample in between
         is_downsampled = True
-        step = total_count // downsample
 
         # DB-based downsampling using window function (PostgreSQL only)
         # This avoids loading all samples into memory
         from sqlalchemy.sql.expression import func as sql_func
 
-        # Create subquery with row numbers
+        # Create subquery with row numbers (1-indexed)
         row_num = sql_func.row_number().over(
             partition_by=ActivitySample.activity_id,
             order_by=ActivitySample.timestamp.asc()
@@ -546,13 +601,44 @@ async def get_activity_samples(
             .subquery()
         )
 
-        # Select every step-th row (row_num % step = 1)
-        sample_query = (
-            select(subq)
-            .where((subq.c.row_num - 1) % step == 0)
-            .order_by(subq.c.timestamp.asc())
-            .limit(downsample)
-        )
+        # Calculate step for even distribution
+        # Reserve 2 slots for first and last, distribute remaining evenly
+        middle_samples = downsample - 2  # first and last are guaranteed
+        if middle_samples <= 0:
+            # If downsample <= 2, just get first and last
+            sample_query = (
+                select(subq)
+                .where(
+                    (subq.c.row_num == 1) | (subq.c.row_num == total_count)
+                )
+                .order_by(subq.c.timestamp.asc())
+            )
+        else:
+            # Step through middle portion (exclude first and last row)
+            step = (total_count - 2) / middle_samples if middle_samples > 0 else 1
+
+            # Select first row, evenly spaced middle rows, and last row
+            # Generate target row numbers for middle samples
+            # row 1 = first (always), row total_count = last (always)
+            # middle targets: 2, 2+step, 2+2*step, ..., up to total_count-1
+            sample_query = (
+                select(subq)
+                .where(
+                    (subq.c.row_num == 1)  # First sample
+                    | (subq.c.row_num == total_count)  # Last sample
+                    | (
+                        (subq.c.row_num > 1)
+                        & (subq.c.row_num < total_count)
+                        & (
+                            # Select middle rows at even intervals
+                            # Cast to int for modulo: (row_num - 2) should be close to N * step
+                            ((subq.c.row_num - 2) % sql_func.greatest(1, sql_func.cast(step, Integer))) < 1
+                        )
+                    )
+                )
+                .order_by(subq.c.timestamp.asc())
+                .limit(downsample)
+            )
 
         result = await db.execute(sample_query)
         rows = result.all()
@@ -656,20 +742,28 @@ async def download_fit_file(
             detail="Activity not found",
         )
 
-    # Get FIT file
+    # Get FIT file path - try GarminRawFile first, then fallback to Activity.fit_file_path
     fit_result = await db.execute(
         select(GarminRawFile).where(GarminRawFile.activity_id == activity_id)
     )
     fit_file = fit_result.scalar_one_or_none()
 
-    if not fit_file:
+    # Determine file path with fallback
+    file_path = None
+    if fit_file and fit_file.file_path:
+        file_path = fit_file.file_path
+    elif activity.fit_file_path:
+        # Fallback to Activity.fit_file_path if GarminRawFile record is missing
+        file_path = activity.fit_file_path
+
+    if not file_path:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="FIT file not found for this activity",
         )
 
     # Validate file path exists before serving
-    if not fit_file.file_path or not os.path.isfile(fit_file.file_path):
+    if not os.path.isfile(file_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="FIT file path is invalid or file has been deleted",
@@ -678,14 +772,14 @@ async def download_fit_file(
     # Path traversal protection: ensure file is within allowed storage directory
     # This prevents serving arbitrary files if DB is compromised
     settings = get_settings()
-    allowed_root = os.path.realpath(settings.fit_storage_path)
-    file_real_path = os.path.realpath(fit_file.file_path)
+    allowed_root = os.path.realpath(settings.fit_storage_path_absolute)
+    file_real_path = os.path.realpath(file_path)
 
     if not file_real_path.startswith(allowed_root + os.sep):
         # Log this as a security warning - possible DB tampering
         import logging
         logging.getLogger(__name__).warning(
-            f"Path traversal blocked: {fit_file.file_path} not in {allowed_root}"
+            f"Path traversal blocked: {file_path} not in {allowed_root}"
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -751,17 +845,16 @@ class HRZonesResponse(BaseModel):
     total_time_in_zones: int
 
 
-# Garmin-style HR zone definitions using HRR (Heart Rate Reserve) method
+# Standard 5-zone HR definitions using HRR (Heart Rate Reserve) method
 # Zone boundaries are percentages of HRR: resting_hr + (max_hr - resting_hr) * pct
-# These percentages match Garmin Connect's default 5-zone calculation
-# Derived from user's Garmin settings: max=175, resting=50, HRR=125
-# Z1: 88-105 → 30-44%, Z2: 106-122 → 45-58%, Z3: 123-140 → 58-72%, etc.
+# These percentages match industry-standard 5-zone calculation used by Garmin and other platforms
+# Zone HR = resting_hr + (max_hr - resting_hr) * percentage
 HR_ZONE_DEFINITIONS = [
-    {"zone": 1, "min_pct": 0.304, "max_pct": 0.44},  # Zone 1: ~30-44% HRR
-    {"zone": 2, "min_pct": 0.448, "max_pct": 0.576},  # Zone 2: ~45-58% HRR
-    {"zone": 3, "min_pct": 0.584, "max_pct": 0.72},  # Zone 3: ~58-72% HRR
-    {"zone": 4, "min_pct": 0.728, "max_pct": 0.856},  # Zone 4: ~73-86% HRR
-    {"zone": 5, "min_pct": 0.856, "max_pct": 1.00},  # Zone 5: ~86-100% HRR
+    {"zone": 1, "min_pct": 0.50, "max_pct": 0.60},  # Zone 1: 50-60% HRR (Recovery)
+    {"zone": 2, "min_pct": 0.60, "max_pct": 0.70},  # Zone 2: 60-70% HRR (Aerobic)
+    {"zone": 3, "min_pct": 0.70, "max_pct": 0.80},  # Zone 3: 70-80% HRR (Tempo)
+    {"zone": 4, "min_pct": 0.80, "max_pct": 0.90},  # Zone 4: 80-90% HRR (Threshold)
+    {"zone": 5, "min_pct": 0.90, "max_pct": 1.00},  # Zone 5: 90-100% HRR (Maximum)
 ]
 
 
@@ -770,7 +863,7 @@ async def get_activity_hr_zones(
     activity_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    max_hr: int | None = Query(None, ge=100, le=250, description="User's max HR. Default: user.max_hr or 220-age"),
+    max_hr: int | None = Query(None, ge=100, le=250, description="User's max HR. Default: user.max_hr or max from activity samples"),
     resting_hr: int | None = Query(None, ge=30, le=100, description="User's resting HR. Default: user.resting_hr or 60"),
 ) -> HRZonesResponse:
     """Calculate HR zone distribution for an activity.
@@ -815,11 +908,13 @@ async def get_activity_hr_zones(
     # Get all HR samples with timestamps for accurate time calculation
     # Note: We use timestamp deltas instead of assuming 1 sample = 1 second,
     # as sampling rates can vary (e.g., 1Hz, 5Hz, or irregular intervals)
+    # Use coalesce to read from both 'hr' and 'heart_rate' fields (different FIT parsers use different names)
+    hr_value = coalesce(ActivitySample.hr, ActivitySample.heart_rate)
     result = await db.execute(
-        select(ActivitySample.hr, ActivitySample.timestamp)
+        select(hr_value.label("hr"), ActivitySample.timestamp)
         .where(
             ActivitySample.activity_id == activity_id,
-            ActivitySample.hr.isnot(None),
+            hr_value.isnot(None),
         )
         .order_by(ActivitySample.timestamp.asc())
     )

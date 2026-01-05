@@ -1059,6 +1059,10 @@ start_date: datetime | None = Query(None, description="Filter start date (from)"
 | 데이터 수집/동기화 | `backend/app/api/v1/endpoints/ingest.py` |
 | 활동 데이터 | `backend/app/api/v1/endpoints/activities.py` |
 | API 문서 | `docs/api-reference.md` |
+| HR 존 계산 | `backend/app/api/v1/endpoints/activities.py:754-788` |
+| Runalyze API 호출 | `backend/app/api/v1/endpoints/dashboard.py:43-104` |
+| 동기화 락 관리 | `backend/app/core/session.py:134-244`, `backend/app/api/v1/endpoints/ingest.py:32` |
+| Strava OAuth | `backend/app/api/v1/endpoints/strava.py:25-89` |
 
 ---
 
@@ -1303,4 +1307,910 @@ GARMIN_ENCRYPTION_KEY=<Fernet key>
 
 ---
 
-*마지막 업데이트: 2026-01-02*
+### 30. HR 존 계산 - 주석과 코드 불일치
+
+**문제**: 함수 docstring과 실제 상수 값이 다름
+
+```python
+# ❌ 잘못된 패턴 - 주석과 실제 값 불일치
+# 주석에는 "Zone 1: 50-60% HRR"이라고 했지만...
+HR_ZONE_DEFINITIONS = [
+    {"zone": 1, "min_pct": 0.304, "max_pct": 0.44},  # 실제: 30-44%
+    {"zone": 2, "min_pct": 0.448, "max_pct": 0.576},  # 실제: 45-58%
+]
+
+def get_hr_zones(...):
+    """
+    Zones are calculated based on percentage of HRR:
+    - Zone 1: 50-60% HRR  # 실제 코드와 다름!
+    - Zone 2: 60-70% HRR
+    """
+
+# ✅ 올바른 패턴 - 주석과 실제 값 일치
+HR_ZONE_DEFINITIONS = [
+    {"zone": 1, "min_pct": 0.50, "max_pct": 0.60},  # Zone 1: 50-60% HRR
+    {"zone": 2, "min_pct": 0.60, "max_pct": 0.70},  # Zone 2: 60-70% HRR
+    {"zone": 3, "min_pct": 0.70, "max_pct": 0.80},  # Zone 3: 70-80% HRR
+]
+
+def get_hr_zones(...):
+    """
+    Uses industry-standard 5-zone HRR method:
+    - Zone 1: 50-60% HRR (Recovery)
+    - Zone 2: 60-70% HRR (Aerobic)
+    - Zone 3: 70-80% HRR (Tempo)
+    """
+```
+
+**적용 위치**: `activities.py:754-788`
+
+**관련 이슈**:
+- max_hr 기본값 설명도 부정확 ("220-age"라고 했지만 실제로는 샘플 최대값 사용)
+- Query 파라미터 description에 실제 동작 명시 필요
+
+---
+
+### 31. httpx base_url + leading slash 오류
+
+**문제**: leading slash가 base_url 경로를 덮어씀
+
+```python
+# ❌ 잘못된 패턴 - leading slash가 base_url 경로를 덮어씀
+async with httpx.AsyncClient(
+    base_url="https://runalyze.com/api/v1"
+) as client:
+    # /metrics/calculations → https://runalyze.com/metrics/calculations
+    # /api/v1이 사라짐!
+    response = await client.get("/metrics/calculations")
+
+# ✅ 올바른 패턴 - leading slash 제거
+async with httpx.AsyncClient(
+    base_url="https://runalyze.com/api/v1"
+) as client:
+    # metrics/calculations → https://runalyze.com/api/v1/metrics/calculations
+    response = await client.get("metrics/calculations")
+
+# 또는 base_url을 도메인만 사용
+async with httpx.AsyncClient(
+    base_url="https://runalyze.com"
+) as client:
+    # /api/v1/metrics/calculations → 의도한 URL
+    response = await client.get("/api/v1/metrics/calculations")
+```
+
+**적용 위치**: `dashboard.py:71-99`, 모든 httpx.AsyncClient base_url 사용 코드
+
+**원인**: httpx는 WHATWG URL 표준을 따라 leading slash가 있으면 base_url의 경로를 무시함
+
+---
+
+### 32. 동기화 락 TTL 부족 및 연장 로직 누락
+
+**문제**: 대용량 백필(500+ 활동) 시 1시간 TTL로 부족하고, 연장 로직도 없음
+
+```python
+# ❌ 잘못된 패턴 - 고정 TTL, 연장 불가
+SYNC_LOCK_TTL = 3600  # 1시간
+lock_owner = await acquire_lock(lock_name, ttl_seconds=SYNC_LOCK_TTL)
+
+# 1000개 활동 동기화 시 1.5시간 걸림 → 중간에 락 만료!
+
+# ✅ 올바른 패턴 1 - TTL 증가
+SYNC_LOCK_TTL = 10800  # 3시간 (500개 활동 대응)
+
+# ✅ 올바른 패턴 2 - 주기적 연장 (대용량)
+async def extend_lock(lock_name: str, owner: str, ttl_seconds: int) -> bool:
+    """Extend lock TTL atomically."""
+    redis_client = await get_redis()
+    lock_key = f"lock:{lock_name}"
+
+    # Lua script로 소유권 확인 후 연장
+    lua_script = """
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("expire", KEYS[1], ARGV[2])
+    else
+        return 0
+    end
+    """
+
+    result = await redis_client.eval(lua_script, 1, lock_key, owner, ttl_seconds)
+    return result == 1
+
+# 사용 예시
+lock_owner = await acquire_lock(lock_name, ttl_seconds=SYNC_LOCK_TTL)
+try:
+    for batch in batches:
+        await process_batch(batch)
+        # 매 배치마다 락 연장 (10분마다)
+        await extend_lock(lock_name, lock_owner, SYNC_LOCK_TTL)
+finally:
+    await release_lock(lock_name, lock_owner)
+```
+
+**적용 위치**:
+- `ingest.py:32` - SYNC_LOCK_TTL 증가
+- `session.py:212-244` - extend_lock() 함수 추가
+
+**예상 동기화 시간**:
+- 100개 활동: ~8분
+- 500개 활동: ~40분
+- 1000개 활동: ~1.5시간 (3시간 TTL 권장)
+
+---
+
+### 33. Strava OAuth state가 프로세스 메모리에만 저장
+
+**문제**: 멀티워커/멀티인스턴스 환경에서 OAuth state가 공유되지 않아 콜백 실패
+
+```python
+# ❌ 잘못된 패턴 - 단일 워커에서만 동작
+_oauth_states: dict[str, tuple[int, float]] = {}
+
+def _generate_oauth_state(user_id: int) -> str:
+    state_token = secrets.token_urlsafe(32)
+    _oauth_states[state_token] = (user_id, time.time() + 600)
+    return state_token
+# Worker A에서 생성 → Worker B로 콜백 → state 찾을 수 없음!
+
+# ✅ 올바른 패턴 - Redis 사용
+async def generate_oauth_state(user_id: int, redis: Redis) -> str:
+    state_token = secrets.token_urlsafe(32)
+    await redis.setex(
+        f"oauth:state:{state_token}",
+        600,  # 10분 TTL
+        user_id
+    )
+    return state_token
+
+async def validate_oauth_state(state: str, user_id: int, redis: Redis) -> bool:
+    stored_user_id = await redis.get(f"oauth:state:{state}")
+    if not stored_user_id:
+        return False
+
+    if int(stored_user_id) != user_id:
+        return False
+
+    # 일회용 삭제
+    await redis.delete(f"oauth:state:{state}")
+    return True
+```
+
+**적용 위치**: `strava.py:25-89`
+
+**배포 시나리오**:
+- 단일 워커 (`uvicorn ... --workers 1`): 현재 방식 OK
+- 멀티 워커 (`--workers 4+`) 또는 멀티 인스턴스: Redis 필수
+
+**현재 상태**: MVP 단계이므로 TODO 주석 추가하고 프로덕션 배포 시 마이그레이션
+
+---
+
+### 34. garmin_id가 전역 고유로 설정되어 멀티유저 충돌
+
+**문제**: Garmin activity ID는 사용자별로만 고유한데, 전역 unique 제약으로 인해 다른 사용자가 같은 ID를 가질 수 없음
+
+```python
+# ❌ 잘못된 패턴 - 전역 고유
+class Activity(BaseModel):
+    garmin_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+# 사용자 A가 garmin_id=12345 저장 → 사용자 B도 12345 저장 시 UniqueViolation!
+
+# ✅ 올바른 패턴 - 사용자별 고유 (복합 유니크)
+class Activity(BaseModel):
+    __table_args__ = (
+        UniqueConstraint("user_id", "garmin_id", name="uq_activities_user_garmin_id"),
+    )
+    garmin_id: Mapped[int] = mapped_column(BigInteger, index=True)  # unique=True 제거
+```
+
+**적용 위치**: `models/activity.py`
+
+**마이그레이션**: `012_fix_garmin_schema_drift.py`에서 이미 DB 제약 변경됨, 모델 파일만 동기화 필요
+
+---
+
+### 35. 다운샘플링 시 첫/마지막 샘플 누락
+
+**문제**: 균등 간격 다운샘플링이 마지막 샘플을 포함하지 않아 경계값 손실
+
+```python
+# ❌ 잘못된 패턴 - 마지막 샘플 누락 가능
+step = total_count // downsample
+sample_query = (
+    select(subq)
+    .where((subq.c.row_num - 1) % step == 0)  # 마지막 row가 step 배수가 아니면 누락
+    .limit(downsample)
+)
+
+# ✅ 올바른 패턴 - 첫/마지막 보장
+sample_query = (
+    select(subq)
+    .where(
+        (subq.c.row_num == 1)  # 첫 샘플 항상 포함
+        | (subq.c.row_num == total_count)  # 마지막 샘플 항상 포함
+        | (  # 중간은 균등 분포
+            (subq.c.row_num > 1) & (subq.c.row_num < total_count)
+            & ((subq.c.row_num - 2) % step < 1)
+        )
+    )
+    .limit(downsample)
+)
+```
+
+**적용 위치**: `activities.py:527-586`
+
+---
+
+### 36. HR 필드 이름 불일치 (hr vs heart_rate)
+
+**문제**: FIT 파서에 따라 `hr` 또는 `heart_rate` 필드가 채워지는데 한쪽만 읽음
+
+```python
+# ❌ 잘못된 패턴 - hr 필드만 사용
+result = await db.execute(
+    select(ActivitySample.hr, ActivitySample.timestamp)
+    .where(ActivitySample.hr.isnot(None))
+)
+# heart_rate 필드에만 값이 있으면 빈 결과!
+
+# ✅ 올바른 패턴 - coalesce로 양쪽 확인
+from sqlalchemy.sql.functions import coalesce
+
+hr_value = coalesce(ActivitySample.hr, ActivitySample.heart_rate)
+result = await db.execute(
+    select(hr_value.label("hr"), ActivitySample.timestamp)
+    .where(hr_value.isnot(None))
+)
+```
+
+**적용 위치**: `activities.py:848-859`
+
+**관련 테이블**: `activity_samples` - `hr`, `heart_rate` 두 컬럼 모두 존재
+
+---
+
+### 37. FIT 파일 존재 여부와 has_fit_file 플래그 불일치
+
+**문제**: DB에 `has_fit_file=True`지만 실제 파일이 삭제/이동된 경우 처리 안됨
+
+```python
+# ❌ 잘못된 패턴 - 플래그만 확인
+if not activity.has_fit_file:
+    await self._download_fit_file(activity, garmin_id)
+# 파일 삭제됐어도 has_fit_file=True면 다시 다운로드 안 함
+
+# ✅ 올바른 패턴 - 실제 파일 존재 확인
+need_download = not activity.has_fit_file
+if activity.fit_file_path:
+    if not Path(activity.fit_file_path).exists():
+        logger.info(f"FIT file missing for activity {garmin_id}, re-downloading")
+        need_download = True
+if need_download:
+    await self._download_fit_file(activity, garmin_id)
+```
+
+**적용 위치**: `sync_service.py:352-360`
+
+**시나리오**: 디스크 정리, 백업 복원 후 파일 누락, 스토리지 마이그레이션
+
+---
+
+### 13. Runalyze 데이터 누락 시 Fallback 처리
+
+**문제**: Runalyze API/스크래핑 실패 시 `effective_vo2max`, `marathon_shape`가 None으로 표시됨
+
+```python
+# ❌ 잘못된 패턴 - Runalyze 데이터만 사용
+fitness_status = FitnessStatus(
+    effective_vo2max=(runalyze_calc.get("effective_vo2max") if runalyze_calc else None),
+    marathon_shape=runalyze_calc.get("marathon_shape") if runalyze_calc else None,
+)
+# Runalyze 접속 불가 시 VO2max가 None
+
+# ✅ 올바른 패턴 - 활동 데이터에서 Fallback
+# 1. 먼저 활동에서 최신 VO2max 조회
+activity_vo2max_result = await db.execute(
+    select(Activity.vo2max)
+    .where(Activity.user_id == user_id, Activity.vo2max.isnot(None))
+    .order_by(Activity.start_time.desc())
+    .limit(1)
+)
+activity_vo2max = activity_vo2max_result.scalar_one_or_none()
+
+# 2. Runalyze 우선, 없으면 활동 데이터 사용
+fitness_status = FitnessStatus(
+    effective_vo2max=(
+        (runalyze_calc.get("effective_vo2max") or runalyze_calc.get("vo2max")) if runalyze_calc else None
+    ) or (round(activity_vo2max, 1) if activity_vo2max else None),
+    # marathon_shape는 Runalyze 전용 (fallback 없음)
+    marathon_shape=runalyze_calc.get("marathon_shape") if runalyze_calc else None,
+)
+```
+
+**적용 위치**: `dashboard.py:504-532`
+
+**시나리오**: Runalyze 429 에러, API 토큰 만료, 로그인 실패
+
+---
+
+### 14. Runalyze 스크래핑 시 marathon_shape 누락
+
+**문제**: `_fetch_runalyze_data()`에서 `marathon_shape` 필드를 calculations에 포함하지 않음
+
+```python
+# ❌ 잘못된 패턴 - marathon_shape 누락
+calculations = {
+    "ctl": metrics.ctl,
+    "atl": metrics.atl,
+    "effective_vo2max": metrics.vo2max,
+    # marathon_shape 빠짐!
+}
+
+# ✅ 올바른 패턴 - 모든 필드 포함
+calculations = {
+    "ctl": metrics.ctl,
+    "atl": metrics.atl,
+    "effective_vo2max": metrics.vo2max,
+    "marathon_shape": metrics.marathon_shape,  # 추가!
+    "monotony": metrics.monotony,
+    "training_strain": metrics.training_strain,
+}
+```
+
+**적용 위치**: `dashboard.py:47-59`
+
+---
+
+### 38. 페이지네이션 tie-breaker 누락
+
+**문제**: 정렬 기준 컬럼만으로 ORDER BY 하면 동일 값일 때 페이지 이동 시 중복/누락 발생
+
+```python
+# ❌ 잘못된 패턴 - 단일 컬럼 정렬
+query = query.order_by(Activity.start_time.desc())
+# start_time이 같은 10개 활동이 있으면 page 1,2 간에 중복/누락 발생
+
+# ✅ 올바른 패턴 - tie-breaker 추가
+query = query.order_by(Activity.start_time.desc(), Activity.id.desc())
+# id는 항상 고유하므로 안정적인 순서 보장
+```
+
+**적용 위치**: `activities.py:241-244`, 모든 페이지네이션 쿼리
+
+---
+
+### 39. 목록 쿼리 전체 컬럼 로드
+
+**문제**: 요약 목록에서 전체 Activity 컬럼을 로드하면 불필요한 메모리/네트워크 사용
+
+```python
+# ❌ 잘못된 패턴 - 모든 컬럼 로드
+query = select(Activity).where(Activity.user_id == user_id)
+# 50+ 컬럼 모두 로드 (samples, fit_file_path 등 불필요)
+
+# ✅ 올바른 패턴 - 필요한 컬럼만 로드
+from sqlalchemy.orm import load_only
+
+query = (
+    select(Activity)
+    .where(Activity.user_id == user_id)
+    .options(load_only(
+        Activity.id,
+        Activity.garmin_id,
+        Activity.activity_type,
+        Activity.name,
+        Activity.start_time,
+        Activity.duration_seconds,
+        Activity.distance_meters,
+        Activity.avg_hr,
+        Activity.avg_pace_seconds,
+        Activity.calories,
+    ))
+)
+```
+
+**적용 위치**: `activities.py:218-234`, 목록 조회 쿼리
+
+---
+
+### 40. 날짜 필터링 시 타임존 무시
+
+**문제**: 사용자 타임존 없이 날짜 필터링하면 UTC 기준으로 처리되어 예상과 다른 결과
+
+```python
+# ❌ 잘못된 패턴 - naive datetime 그대로 사용
+if start_date:
+    query = query.where(Activity.start_time >= start_date)
+# 사용자가 "2024-01-15" 입력 시 UTC 00:00 기준이 되어
+# 한국 시간(+9)에서는 1월 14일 15:00 이후 활동만 조회됨
+
+# ✅ 올바른 패턴 - 사용자 타임존 적용
+from zoneinfo import ZoneInfo
+
+user_tz = ZoneInfo(current_user.timezone or "Asia/Seoul")
+
+if start_date:
+    if start_date.tzinfo is None:
+        start_datetime = start_date.replace(tzinfo=user_tz)
+    else:
+        start_datetime = start_date
+    query = query.where(Activity.start_time >= start_datetime)
+```
+
+**적용 위치**: `activities.py:220-241`, 날짜 필터 사용하는 모든 엔드포인트
+
+---
+
+### 41. activity_type 기본값 "running"으로 강제
+
+**문제**: Garmin에서 타입 정보가 없을 때 "running"으로 강제하면 데이터 왜곡
+
+```python
+# ❌ 잘못된 패턴 - 기본값 running
+activity_type=data.get("activityType", {}).get("typeKey", "running")
+# 수영, 사이클, 걷기도 "running"으로 저장됨
+
+# ✅ 올바른 패턴 - 기본값 unknown
+activity_type=data.get("activityType", {}).get("typeKey", "unknown")
+# 타입 정보 없으면 "unknown"으로 명시적 표시
+# 프론트엔드에서 별도 아이콘/필터링 가능
+```
+
+**적용 위치**: `sync_service.py:957`
+
+---
+
+### 42. recent_activities로 마일리지 차트 집계 시 과소/누락
+
+**문제**: Dashboard의 `recent_activities`는 최근 5개만 반환되어 8주/6개월 집계에 부적합
+
+```typescript
+// ❌ 잘못된 패턴 - recent_activities만 사용
+const mileageData = useMemo(() => {
+  const activities = dashboard?.recent_activities;  // 최대 5개!
+  if (!activities) return [];
+
+  // 8주 데이터 생성 시도 → 대부분 0으로 표시됨
+  for (let i = 7; i >= 0; i--) {
+    const weekDistance = activities
+      .filter(a => /* 해당 주 필터 */)
+      .reduce((sum, a) => sum + a.distance_km, 0);  // 대부분 0
+  }
+}, [dashboard?.recent_activities]);
+
+// ✅ 올바른 패턴 - Trends API 사용
+const { data: trends } = useTrends(8);  // 8주 데이터
+
+const mileageData = useMemo(() => {
+  if (!trends?.weekly_distance) return [];
+
+  return trends.weekly_distance.map((d, index) => ({
+    label: /* 라벨 */,
+    distance: d.value,  // 실제 주간 집계 데이터
+    isCurrent: index === trends.weekly_distance.length - 1,
+  }));
+}, [trends?.weekly_distance]);
+```
+
+**적용 위치**: `Dashboard.tsx:13-58`
+
+---
+
+### 43. Model과 Migration 간 스키마 드리프트
+
+**문제**: SQLAlchemy 모델과 실제 DB 스키마(migration)가 불일치하면 런타임 오류 발생
+
+```python
+# ❌ 잘못된 패턴 - Model이 migration과 불일치
+class AnalyticsSummary(BaseModel):
+    period_type: Mapped[str] = mapped_column(String(10))  # Migration은 String(20)
+    # period_end 컬럼 누락 (Migration에는 존재)
+    # total_calories 컬럼 누락
+    # summary_data JSONB 컬럼 누락
+    elevation_gain: Mapped[float] = mapped_column(Float)  # Migration에 없음!
+
+# ✅ 올바른 패턴 - Model과 Migration 동기화
+class AnalyticsSummary(BaseModel):
+    period_type: Mapped[str] = mapped_column(String(20))  # Migration과 일치
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)  # Migration에 있는 컬럼 추가
+    total_calories: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    summary_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # elevation_gain은 summary_data JSONB에 저장
+```
+
+**확인 방법**: `alembic/versions/*.py`와 `models/*.py` 비교
+**적용 위치**: `analytics.py`, 새 모델 생성 시 항상 migration 확인
+
+---
+
+### 44. UTC vs 사용자 타임존 주/월 경계 계산
+
+**문제**: 주간/월간 summary 계산 시 UTC 기준 경계 사용하면 사용자 시간대와 불일치
+
+```python
+# ❌ 잘못된 패턴 - UTC 기준 "오늘"
+target_date = target_date or date.today()  # UTC 기준!
+# 한국(+9)에서 오전 8시 = UTC 전날 23시 → 잘못된 주/월 배정
+
+# ✅ 올바른 패턴 - 사용자 타임존 기준
+from zoneinfo import ZoneInfo
+from datetime import datetime
+
+user_tz = ZoneInfo(self.user.timezone or "Asia/Seoul")
+if target_date is None:
+    now_local = datetime.now(user_tz)
+    target_date = now_local.date()
+
+# 주/월 경계도 사용자 타임존 기준으로 계산
+start, end = self._get_period_boundaries(period, target_date)
+```
+
+**적용 위치**: `dashboard.py:get_summary()`, `get_trends()`, `compare_periods()`
+
+---
+
+### 45. CTL/ATL/TSB 트렌드 계산 O(weeks × history)
+
+**문제**: 12주 트렌드 조회 시 매주 전체 히스토리 재계산 → 성능 저하
+
+```python
+# ❌ 잘못된 패턴 - 매주 전체 재계산
+while current <= end_date:
+    # 매번 전체 히스토리 로드 + EMA 계산 (O(n) per week)
+    metrics = self._calculate_fitness_metrics(current)
+    result.append({"date": current, **metrics})
+    current += timedelta(weeks=1)
+# 총 복잡도: O(weeks × history_days) = O(12 × 1000) = O(12,000)
+
+# ✅ 올바른 패턴 - 한 번의 순회로 모든 샘플 수집
+def _batch_calculate_fitness_metrics(self, sample_dates, max_date):
+    # 전체 히스토리 한 번만 로드
+    activities = self._get_activities_in_range(earliest, max_date)
+    daily_loads = build_daily_loads(activities)
+
+    sample_set = set(sample_dates)
+    results = {}
+
+    # 한 번 순회하며 필요한 날짜에서 샘플링
+    current = earliest_load
+    while current <= latest_sample:
+        ctl = ctl + decay_42 * (load - ctl)
+        atl = atl + decay_7 * (load - atl)
+
+        if current in sample_set:
+            results[current] = {"ctl": ctl, "atl": atl, "tsb": ctl - atl}
+        current += timedelta(days=1)
+
+    return results
+# 총 복잡도: O(history_days) = O(1,000) — 12배 개선!
+```
+
+**적용 위치**: `dashboard.py:_get_fitness_trend()`, `_batch_calculate_fitness_metrics()`
+
+---
+
+### 43. CSS 유틸리티 클래스 누락
+
+**문제**: 컴포넌트에서 사용하는 `bg-info`, `bg-muted` 등이 CSS에 정의되지 않음
+
+```css
+/* ❌ 잘못된 패턴 - 정의 없이 사용 */
+.activity-indicator {
+  @apply bg-info;  /* 에러 또는 무시됨 */
+}
+
+/* ✅ 올바른 패턴 - index.css에 유틸리티 클래스 추가 */
+.bg-info { background: var(--color-info, #3b82f6); }
+.bg-muted { background: var(--color-text-muted); }
+```
+
+**적용 위치**: `index.css:282-283`, `CompactActivities.tsx:23-32`
+
+---
+
+### 46. 앱 레벨 중복 체크 vs DB 유니크 제약
+
+**문제**: 앱 레벨에서 SELECT 후 INSERT하면 race condition으로 중복 발생 가능
+
+```python
+# ❌ 잘못된 패턴 - race condition 취약
+existing = await db.execute(
+    select(Schedule).where(
+        Schedule.workout_id == workout_id,
+        Schedule.scheduled_date == date,
+    )
+)
+if existing.scalar_one_or_none():
+    raise HTTPException(409, "Already scheduled")
+
+schedule = Schedule(workout_id=workout_id, scheduled_date=date)
+db.add(schedule)
+await db.commit()
+# 두 요청이 동시에 SELECT → 둘 다 없음 → 둘 다 INSERT → 중복!
+
+# ✅ 올바른 패턴 - DB 유니크 제약 + IntegrityError 처리
+class Schedule(BaseModel):
+    __table_args__ = (
+        UniqueConstraint("workout_id", "scheduled_date", name="uq_schedule"),
+    )
+
+from sqlalchemy.exc import IntegrityError
+
+schedule = Schedule(workout_id=workout_id, scheduled_date=date)
+db.add(schedule)
+try:
+    await db.commit()
+except IntegrityError:
+    await db.rollback()
+    raise HTTPException(409, "Already scheduled")
+```
+
+**적용 위치**: `workouts.py:schedule_workout()`, 중복 방지가 필요한 모든 엔드포인트
+
+---
+
+### 47. 페이지네이션 정렬 시 tie-breaker 누락
+
+**문제**: 정렬 기준 컬럼 값이 동일할 때 순서가 불안정하여 페이지 이동 시 중복/누락 발생
+
+```python
+# ❌ 잘못된 패턴 - 단일 컬럼 정렬
+query = query.order_by(Schedule.scheduled_date.asc())
+# 같은 날짜에 3개 스케줄이 있으면 page 1,2 이동 시 순서 달라짐
+
+# ✅ 올바른 패턴 - tie-breaker 추가
+query = query.order_by(Schedule.scheduled_date.asc(), Schedule.id.asc())
+# id는 항상 고유하므로 안정적인 순서 보장
+```
+
+**적용 위치**: `workouts.py:list_schedules()`, 모든 페이지네이션 쿼리
+
+---
+
+### 48. Status 값 문자열 하드코딩 vs Enum
+
+**문제**: status 값이 여러 곳에 문자열로 흩어지면 오타 및 일관성 문제 발생
+
+```python
+# ❌ 잘못된 패턴 - 문자열 하드코딩
+schedule.status = "scheduled"  # 파일 A
+schedule.status = "scheudled"  # 파일 B - 오타!
+if status == "Scheduled":  # 대소문자 불일치
+
+# ✅ 올바른 패턴 - Enum 정의 및 사용
+class WorkoutScheduleStatus(str, Enum):
+    SCHEDULED = "scheduled"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+# Model에서
+status: Mapped[str] = mapped_column(
+    String(20),
+    default=WorkoutScheduleStatus.SCHEDULED.value,
+)
+
+# Endpoint에서 - FastAPI가 자동 검증
+status_filter: WorkoutScheduleStatus | None = None
+```
+
+**적용 위치**: `workout.py`, `workouts.py` - status 사용하는 모든 곳
+
+---
+
+### 49. SQLAlchemy 모델과 Migration 스키마 드리프트
+
+**문제**: Migration에는 컬럼이 있지만 Model에 없으면 ORM에서 해당 필드 접근 불가
+
+```python
+# Migration (001_initial_schema.py)
+sa.Column("completed_activity_id", sa.Integer(), nullable=True),
+sa.ForeignKeyConstraint(["completed_activity_id"], ["activities.id"]),
+
+# ❌ 잘못된 패턴 - Model에 컬럼 누락
+class WorkoutSchedule(BaseModel):
+    workout_id: Mapped[int]
+    scheduled_date: Mapped[date]
+    status: Mapped[str]
+    # completed_activity_id 없음! DB에는 있는데...
+
+# ✅ 올바른 패턴 - Model과 Migration 동기화
+class WorkoutSchedule(BaseModel):
+    workout_id: Mapped[int]
+    scheduled_date: Mapped[date]
+    status: Mapped[str]
+    completed_activity_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("activities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+```
+
+**확인 방법**: `alembic/versions/*.py`의 CREATE TABLE과 `models/*.py` 비교
+**적용 위치**: `workout.py`, 새 모델 작성 시 항상 migration 확인
+
+---
+
+### 44. Pydantic 스키마와 반환 타입 불일치
+
+**문제**: API 스키마가 `int`를 기대하는데 서비스에서 `str`을 반환
+
+```python
+# Pydantic Schema
+class TrainingPaces(BaseModel):
+    vdot: float
+    easy_min: int  # seconds per km (정수)
+    easy_max: int
+
+# ❌ 잘못된 패턴 - 문자열 반환
+def calculate_training_paces(self):
+    easy_min = f"{pace // 60}:{pace % 60:02d}/km"  # "5:30/km" 문자열!
+    return {"easy_min": easy_min}  # ValidationError!
+
+# ✅ 올바른 패턴 - 스키마와 일치하는 타입 반환
+def calculate_training_paces(self):
+    easy_min = int(round(pace_seconds))  # 330 (정수, 초 단위)
+    return {"easy_min": easy_min}  # OK
+```
+
+**적용 위치**: `services/dashboard.py`, `endpoints/dashboard.py`
+
+---
+
+### 50. SQLAlchemy 모델과 Migration 컬럼명 불일치
+
+**문제**: Migration에서 정의한 컬럼명과 Model에서 사용하는 필드명이 다르면 DB 접근 시 오류 발생
+
+```python
+# Migration (001_initial_schema.py)
+sa.Column("token_count", sa.Integer(), nullable=True),
+
+# ❌ 잘못된 패턴 - 컬럼명 불일치
+class AIMessage(BaseModel):
+    tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # DB에는 token_count가 있는데 tokens로 접근하려고 함!
+
+# ✅ 올바른 패턴 - DB 컬럼명과 일치
+class AIMessage(BaseModel):
+    token_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # 또는 명시적 컬럼명 지정:
+    tokens: Mapped[Optional[int]] = mapped_column("token_count", Integer, nullable=True)
+```
+
+**적용 위치**: `models/ai.py` - AIMessage.token_count, AIConversation.context_type/context_data
+
+---
+
+### 51. 외부 API JSON 파싱 예외 미처리
+
+**문제**: 외부 서비스(AI 등)에서 반환한 JSON이 스키마와 맞지 않을 때 500 에러 발생
+
+```python
+# ❌ 잘못된 패턴 - ValidationError 미처리
+plan_data = ai_response.get("plan")
+plan_request = PlanImportRequest.model_validate(plan_data)  # ValidationError → 500!
+
+# ✅ 올바른 패턴 - 명시적 예외 처리
+from pydantic import ValidationError as PydanticValidationError
+
+try:
+    plan_request = PlanImportRequest.model_validate(plan_data)
+except PydanticValidationError as e:
+    logger.warning(f"AI generated invalid plan JSON: {e}")
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,  # 외부 서비스 오류
+        detail=f"Invalid format: {e.error_count()} validation errors",
+    )
+```
+
+**적용 위치**: `endpoints/ai.py` - AI plan 생성/import 로직
+
+---
+
+### 52. 기간 계산 시 inclusive/exclusive 혼동
+
+**문제**: end_date를 inclusive로 볼지 exclusive로 볼지 일관성 없으면 1일 오차 발생
+
+```python
+# ❌ 잘못된 패턴 - weeks * 7일 그대로 더함 (exclusive)
+plan_duration = timedelta(weeks=4)  # 28일
+end_date = start_date + plan_duration  # 1일 길어짐!
+# 1주차: 1-7일, 2주차: 8-14일, 3주차: 15-21일, 4주차: 22-28일
+# end_date는 29일째가 됨 (exclusive)
+
+# ✅ 올바른 패턴 - inclusive end_date 계산
+plan_duration_days = num_weeks * 7 - 1  # 27일 (마지막 날 포함)
+end_date = start_date + timedelta(days=plan_duration_days)
+# 4주차 마지막 날(28일째)이 end_date
+```
+
+**적용 위치**: `endpoints/ai.py:import_plan()` - 플랜 기간 계산
+
+---
+
+### 53. 날짜 검증 누락
+
+**문제**: goal_date가 start_date보다 이른 경우 논리적 오류 발생하지만 검증 없이 통과
+
+```python
+# ❌ 잘못된 패턴 - 검증 없이 날짜 사용
+plan_start_date = start_date_parsed
+plan_end_date = goal_date_parsed or (plan_start_date + duration)
+# goal_date가 start_date보다 이르면 음수 기간의 플랜 생성!
+
+# ✅ 올바른 패턴 - 명시적 검증
+if goal_date_parsed and goal_date_parsed < plan_start_date:
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"goal_date ({goal_date_parsed}) cannot be before start_date ({plan_start_date})",
+    )
+```
+
+**적용 위치**: `endpoints/ai.py:import_plan()`, 날짜 범위 검증이 필요한 모든 곳
+
+---
+
+### 54. Clipboard API await 누락
+
+**문제**: `navigator.clipboard.writeText()`는 Promise를 반환하지만 await 없이 호출하면 에러 감지 불가
+
+```typescript
+// ❌ 잘못된 패턴 - await 없이 호출
+navigator.clipboard.writeText(text);  // Promise 반환, 에러 무시됨
+alert('복사 완료!');  // 실제 실패해도 성공 메시지 표시
+
+// ✅ 올바른 패턴 - await + 에러 처리
+try {
+  await navigator.clipboard.writeText(text);
+  alert('복사 완료!');
+} catch (error) {
+  console.error('Clipboard write failed:', error);
+  alert('클립보드 복사에 실패했습니다.');
+}
+```
+
+**적용 위치**: `pages/Coach.tsx:handleExportSummary()`, 모든 clipboard 작업
+
+---
+
+### 55. API 응답 객체 vs 필드 추출 혼동
+
+**문제**: API가 객체를 반환하는데 string으로 기대하거나, 필요한 필드만 추출하지 않고 전체 객체 사용
+
+```typescript
+// ❌ 잘못된 패턴 - 응답 타입 불일치
+const summary = await exportSummary.mutateAsync('markdown');
+// summary는 { format, content, generated_at } 객체인데
+navigator.clipboard.writeText(typeof summary === 'string' ? summary : JSON.stringify(summary));
+// JSON.stringify된 전체 객체가 복사됨!
+
+// ✅ 올바른 패턴 - 필요한 필드만 추출
+const response = await exportSummary.mutateAsync('markdown');
+const content = response.content;  // content 필드만 추출
+await navigator.clipboard.writeText(content);
+```
+
+**적용 위치**: `pages/Coach.tsx:handleExportSummary()`, 모든 API 응답 처리
+
+---
+
+### 56. None/null 값의 문자열 연결 (f-string)
+
+**문제**: Python f-string에서 None 값이 "None" 문자열로 변환됨
+
+```python
+# ❌ 잘못된 패턴 - None 체크 없이 f-string
+avg_hr = None  # 데이터 없음
+markdown = f"- 평균 심박수: {avg_hr}bpm"  # "- 평균 심박수: Nonebpm" 출력!
+
+# ✅ 올바른 패턴 - 조건부 문자열
+avg_hr = data.get('avg_hr')
+line = f"- 평균 심박수: {avg_hr}bpm" if avg_hr else "- 평균 심박수: N/A"
+```
+
+**적용 위치**: `endpoints/ai.py:_format_markdown_summary()`, 모든 선택적 필드 포맷팅
+
+---
+
+*마지막 업데이트: 2026-01-06*
