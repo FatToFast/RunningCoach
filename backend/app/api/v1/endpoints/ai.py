@@ -330,8 +330,8 @@ async def get_conversation(
     return ConversationDetailResponse(
         id=conversation.id,
         title=conversation.title,
-        language=conversation.language,
-        model=conversation.model,
+        context_type=conversation.context_type,
+        context_data=conversation.context_data,
         messages=[MessageResponse.model_validate(m) for m in messages],
         total_messages=total_messages,
         has_more=(offset + len(messages)) < total_messages,

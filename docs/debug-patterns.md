@@ -2261,4 +2261,42 @@ async def my_endpoint():
 
 ---
 
+### 58. SQLAlchemy 모델 필드 변경 후 응답 스키마 미동기화
+
+**문제**: SQLAlchemy 모델 컬럼명을 변경했지만, API 응답 생성 코드에서 여전히 이전 컬럼명을 참조
+
+```python
+# SQLAlchemy 모델이 변경됨:
+# 이전: language, model
+# 현재: context_type, context_data
+
+# ❌ 잘못된 패턴 - 모델은 변경했지만 응답 코드는 그대로
+return ConversationDetailResponse(
+    id=conversation.id,
+    title=conversation.title,
+    language=conversation.language,  # AttributeError!
+    model=conversation.model,        # AttributeError!
+    ...
+)
+
+# ✅ 올바른 패턴 - 응답 스키마와 모델 필드 동기화
+return ConversationDetailResponse(
+    id=conversation.id,
+    title=conversation.title,
+    context_type=conversation.context_type,
+    context_data=conversation.context_data,
+    ...
+)
+```
+
+**체크리스트**: 모델 필드 변경 시
+1. SQLAlchemy 모델 수정
+2. Pydantic 응답 스키마 수정
+3. **API 엔드포인트 응답 생성 코드 수정** (이 부분 누락 가능성 높음)
+4. 프론트엔드 타입 정의 수정
+
+**적용 위치**: `endpoints/ai.py:get_conversation()`, 모든 모델 필드 변경 작업
+
+---
+
 *마지막 업데이트: 2026-01-06*
