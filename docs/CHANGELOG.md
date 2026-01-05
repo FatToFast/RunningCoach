@@ -61,9 +61,38 @@
 - **새 마이그레이션**: `014_add_strava_upload_jobs.py`
 - **새 서비스**: `backend/app/services/strava_upload.py`
 
+#### 8. AI 코치 대회 목표 참조 강화
+- **변경**: 시스템 프롬프트에 `primary_race` 필드 활용 지침 추가
+- **추가 지침**:
+  - 대회 날짜(`race_date`) 기준 역산 훈련 계획
+  - 목표 기록(`goal_time_seconds`) 기반 페이스 전략
+  - 남은 일수(`days_until`) 기반 주기화(Periodization) 권장
+  - 대회까지 남은 일수 언급으로 동기부여
+- **파일**: `backend/app/core/ai_constants.py`
+
+#### 9. AI 엔드포인트 버그 수정
+- **UnboundLocalError 수정**: `status` 변수가 FastAPI의 `status` 모듈을 shadowing
+  - `status = payload.get("status")` → `response_status = payload.get("status")`
+  - 영향 함수: `chat()`, `quick_chat()`
+- **AttributeError 수정**: `AIConversation` 응답 필드명 불일치
+  - `language`, `model` → `context_type`, `context_data`
+- **Gemini 모델 변경**: `gemini-2.5-flash-preview-05-20` → `gemini-2.5-flash-lite`
+- **파일**:
+  - `backend/app/api/v1/endpoints/ai.py`
+  - `backend/app/core/config.py`
+  - `backend/.env`
+- **관련 패턴**: [debug-patterns.md #57-58](debug-patterns.md#57-python-변수명이-import된-모듈을-shadowing)
+
+#### 10. 워크아웃 페이지 추가
+- **새 페이지**: `frontend/src/pages/Workouts.tsx`
+- **새 API**: `frontend/src/api/workouts.ts`
+- **새 Hooks**: `frontend/src/hooks/useWorkouts.ts`
+- **타입 추가**: `WorkoutStep`, `Workout`, `WorkoutSchedule` 등
+- **라우팅**: `/workouts` 경로 추가
+
 ### 문서화
 - `docs/api-reference.md`: `/ai/export` 엔드포인트 문서 추가
-- `docs/debug-patterns.md`: 7개 새 패턴 추가 (#50-56)
+- `docs/debug-patterns.md`: 9개 새 패턴 추가 (#50-58)
   - #50: SQLAlchemy 모델/마이그레이션 컬럼명 불일치
   - #51: 외부 API JSON 파싱 예외 미처리
   - #52: 기간 계산 inclusive/exclusive 혼동
@@ -71,6 +100,8 @@
   - #54: Clipboard API await 누락
   - #55: API 응답 객체 vs 필드 추출 혼동
   - #56: None/null 값의 f-string 연결
+  - #57: Python 변수명이 import된 모듈을 shadowing
+  - #58: SQLAlchemy 모델 필드 변경 후 응답 코드 미동기화
 
 ---
 

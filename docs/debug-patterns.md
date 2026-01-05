@@ -2299,4 +2299,82 @@ return ConversationDetailResponse(
 
 ---
 
+## Backend - Data Parsing
+
+### 23. Garmin RepeatGroupDTO 중첩 스텝 미파싱
+
+**문제**: Garmin 워크아웃에서 인터벌 구간은 `RepeatGroupDTO` 내부에 중첩된 `workoutSteps` 배열로 저장됨. 단순 반복문은 이 중첩 구조를 파싱하지 못해 페이스 타겟 정보가 누락됨.
+
+```python
+# ❌ 잘못된 패턴 - 최상위 스텝만 파싱
+def _parse_garmin_workout_steps(workout_data: dict) -> list[dict]:
+    steps = []
+    for segment in workout_data.get("workoutSegments", []):
+        for step in segment.get("workoutSteps", []):
+            # RepeatGroupDTO 내부 스텝 누락!
+            parsed_step = _parse_single_step(step)
+            steps.append(parsed_step)
+    return steps
+
+# ✅ 올바른 패턴 - RepeatGroupDTO 중첩 처리
+def _parse_garmin_workout_steps(workout_data: dict) -> list[dict]:
+    steps = []
+    for segment in workout_data.get("workoutSegments", []):
+        for step in segment.get("workoutSteps", []):
+            step_type = step.get("type", "")
+
+            if step_type == "RepeatGroupDTO":
+                repeat_count = step.get("numberOfIterations", 1)
+                nested_steps = step.get("workoutSteps", [])
+
+                # 반복 마커 추가
+                steps.append({
+                    "type": "main",
+                    "description": f"🔄 {repeat_count}회 반복",
+                    "is_repeat_marker": True,
+                    "repeat_count": repeat_count,
+                })
+
+                # 중첩 스텝 파싱
+                for nested_step in nested_steps:
+                    parsed = _parse_single_step(nested_step)
+                    if parsed:
+                        steps.append(parsed)
+            else:
+                parsed = _parse_single_step(step)
+                if parsed:
+                    steps.append(parsed)
+    return steps
+```
+
+**Garmin 데이터 구조 예시**:
+```json
+{
+  "workoutSegments": [{
+    "workoutSteps": [
+      { "type": "ExecutableStepDTO", "stepType": {"stepTypeKey": "warmup"} },
+      {
+        "type": "RepeatGroupDTO",
+        "numberOfIterations": 5,
+        "workoutSteps": [
+          {
+            "stepType": {"stepTypeKey": "interval"},
+            "targetType": {"workoutTargetTypeKey": "pace.zone"},
+            "targetValueOne": 3.5714286,  // m/s → 4:40/km
+            "targetValueTwo": 3.508772
+          }
+        ]
+      },
+      { "type": "ExecutableStepDTO", "stepType": {"stepTypeKey": "cooldown"} }
+    ]
+  }]
+}
+```
+
+**페이스 변환**: `1000 / speed_mps / 60` = 분:초/km
+
+**적용 위치**: `endpoints/workouts.py:_parse_garmin_workout_steps()`
+
+---
+
 *마지막 업데이트: 2026-01-06*
