@@ -2213,4 +2213,52 @@ line = f"- 평균 심박수: {avg_hr}bpm" if avg_hr else "- 평균 심박수: N/
 
 ---
 
+### 57. Python 임포트 모듈명과 지역 변수명 충돌 (Variable Shadowing)
+
+**문제**: `from fastapi import status` 후 함수 내에서 `status = ...`로 지역 변수 선언 시, 임포트한 모듈이 가려져서 `UnboundLocalError` 발생
+
+```python
+from fastapi import status, HTTPException
+
+async def my_endpoint():
+    try:
+        # ... some code
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,  # ← 에러!
+            detail="Error"
+        )
+
+    # ❌ 잘못된 패턴 - 임포트된 모듈명과 동일한 변수명
+    status = payload.get("status")  # 이 할당이 위의 status를 가림
+    if status == "plan":
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,  # UnboundLocalError!
+            detail="Error"
+        )
+
+# ✅ 올바른 패턴 - 다른 변수명 사용
+async def my_endpoint():
+    try:
+        # ...
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,  # 정상 작동
+            detail="Error"
+        )
+
+    response_status = payload.get("status")  # 다른 이름 사용
+    if response_status == "plan":
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,  # 정상 작동
+            detail="Error"
+        )
+```
+
+**원인**: Python은 함수 내에서 변수가 할당되면 해당 변수를 지역 변수로 취급합니다 (함수 전체에 적용). 따라서 `status = ...`가 함수 끝에 있어도, 함수 시작 부분에서 `status.HTTP_503`을 참조하면 "아직 할당되지 않은 지역 변수"로 인식되어 `UnboundLocalError`가 발생합니다.
+
+**적용 위치**: `endpoints/ai.py:quick_chat()`, `endpoints/ai.py:conversation_chat()`, 모든 FastAPI 엔드포인트
+
+---
+
 *마지막 업데이트: 2026-01-06*

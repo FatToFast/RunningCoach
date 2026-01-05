@@ -449,10 +449,10 @@ async def chat(
 
     if request.mode == "plan":
         payload = ai_response.get("payload") or {}
-        status = payload.get("status")
+        response_status = payload.get("status")
         assistant_content = payload.get("assistant_message") or "플랜 생성을 계속 진행합니다."
 
-        if status == "plan":
+        if response_status == "plan":
             plan_data = payload.get("plan")
             if not isinstance(plan_data, dict):
                 raise HTTPException(
@@ -484,7 +484,7 @@ async def chat(
                 if save_mode == "active":
                     await activate_plan(plan_id, current_user, db)
                     plan_status = "active"
-        elif status == "need_info":
+        elif response_status == "need_info":
             missing_fields = payload.get("missing_fields") or []
         else:
             raise HTTPException(
@@ -599,10 +599,10 @@ async def quick_chat(
 
     if request.mode == "plan":
         payload = ai_response.get("payload") or {}
-        status = payload.get("status")
+        response_status = payload.get("status")
         assistant_content = payload.get("assistant_message") or "플랜 생성을 계속 진행합니다."
 
-        if status == "plan":
+        if response_status == "plan":
             plan_data = payload.get("plan")
             if not isinstance(plan_data, dict):
                 await db.rollback()
@@ -636,7 +636,7 @@ async def quick_chat(
                 if save_mode == "active":
                     await activate_plan(plan_id, current_user, db)
                     plan_status = "active"
-        elif status == "need_info":
+        elif response_status == "need_info":
             missing_fields = payload.get("missing_fields") or []
         else:
             await db.rollback()
@@ -696,7 +696,7 @@ async def _get_ai_response(
     context: dict[str, Any] | None,
     db: AsyncSession,
 ) -> dict[str, Any]:
-    """Get AI response using OpenAI API.
+    """Get AI response using Google Gemini or OpenAI API.
 
     Args:
         conversation: Current conversation.
@@ -707,13 +707,9 @@ async def _get_ai_response(
     Returns:
         Dict with content and token count.
     """
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
     metrics = get_metrics_backend()
 
     # Build message history (get most recent N messages, ordered chronologically)
-    # Note: user_message is not yet committed, so we won't get duplicates from DB
     history_limit = settings.ai_max_history_messages
     msg_result = await db.execute(
         select(AIMessage)
@@ -721,32 +717,114 @@ async def _get_ai_response(
         .order_by(AIMessage.created_at.desc())
         .limit(history_limit)
     )
-    # Reverse to get chronological order (oldest first)
     history_raw = list(reversed(msg_result.scalars().all()))
 
     # Deduplicate consecutive messages with same role and content
-    # (can happen due to retry logic or frontend bugs)
     history: list = []
     for msg in history_raw:
         if history and history[-1].role == msg.role and history[-1].content == msg.content:
-            continue  # Skip duplicate
+            continue
         history.append(msg)
 
-    messages = [{"role": "system", "content": RUNNING_COACH_SYSTEM_PROMPT}]
+    # Use Google Gemini or OpenAI based on settings
+    if settings.ai_provider == "google" and settings.google_ai_api_key:
+        return await _get_gemini_response(
+            history=history,
+            user_message=user_message,
+            context=context,
+            system_prompt=RUNNING_COACH_SYSTEM_PROMPT,
+            metrics=metrics,
+        )
+    else:
+        return await _get_openai_response(
+            history=history,
+            user_message=user_message,
+            context=context,
+            system_prompt=RUNNING_COACH_SYSTEM_PROMPT,
+            metrics=metrics,
+        )
 
-    # Add context if provided
+
+async def _get_gemini_response(
+    history: list,
+    user_message: str,
+    context: dict[str, Any] | None,
+    system_prompt: str,
+    metrics,
+) -> dict[str, Any]:
+    """Get AI response using Google Gemini API."""
+    import google.generativeai as genai
+
+    genai.configure(api_key=settings.google_ai_api_key)
+    model = genai.GenerativeModel(
+        model_name=settings.google_ai_model,
+        system_instruction=system_prompt,
+    )
+
+    # Build chat history for Gemini
+    gemini_history = []
+    for msg in history:
+        role = "user" if msg.role == "user" else "model"
+        gemini_history.append({"role": role, "parts": [msg.content]})
+
+    # Add context to user message if provided
+    full_message = user_message
+    if context:
+        full_message = f"[사용자 컨텍스트: {context}]\n\n{user_message}"
+
+    start_time = time.perf_counter()
+    status_code = 500
+    try:
+        chat = model.start_chat(history=gemini_history)
+        response = chat.send_message(full_message)
+        status_code = 200
+    except Exception:
+        status_code = 500
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        metrics.observe_external_api("google", "gemini.chat", status_code, duration_ms)
+        logger.info(
+            "Google Gemini API chat status=%s duration_ms=%.2f model=%s",
+            status_code,
+            duration_ms,
+            settings.google_ai_model,
+        )
+
+    # Get token count from usage metadata if available
+    tokens = None
+    if hasattr(response, "usage_metadata") and response.usage_metadata:
+        tokens = response.usage_metadata.total_token_count
+
+    return {
+        "content": response.text,
+        "tokens": tokens,
+    }
+
+
+async def _get_openai_response(
+    history: list,
+    user_message: str,
+    context: dict[str, Any] | None,
+    system_prompt: str,
+    metrics,
+) -> dict[str, Any]:
+    """Get AI response using OpenAI API (fallback)."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+    messages = [{"role": "system", "content": system_prompt}]
+
     if context:
         context_str = f"[사용자 컨텍스트: {context}]"
         messages.append({"role": "system", "content": context_str})
 
-    # Add conversation history
     for msg in history:
         messages.append({"role": msg.role, "content": msg.content})
 
-    # Add current user message
     messages.append({"role": "user", "content": user_message})
 
-    # Call OpenAI API
     start_time = time.perf_counter()
     status_code = 500
     try:
@@ -781,10 +859,7 @@ async def _get_ai_plan_response(
     context: dict[str, Any] | None,
     db: AsyncSession,
 ) -> dict[str, Any]:
-    """Get AI plan response in JSON format."""
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    """Get AI plan response in JSON format using Google Gemini or OpenAI."""
     metrics = get_metrics_backend()
 
     history_limit = settings.ai_max_history_messages
@@ -802,40 +877,25 @@ async def _get_ai_plan_response(
             continue
         history.append(msg)
 
-    messages = [{"role": "system", "content": RUNNING_COACH_PLAN_PROMPT}]
-
-    if context:
-        context_str = f"[사용자 컨텍스트: {context}]"
-        messages.append({"role": "system", "content": context_str})
-
-    for msg in history:
-        messages.append({"role": msg.role, "content": msg.content})
-
-    messages.append({"role": "user", "content": user_message})
-
-    start_time = time.perf_counter()
-    status_code = 500
-    try:
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=messages,
-            max_tokens=AI_MAX_TOKENS,
-            temperature=AI_TEMPERATURE,
+    # Use Google Gemini or OpenAI based on settings
+    if settings.ai_provider == "google" and settings.google_ai_api_key:
+        response_data = await _get_gemini_response(
+            history=history,
+            user_message=user_message,
+            context=context,
+            system_prompt=RUNNING_COACH_PLAN_PROMPT,
+            metrics=metrics,
         )
-        status_code = 200
-    except Exception:
-        status_code = 500
-        raise
-    finally:
-        duration_ms = (time.perf_counter() - start_time) * 1000
-        metrics.observe_external_api("openai", "chat.completions", status_code, duration_ms)
-        logger.info(
-            "OpenAI API chat.completions status=%s duration_ms=%.2f",
-            status_code,
-            duration_ms,
+    else:
+        response_data = await _get_openai_response(
+            history=history,
+            user_message=user_message,
+            context=context,
+            system_prompt=RUNNING_COACH_PLAN_PROMPT,
+            metrics=metrics,
         )
 
-    content = response.choices[0].message.content or ""
+    content = response_data["content"] or ""
     try:
         payload = _extract_json_payload(content)
     except (ValueError, json.JSONDecodeError) as exc:
@@ -847,7 +907,7 @@ async def _get_ai_plan_response(
     return {
         "content": content,
         "payload": payload,
-        "tokens": response.usage.total_tokens if response.usage else None,
+        "tokens": response_data.get("tokens"),
     }
 
 
