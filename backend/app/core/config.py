@@ -81,7 +81,14 @@ class Settings(BaseSettings):
         backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         return os.path.join(backend_dir, self.fit_storage_path)
 
-    # OpenAI
+    # AI Provider (google or openai)
+    ai_provider: str = "google"  # "google" or "openai"
+
+    # Google AI (Gemini)
+    google_ai_api_key: Optional[str] = None
+    google_ai_model: str = "gemini-2.5-flash-lite"
+
+    # OpenAI (legacy, fallback)
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
     openai_budget_usd: Optional[float] = None
