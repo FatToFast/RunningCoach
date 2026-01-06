@@ -690,6 +690,40 @@ def _extract_json_payload(content: str) -> dict[str, Any]:
     return json.loads(content[start : end + 1])
 
 
+async def _get_rag_context(query: str) -> str:
+    """Search knowledge base and return formatted context.
+
+    Args:
+        query: User's question/message.
+
+    Returns:
+        Formatted context string, or empty string if no results.
+    """
+    try:
+        from app.knowledge.retriever import get_knowledge_retriever
+
+        retriever = get_knowledge_retriever()
+        if retriever is None or not retriever.is_initialized:
+            return ""
+
+        results = await retriever.search(
+            query=query,
+            top_k=settings.rag_top_k,
+            min_score=settings.rag_min_score,
+        )
+
+        if not results:
+            return ""
+
+        return retriever.format_context(
+            results,
+            max_length=settings.rag_max_context_length,
+        )
+    except Exception as e:
+        logger.warning(f"RAG search failed: {e}")
+        return ""
+
+
 async def _get_ai_response(
     conversation: AIConversation,
     user_message: str,
@@ -726,13 +760,20 @@ async def _get_ai_response(
             continue
         history.append(msg)
 
+    # RAG: Search knowledge base for relevant context
+    system_prompt = RUNNING_COACH_SYSTEM_PROMPT
+    if settings.rag_enabled:
+        rag_context = await _get_rag_context(user_message)
+        if rag_context:
+            system_prompt = f"{RUNNING_COACH_SYSTEM_PROMPT}\n\n[참고 자료]\n{rag_context}"
+
     # Use Google Gemini or OpenAI based on settings
     if settings.ai_provider == "google" and settings.google_ai_api_key:
         return await _get_gemini_response(
             history=history,
             user_message=user_message,
             context=context,
-            system_prompt=RUNNING_COACH_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             metrics=metrics,
         )
     else:
@@ -740,7 +781,7 @@ async def _get_ai_response(
             history=history,
             user_message=user_message,
             context=context,
-            system_prompt=RUNNING_COACH_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             metrics=metrics,
         )
 

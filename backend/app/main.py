@@ -19,6 +19,19 @@ settings = get_settings()
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan events."""
     # Startup
+    # Initialize RAG knowledge retriever if enabled
+    if settings.rag_enabled:
+        try:
+            from app.knowledge.retriever import initialize_knowledge_retriever
+
+            await initialize_knowledge_retriever()
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                f"Failed to initialize knowledge retriever: {e}. RAG will be disabled."
+            )
+
     yield
     # Shutdown - cleanup resources
     await close_redis()

@@ -35,6 +35,10 @@ dependencies = [
     "cryptography>=41.0.7",
     # AI
     "openai>=1.6.0",
+    "google-generativeai>=0.8.0",
+    # RAG (Retrieval-Augmented Generation)
+    "faiss-cpu>=1.7.4",
+    "numpy>=1.26.0",
     # Strava
     "stravalib>=1.6",
 ]

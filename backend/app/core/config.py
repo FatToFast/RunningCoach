@@ -97,6 +97,17 @@ class Settings(BaseSettings):
     ai_default_language: str = "ko"
     ai_max_history_messages: int = 20
 
+    # RAG (Retrieval-Augmented Generation) settings
+    rag_enabled: bool = True
+    rag_top_k: int = 3
+    rag_min_score: float = 0.3
+    rag_max_context_length: int = 3000
+
+    # Embedding settings (for RAG)
+    embedding_provider: str = "google"  # "google" or "openai"
+    google_embedding_model: str = "text-embedding-004"
+    openai_embedding_model: str = "text-embedding-3-small"
+
     # Localization
     default_timezone: str = "Asia/Seoul"
 

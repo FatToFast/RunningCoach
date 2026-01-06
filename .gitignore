@@ -124,3 +124,6 @@ secrets/
 
 # FIT data files (user data)
 backend/data/fit_files/
+
+# RAG knowledge index (generated, rebuild with build_knowledge_index.py)
+backend/app/knowledge/index/
