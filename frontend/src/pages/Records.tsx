@@ -1,5 +1,8 @@
-import { Trophy, Clock, Route, TrendingUp, Calendar, Zap } from 'lucide-react';
+import { useState } from 'react';
+import { Trophy, Clock, Route, TrendingUp, Calendar, Zap, Flag, Edit2, X, Check, MapPin } from 'lucide-react';
 import { usePersonalRecords } from '../hooks/useDashboard';
+import { useRaces, useUpdateRace } from '../hooks/useRaces';
+import type { Race, RaceUpdate } from '../api/races';
 
 function formatTime(seconds: number) {
   const hours = Math.floor(seconds / 3600);
@@ -32,6 +35,252 @@ function formatDate(dateStr: string) {
     month: 'short',
     day: 'numeric',
   });
+}
+
+function parseTimeToSeconds(timeStr: string): number | null {
+  // Parse formats: "HH:MM:SS", "H:MM:SS", "MM:SS", "M:SS"
+  const parts = timeStr.split(':').map((p) => parseInt(p, 10));
+  if (parts.some(isNaN)) return null;
+
+  if (parts.length === 3) {
+    // HH:MM:SS
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  } else if (parts.length === 2) {
+    // MM:SS
+    return parts[0] * 60 + parts[1];
+  }
+  return null;
+}
+
+function getDDayText(daysUntil: number): string {
+  if (daysUntil === 0) return 'D-DAY';
+  if (daysUntil > 0) return `D-${daysUntil}`;
+  return `D+${Math.abs(daysUntil)}`;
+}
+
+function getDDayColor(daysUntil: number): string {
+  if (daysUntil === 0) return 'text-red';
+  if (daysUntil <= 7) return 'text-amber';
+  if (daysUntil <= 30) return 'text-cyan';
+  return 'text-muted';
+}
+
+// Race Edit Modal Component
+interface RaceEditModalProps {
+  race: Race;
+  onClose: () => void;
+  onSave: (raceId: number, update: RaceUpdate) => void;
+  isSaving: boolean;
+}
+
+function RaceEditModal({ race, onClose, onSave, isSaving }: RaceEditModalProps) {
+  const [name, setName] = useState(race.name);
+  const [resultTime, setResultTime] = useState(
+    race.result_time_seconds ? formatTime(race.result_time_seconds) : ''
+  );
+  const [resultNotes, setResultNotes] = useState(race.result_notes || '');
+
+  const handleSave = () => {
+    const resultSeconds = resultTime ? parseTimeToSeconds(resultTime) : null;
+
+    onSave(race.id, {
+      name,
+      result_time_seconds: resultSeconds,
+      result_notes: resultNotes || null,
+      is_completed: resultSeconds ? true : race.is_completed,
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="card max-w-md w-full">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="font-display text-lg font-semibold">대회 기록 수정</h3>
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-[var(--color-surface-elevated)] rounded"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          {/* Race Name */}
+          <div>
+            <label className="block text-sm text-muted mb-1">대회명</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-3 py-2 bg-[var(--color-surface-elevated)] border border-[var(--color-border)] rounded-lg focus:outline-none focus:border-cyan"
+              placeholder="예: 2024 서울마라톤"
+            />
+          </div>
+
+          {/* Official Time */}
+          <div>
+            <label className="block text-sm text-muted mb-1">
+              공식 기록 (시:분:초 또는 분:초)
+            </label>
+            <input
+              type="text"
+              value={resultTime}
+              onChange={(e) => setResultTime(e.target.value)}
+              className="w-full px-3 py-2 bg-[var(--color-surface-elevated)] border border-[var(--color-border)] rounded-lg focus:outline-none focus:border-cyan font-mono"
+              placeholder="예: 3:45:30 또는 45:30"
+            />
+            <p className="text-xs text-muted mt-1">
+              가민 기록과 다를 경우 공식 기록을 입력하세요
+            </p>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label className="block text-sm text-muted mb-1">메모 (선택)</label>
+            <textarea
+              value={resultNotes}
+              onChange={(e) => setResultNotes(e.target.value)}
+              className="w-full px-3 py-2 bg-[var(--color-surface-elevated)] border border-[var(--color-border)] rounded-lg focus:outline-none focus:border-cyan resize-none"
+              rows={2}
+              placeholder="예: PB 달성! 날씨 좋았음"
+            />
+          </div>
+
+          {/* Race Info (read-only) */}
+          <div className="text-sm text-muted border-t border-[var(--color-border)] pt-4">
+            <div className="flex items-center gap-2">
+              <Calendar className="w-4 h-4" />
+              <span>{formatDate(race.race_date)}</span>
+              {race.distance_label && (
+                <>
+                  <span className="text-[var(--color-border)]">•</span>
+                  <span>{race.distance_label}</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-3 mt-6">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 border border-[var(--color-border)] rounded-lg hover:bg-[var(--color-surface-elevated)] transition-colors"
+          >
+            취소
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={isSaving || !name.trim()}
+            className="flex-1 px-4 py-2 bg-cyan text-black rounded-lg hover:bg-cyan/80 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {isSaving ? (
+              <span className="animate-pulse">저장 중...</span>
+            ) : (
+              <>
+                <Check className="w-4 h-4" />
+                저장
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Race Card Component for upcoming races
+interface RaceCardProps {
+  race: Race;
+  onEdit: (race: Race) => void;
+  variant: 'upcoming' | 'completed';
+}
+
+function RaceCard({ race, onEdit, variant }: RaceCardProps) {
+  const isUpcoming = variant === 'upcoming';
+
+  return (
+    <div
+      className={`card group hover:border-[var(--color-accent-cyan)] transition-all ${
+        race.is_primary && isUpcoming ? 'border-amber' : ''
+      }`}
+    >
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-3">
+          <div
+            className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+              isUpcoming ? 'bg-amber/20' : 'bg-green/20'
+            }`}
+          >
+            <Flag className={`w-5 h-5 ${isUpcoming ? 'text-amber' : 'text-green'}`} />
+          </div>
+          <div>
+            <h3 className="font-display font-semibold">{race.name}</h3>
+            <p className="text-muted text-sm">{race.distance_label || `${race.distance_km}km`}</p>
+          </div>
+        </div>
+        <button
+          onClick={() => onEdit(race)}
+          className="p-2 opacity-0 group-hover:opacity-100 hover:bg-[var(--color-surface-elevated)] rounded transition-all"
+          title="수정"
+        >
+          <Edit2 className="w-4 h-4 text-muted" />
+        </button>
+      </div>
+
+      {/* D-day or Result Time */}
+      <div className="mb-3">
+        {isUpcoming ? (
+          <div className={`stat-value text-3xl ${getDDayColor(race.days_until)}`}>
+            {getDDayText(race.days_until)}
+          </div>
+        ) : (
+          <div className="stat-value text-3xl text-green">
+            {race.result_time_seconds ? formatTime(race.result_time_seconds) : '기록 없음'}
+          </div>
+        )}
+      </div>
+
+      {/* Date and Location */}
+      <div className="flex items-center gap-4 text-sm text-muted">
+        <div className="flex items-center gap-1">
+          <Calendar className="w-4 h-4" />
+          {formatDate(race.race_date)}
+        </div>
+        {race.location && (
+          <div className="flex items-center gap-1">
+            <MapPin className="w-4 h-4" />
+            {race.location}
+          </div>
+        )}
+      </div>
+
+      {/* Goal Time for upcoming */}
+      {isUpcoming && race.goal_time_seconds && (
+        <div className="mt-3 pt-3 border-t border-[var(--color-border)]">
+          <div className="text-xs text-muted">
+            목표 기록:{' '}
+            <span className="font-mono text-cyan">{formatTime(race.goal_time_seconds)}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Result Notes for completed */}
+      {!isUpcoming && race.result_notes && (
+        <div className="mt-3 pt-3 border-t border-[var(--color-border)]">
+          <div className="text-xs text-muted">{race.result_notes}</div>
+        </div>
+      )}
+
+      {/* Primary badge */}
+      {race.is_primary && isUpcoming && (
+        <div className="absolute top-2 right-2">
+          <span className="px-2 py-0.5 bg-amber/20 text-amber text-xs rounded-full">
+            주요 대회
+          </span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface RecordCardProps {
@@ -115,6 +364,23 @@ function RecordCard({
 
 export function Records() {
   const { data: records, isLoading, error } = usePersonalRecords('running');
+  const { data: racesData, isLoading: racesLoading } = useRaces(true); // include completed
+  const updateRaceMutation = useUpdateRace();
+  const [editingRace, setEditingRace] = useState<Race | null>(null);
+
+  // Separate races into upcoming and completed
+  const upcomingRaces =
+    racesData?.races.filter((r) => !r.is_completed && r.days_until >= 0) || [];
+  const completedRaces = racesData?.races.filter((r) => r.is_completed) || [];
+
+  const handleRaceSave = (raceId: number, update: RaceUpdate) => {
+    updateRaceMutation.mutate(
+      { raceId, race: update },
+      {
+        onSuccess: () => setEditingRace(null),
+      }
+    );
+  };
 
   if (isLoading) {
     return (
@@ -231,6 +497,49 @@ export function Records() {
         </section>
       )}
 
+      {/* Upcoming Races with D-day */}
+      {upcomingRaces.length > 0 && (
+        <section>
+          <h2 className="font-display text-lg font-semibold mb-4 flex items-center gap-2">
+            <Flag className="w-5 h-5 text-amber" />
+            출전 예정 대회
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {upcomingRaces.map((race) => (
+              <RaceCard
+                key={race.id}
+                race={race}
+                onEdit={setEditingRace}
+                variant="upcoming"
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Completed Race Records */}
+      {completedRaces.length > 0 && (
+        <section>
+          <h2 className="font-display text-lg font-semibold mb-4 flex items-center gap-2">
+            <Trophy className="w-5 h-5 text-green" />
+            대회 기록
+            <span className="text-muted text-sm font-normal ml-2">
+              (클릭하여 공식 기록 수정)
+            </span>
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {completedRaces.map((race) => (
+              <RaceCard
+                key={race.id}
+                race={race}
+                onEdit={setEditingRace}
+                variant="completed"
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Recent PRs */}
       {records.recent_prs && records.recent_prs.length > 0 && (
         <section>
@@ -275,6 +584,16 @@ export function Records() {
             </p>
           </div>
         )}
+
+      {/* Race Edit Modal */}
+      {editingRace && (
+        <RaceEditModal
+          race={editingRace}
+          onClose={() => setEditingRace(null)}
+          onSave={handleRaceSave}
+          isSaving={updateRaceMutation.isPending}
+        />
+      )}
     </div>
   );
 }
