@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     # AI Coach settings
     ai_default_language: str = "ko"
     ai_max_history_messages: int = 20
+    ai_snapshot_weeks: int = 12  # Training snapshot window
+    ai_snapshot_recovery_days: int = 7  # Recovery period
+    ai_default_interval_pace: int = 270  # 4:30/km in seconds (user-adjustable)
+    ai_default_tempo_pace: int = 300  # 5:00/km in seconds (user-adjustable)
+
+    # Token cost estimation (per 1K tokens)
+    ai_token_cost_google: float = 0.00075  # Gemini pricing
+    ai_token_cost_openai: float = 0.002  # GPT-4o pricing
 
     # RAG (Retrieval-Augmented Generation) settings
     rag_enabled: bool = True

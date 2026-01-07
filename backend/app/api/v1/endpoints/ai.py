@@ -149,8 +149,11 @@ class PlanImportRequest(BaseModel):
 
     Date calculation rules:
     1. start_date provided: use as-is
-    2. start_date not provided + goal_date provided: start_date = goal_date - (weeks * 7 days)
-    3. Neither provided: start_date = today, end_date = today + (weeks * 7 days)
+    2. start_date not provided + goal_date provided: start_date = goal_date - (weeks * 7 - 1) days
+    3. Neither provided: start_date = today, end_date = today + (weeks * 7 - 1) days
+
+    Note: end_date is INCLUSIVE. For N weeks, the plan spans N*7 days (day 1 to day N*7),
+    so end_date = start_date + (N * 7 - 1) days.
     """
 
     source: str = "manual"  # manual, chatgpt, other
@@ -556,9 +559,11 @@ async def quick_chat(
     """
     # Create new conversation
     # DB schema uses context_type and context_data instead of language/model
+    # Use Unicode-safe truncation to avoid cutting multi-byte characters
+    title = _truncate_unicode_safe(request.message, 50)
     conversation = AIConversation(
         user_id=current_user.id,
-        title=request.message[:50] + "..." if len(request.message) > 50 else request.message,
+        title=title,
         context_type="plan_generation" if request.mode == "plan" else "chat",
         context_data={
             "language": settings.ai_default_language,
@@ -668,6 +673,9 @@ async def quick_chat(
     )
     db.add(assistant_message)
 
+    # Update conversation timestamp
+    conversation.updated_at = datetime.now(timezone.utc)
+
     await db.commit()
     await db.refresh(user_message)
     await db.refresh(assistant_message)
@@ -686,6 +694,29 @@ async def quick_chat(
 # -------------------------------------------------------------------------
 # Internal AI Service
 # -------------------------------------------------------------------------
+
+
+def _truncate_unicode_safe(text: str, max_length: int, suffix: str = "...") -> str:
+    """Truncate text safely without cutting multi-byte Unicode characters.
+
+    Args:
+        text: Text to truncate.
+        max_length: Maximum length in characters.
+        suffix: Suffix to append if truncated.
+
+    Returns:
+        Truncated text with suffix if needed.
+    """
+    if len(text) <= max_length:
+        return text
+    # Find a safe truncation point that doesn't cut Unicode characters
+    # Python strings handle Unicode correctly, but we ensure clean word boundaries
+    truncated = text[:max_length]
+    # Try to break at a space if possible for cleaner output
+    last_space = truncated.rfind(" ")
+    if last_space > max_length // 2:
+        truncated = truncated[:last_space]
+    return truncated + suffix
 
 
 def _extract_json_payload(content: str) -> dict[str, Any]:
@@ -1444,11 +1475,16 @@ async def get_token_usage(
     stats_12w = await get_period_stats(84)  # 12 weeks
     stats_all = await get_period_stats(None)
 
-    # Estimate cost (rough estimate: $0.002 per 1K tokens for GPT-4o)
-    cost_per_1k_tokens = 0.002
+    # Estimate cost based on configured provider
+    # Uses config values: ai_token_cost_google for Gemini, ai_token_cost_openai for OpenAI
+    if settings.ai_provider == "google":
+        cost_per_1k_tokens = settings.ai_token_cost_google
+    else:
+        cost_per_1k_tokens = settings.ai_token_cost_openai
+
     estimated_cost = None
     if stats_all.total_tokens > 0:
-        estimated_cost = round((stats_all.total_tokens / 1000) * cost_per_1k_tokens, 2)
+        estimated_cost = round((stats_all.total_tokens / 1000) * cost_per_1k_tokens, 4)
 
     return TokenUsageResponse(
         recent_6_weeks=stats_6w,

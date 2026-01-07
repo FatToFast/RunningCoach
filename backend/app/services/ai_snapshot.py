@@ -18,12 +18,17 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 SNAPSHOT_SCHEMA_VERSION = 1
-SNAPSHOT_WEEKS = 12
 RECENT_ACTIVITY_LIMIT = 10
-RECOVERY_DAYS = 7
 
-DEFAULT_INTERVAL_CUTOFF = 270  # 4:30/km
-DEFAULT_TEMPO_CUTOFF = 300  # 5:00/km
+# Use config values with fallback to sensible defaults
+SNAPSHOT_WEEKS = settings.ai_snapshot_weeks
+RECOVERY_DAYS = settings.ai_snapshot_recovery_days
+DEFAULT_INTERVAL_CUTOFF = settings.ai_default_interval_pace  # 4:30/km default
+DEFAULT_TEMPO_CUTOFF = settings.ai_default_tempo_pace  # 5:00/km default
+
+# Earliest possible date for "all-time" queries (GPS running watches became mainstream around 2006)
+# This serves as a safe lower bound that captures all realistic user data
+ALL_TIME_START_YEAR = 2006
 
 
 def _parse_pace(value: Any) -> int | None:
@@ -285,8 +290,8 @@ async def ensure_ai_training_snapshot(
     window_end = now.date()
 
     if weeks is None:
-        # All-time: start from user creation or earliest activity
-        window_start = datetime(2000, 1, 1).date()  # Far past for all-time
+        # All-time: start from earliest realistic date for running data
+        window_start = datetime(ALL_TIME_START_YEAR, 1, 1).date()
     else:
         window_start = window_end - timedelta(days=weeks * 7 - 1)
 

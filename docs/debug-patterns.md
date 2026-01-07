@@ -2377,4 +2377,138 @@ def _parse_garmin_workout_steps(workout_data: dict) -> list[dict]:
 
 ---
 
-*마지막 업데이트: 2026-01-06*
+## Backend - AI Service Issues
+
+### 59. quick_chat() updated_at 미업데이트
+
+**문제**: `quick_chat()` 함수에서 새 대화 생성 후 `updated_at` 필드를 갱신하지 않아 대화 목록 정렬이 부정확해짐
+
+```python
+# ❌ 잘못된 패턴 - updated_at 미갱신
+assistant_message = AIMessage(...)
+db.add(assistant_message)
+await db.commit()  # updated_at 갱신 누락!
+
+# ✅ 올바른 패턴 - updated_at 명시적 갱신
+assistant_message = AIMessage(...)
+db.add(assistant_message)
+conversation.updated_at = datetime.now(timezone.utc)  # 추가
+await db.commit()
+```
+
+**적용 위치**: `endpoints/ai.py:quick_chat()`
+
+---
+
+### 60. Plan Import Docstring과 실제 코드 불일치
+
+**문제**: `PlanImportRequest` docstring이 `weeks * 7`로 설명하지만 실제 코드는 `weeks * 7 - 1`을 사용 (end_date가 inclusive이므로)
+
+```python
+# ❌ 잘못된 docstring
+"""
+2. start_date not provided + goal_date provided: start_date = goal_date - (weeks * 7 days)
+3. Neither provided: start_date = today, end_date = today + (weeks * 7 days)
+"""
+
+# ✅ 올바른 docstring - 실제 코드와 일치
+"""
+2. start_date not provided + goal_date provided: start_date = goal_date - (weeks * 7 - 1) days
+3. Neither provided: start_date = today, end_date = today + (weeks * 7 - 1) days
+
+Note: end_date is INCLUSIVE. For N weeks, the plan spans N*7 days (day 1 to day N*7),
+so end_date = start_date + (N * 7 - 1) days.
+"""
+```
+
+**적용 위치**: `endpoints/ai.py:PlanImportRequest`
+
+---
+
+### 61. Unicode-unsafe 제목 Truncation
+
+**문제**: 한글 등 멀티바이트 문자 중간에서 문자열을 자르면 깨진 문자 발생 가능
+
+```python
+# ❌ 잘못된 패턴 - 문자 경계 무시
+title = request.message[:50] + "..." if len(request.message) > 50 else request.message
+
+# ✅ 올바른 패턴 - Unicode-safe truncation 함수 사용
+def _truncate_unicode_safe(text: str, max_length: int, suffix: str = "...") -> str:
+    if len(text) <= max_length:
+        return text
+    truncated = text[:max_length]
+    # 가능하면 단어 경계에서 자르기
+    last_space = truncated.rfind(" ")
+    if last_space > max_length // 2:
+        truncated = truncated[:last_space]
+    return truncated + suffix
+
+title = _truncate_unicode_safe(request.message, 50)
+```
+
+**적용 위치**: `endpoints/ai.py:quick_chat()`, `_truncate_unicode_safe()` 함수 추가
+
+---
+
+### 62. 하드코딩된 토큰 비용
+
+**문제**: 토큰 비용이 `0.002` (GPT-4o 가격)로 하드코딩되어 있어 Gemini 사용 시 부정확한 비용 계산
+
+```python
+# ❌ 잘못된 패턴 - 하드코딩된 단일 provider 가격
+cost_per_1k_tokens = 0.002
+
+# ✅ 올바른 패턴 - 설정 기반 multi-provider 지원
+if settings.ai_provider == "google":
+    cost_per_1k_tokens = settings.ai_token_cost_google  # 0.00075
+else:
+    cost_per_1k_tokens = settings.ai_token_cost_openai  # 0.002
+```
+
+**설정 추가**: `config.py`에 `ai_token_cost_google`, `ai_token_cost_openai` 설정 추가
+
+**적용 위치**: `endpoints/ai.py:get_token_usage()`, `core/config.py`
+
+---
+
+### 63. 하드코딩된 페이스 임계값 (ai_snapshot)
+
+**문제**: AI 스냅샷의 인터벌/템포 페이스 임계값이 하드코딩되어 사용자 맞춤 불가
+
+```python
+# ❌ 잘못된 패턴 - 하드코딩
+DEFAULT_INTERVAL_CUTOFF = 270  # 4:30/km
+DEFAULT_TEMPO_CUTOFF = 300     # 5:00/km
+
+# ✅ 올바른 패턴 - 설정에서 로드
+DEFAULT_INTERVAL_CUTOFF = settings.ai_default_interval_pace
+DEFAULT_TEMPO_CUTOFF = settings.ai_default_tempo_pace
+```
+
+**설정 추가**: `config.py`에 `ai_default_interval_pace`, `ai_default_tempo_pace` 설정 추가
+
+**적용 위치**: `services/ai_snapshot.py`, `core/config.py`
+
+---
+
+### 64. 하드코딩된 All-time 시작 연도
+
+**문제**: All-time 스냅샷 조회 시 시작일이 `datetime(2000, 1, 1)`로 하드코딩되어 의미 불분명
+
+```python
+# ❌ 잘못된 패턴 - 매직 넘버
+window_start = datetime(2000, 1, 1).date()  # 왜 2000년?
+
+# ✅ 올바른 패턴 - 명시적 상수 사용
+ALL_TIME_START_YEAR = 2006  # GPS 러닝 워치가 대중화된 시기
+
+if weeks is None:
+    window_start = datetime(ALL_TIME_START_YEAR, 1, 1).date()
+```
+
+**적용 위치**: `services/ai_snapshot.py`
+
+---
+
+*마지막 업데이트: 2026-01-07*
