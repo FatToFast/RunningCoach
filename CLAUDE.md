@@ -1,6 +1,19 @@
 # CLAUDE.md - RunningCoach Project Guide
 
-러닝 코치 앱 프로젝트를 위한 Claude Code 가이드입니다.
+AI 기반 러닝 코치 앱 프로젝트를 위한 Claude Code 가이드입니다.
+
+## 프로젝트 개요
+
+RunningCoach는 Garmin Connect와 연동하여 개인화된 AI 트레이닝 플랜을 제공하는 러닝 코치 애플리케이션입니다.
+
+**핵심 기능:**
+- Garmin/Strava 활동 데이터 동기화
+- AI 기반 훈련 계획 생성 (Google Gemini + RAG)
+- VDOT 기반 훈련 페이스 계산
+- 피트니스 지표 분석 (CTL/ATL/TSB)
+- 워크아웃 생성 및 Garmin 푸시
+
+---
 
 ## 필수 규칙
 
@@ -29,79 +42,133 @@
 **적용 위치**: `파일명`, `함수명`
 ```
 
-이렇게 하면 같은 유형의 버그가 다시 발생했을 때 빠르게 해결할 수 있습니다.
+---
 
 ## 프로젝트 구조
 
 ```
 RunningCoach/
-├── backend/           # FastAPI 백엔드
+├── backend/                    # FastAPI 백엔드 (Python 3.11+)
 │   ├── app/
-│   │   ├── api/v1/   # API 엔드포인트
-│   │   ├── adapters/ # 외부 서비스 어댑터 (Garmin, Strava)
-│   │   ├── core/     # 설정, 보안
-│   │   ├── models/   # SQLAlchemy 모델
-│   │   └── services/ # 비즈니스 로직
-│   └── .venv/        # Python 가상환경
-├── frontend/          # React + TypeScript + Vite 프론트엔드
+│   │   ├── api/v1/            # API 엔드포인트
+│   │   │   ├── router.py      # 메인 라우터
+│   │   │   └── endpoints/     # 20+ 엔드포인트 모듈
+│   │   ├── adapters/          # 외부 서비스 어댑터
+│   │   │   └── garmin_adapter.py  # Garmin Connect 연동
+│   │   ├── core/              # 설정, 보안, 세션
+│   │   │   ├── config.py      # Pydantic Settings
+│   │   │   ├── database.py    # SQLAlchemy async
+│   │   │   ├── security.py    # 인증/암호화
+│   │   │   ├── session.py     # Redis 세션
+│   │   │   └── ai_constants.py # AI 시스템 프롬프트
+│   │   ├── models/            # SQLAlchemy 모델 (16개)
+│   │   ├── schemas/           # Pydantic 스키마
+│   │   ├── services/          # 비즈니스 로직
+│   │   │   ├── sync_service.py    # Garmin 동기화 (1,947줄)
+│   │   │   ├── dashboard.py       # 대시보드 분석 (1,701줄)
+│   │   │   ├── vdot.py           # VDOT 계산
+│   │   │   ├── strava_upload.py  # Strava 업로드 큐
+│   │   │   └── ai_snapshot.py    # AI 스냅샷
+│   │   ├── knowledge/         # RAG 지식베이스
+│   │   │   ├── embeddings.py  # Google Embeddings
+│   │   │   ├── retriever.py   # 문서 검색
+│   │   │   └── loader.py      # 문서 로더
+│   │   └── workers/           # Arq 비동기 워커
+│   ├── alembic/               # DB 마이그레이션 (15+ 버전)
+│   ├── scripts/               # 유틸리티 스크립트
+│   │   ├── check_schema.py    # 스키마 검증/수정
+│   │   └── build_knowledge_index.py
+│   └── .venv/                 # Python 가상환경
+├── frontend/                   # React + TypeScript + Vite
 │   └── src/
-│       ├── api/      # API 클라이언트
-│       ├── components/
-│       ├── hooks/    # React Query hooks
-│       ├── pages/
-│       ├── types/    # TypeScript 타입 정의
-│       └── utils/    # 유틸리티 함수
-└── docs/             # 문서
+│       ├── api/               # API 클라이언트 (13개 모듈)
+│       │   └── client.ts      # Axios 인스턴스
+│       ├── components/        # 재사용 컴포넌트
+│       │   ├── layout/        # Header, Sidebar, Layout
+│       │   ├── dashboard/     # 대시보드 위젯
+│       │   └── activity/      # 활동 관련 (Map, Chart)
+│       ├── hooks/             # React Query hooks (11개)
+│       ├── pages/             # 페이지 컴포넌트 (13개)
+│       ├── types/             # TypeScript 타입
+│       │   └── generated/     # OpenAPI 자동 생성
+│       └── utils/             # 유틸리티 함수
+├── docs/                       # 문서
+│   ├── debug-patterns.md      # 버그 패턴 (58개 문서화)
+│   ├── api-reference.md       # API 상세 문서
+│   ├── PRD.md                 # 제품 요구사항
+│   └── CHANGELOG.md           # 변경 이력
+└── docker-compose.yml          # 로컬 개발 환경
 ```
 
-## git pull 후 필수 작업
+---
 
-**중요**: GitHub에서 pull 후 반드시 스키마 체크를 실행합니다.
+## 기술 스택
 
-```bash
-git pull
-cd backend && source .venv/bin/activate
-python scripts/check_schema.py --fix
-```
+### Backend
+- **Framework**: FastAPI + Uvicorn
+- **Database**: PostgreSQL + TimescaleDB (asyncpg)
+- **ORM**: SQLAlchemy 2.0 (async)
+- **Migrations**: Alembic
+- **Cache/Session**: Redis + arq (task queue)
+- **AI**: Google Gemini (primary), OpenAI (fallback)
+- **RAG**: FAISS + Google Embeddings
 
-이 스크립트는 SQLAlchemy 모델과 실제 DB 스키마를 비교하여 누락된 컬럼을 자동으로 추가합니다.
+### Frontend
+- **Framework**: React 19 + TypeScript
+- **Build**: Vite 7
+- **State**: TanStack React Query
+- **Styling**: Tailwind CSS 4
+- **Charts**: Recharts
+- **Maps**: MapLibre GL
+
+---
 
 ## 개발 명령어
 
-### 로컬 서버 시작
+### 로컬 환경 시작
 
 ```bash
-# 1. 백엔드 시작
+# 1. Docker 서비스 (DB, Redis)
+docker-compose up -d db redis
+
+# 2. 백엔드 시작
 cd backend
 source .venv/bin/activate
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-# 2. 프론트엔드 시작 (별도 터미널)
+# 3. 프론트엔드 시작 (별도 터미널)
 cd frontend
 npm run dev
 
-# 3. 브라우저에서 http://localhost:5173 접속
+# 4. 브라우저에서 http://localhost:5173 접속
 ```
 
-### Backend
+### Backend 명령어
 
 ```bash
 cd backend
 source .venv/bin/activate   # 가상환경 활성화
+
+# 서버 실행
 uvicorn app.main:app --reload --port 8000
 
-# 스키마 확인
+# 스키마 확인/수정
 python scripts/check_schema.py
 python scripts/check_schema.py --fix  # 누락된 컬럼 자동 추가
+
+# RAG 인덱스 빌드
+python scripts/build_knowledge_index.py
 
 # 테스트
 pytest
 
-# 타입 체크
+# 타입 체크 & 린팅
 mypy app/
+ruff check .
+black app/
 ```
 
-### Frontend
+### Frontend 명령어
 
 ```bash
 cd frontend
@@ -109,62 +176,201 @@ npm run dev          # 개발 서버 (포트 5173)
 npm run build        # 프로덕션 빌드
 npx tsc --noEmit     # 타입 체크
 npm run lint         # ESLint
+
+# API 타입 자동 생성
+npm run generate:api
 ```
+
+### git pull 후 필수 작업
+
+```bash
+git pull
+cd backend && source .venv/bin/activate
+python scripts/check_schema.py --fix
+```
+
+---
 
 ## API 구조
 
-- Base URL: `/api/v1`
-- 인증: 세션 기반 (쿠키)
-- 문서: `/api/v1/docs` (Swagger UI)
+- **Base URL**: `/api/v1`
+- **인증**: 세션 기반 (HTTP-only 쿠키)
+- **문서**: `/api/v1/docs` (Swagger UI)
 
-주요 엔드포인트는 [router.py](backend/app/api/v1/router.py) 상단 주석 참조.
+### 주요 엔드포인트
 
-## 핵심 문서
+| 카테고리 | 경로 | 설명 |
+|----------|------|------|
+| 인증 | `/auth/*` | 로그인, Garmin/Strava OAuth |
+| 대시보드 | `/dashboard/*` | 요약, 트렌드, 캘린더 |
+| 활동 | `/activities/*` | 활동 목록, 상세, HR존, 샘플 |
+| AI | `/ai/*` | 대화, 플랜 생성/가져오기 |
+| 워크아웃 | `/workouts/*` | 생성, Garmin 푸시 |
+| 동기화 | `/ingest/*` | Garmin 데이터 동기화 |
+| Strava | `/strava/*` | OAuth, 업로드 관리 |
+| 건강 | `/health/*`, `/hr/*`, `/sleep/*` | 건강 지표 |
+| 기어 | `/gear/*` | 장비 관리 |
+| 근력 | `/strength/*` | 근력 운동 |
+| 대회 | `/races/*` | 대회 목표, 예측 |
 
-| 문서 | 설명 |
-|------|------|
-| [docs/debug-patterns.md](docs/debug-patterns.md) | 발견된 버그 패턴과 해결책 |
-| [docs/api-reference.md](docs/api-reference.md) | API 상세 문서 |
-| [docs/PRD.md](docs/PRD.md) | 제품 요구사항 |
+---
+
+## 핵심 서비스
+
+### sync_service.py (1,947줄)
+Garmin Connect 데이터 동기화:
+- 활동, 수면, HR, 건강 지표 가져오기
+- FIT 파일 파싱 및 저장
+- 증분/전체 동기화 지원
+- 동기화 락 관리 (대용량 백필 시 TTL 연장)
+
+### dashboard.py (1,701줄)
+대시보드 분석 서비스:
+- VDOT 계산 (Jack Daniels 공식)
+- 훈련 페이스 존 (Easy, Marathon, Threshold, Interval, Repetition)
+- 피트니스 지표 (CTL/ATL/TSB - EMA 기반)
+- 주간/월간 요약 및 캐싱
+
+### vdot.py (321줄)
+Jack Daniels VDOT 계산:
+- 최근 경주/레이스 기반 VDOT 산출
+- 거리별 훈련 페이스 권장
+- Daniels-Gilbert 공식 적용
+
+---
+
+## 데이터베이스 모델 (16개)
+
+| 모델 | 파일 | 설명 |
+|------|------|------|
+| User | user.py | 사용자 프로필, Garmin/Strava 인증 |
+| Activity, Lap, ActivitySample | activity.py | 활동 데이터 (TimescaleDB) |
+| AIConversation, AIMessage, AIPlan, AIImport | ai.py | AI 대화 및 플랜 |
+| Workout, WorkoutStep, WorkoutSchedule | workout.py | 워크아웃 |
+| Gear | gear.py | 장비 |
+| StrengthSession, StrengthExercise | strength.py | 근력 운동 |
+| Race | race.py | 대회 목표 |
+| SleepRecord, HRRecord, HealthMetric | health.py | 건강 데이터 |
+
+---
+
+## 외부 연동
+
+| 서비스 | 용도 | 설정 |
+|--------|------|------|
+| **Garmin Connect** | 활동/건강 데이터 동기화 | `GARMIN_ENCRYPTION_KEY` |
+| **Strava API** | 활동 업로드 | `STRAVA_CLIENT_ID/SECRET` |
+| **Runalyze** | HRV, 훈련 지표 | `RUNALYZE_API_TOKEN` |
+| **Google Gemini** | AI 플랜 생성 (주) | `GOOGLE_AI_API_KEY` |
+| **OpenAI** | AI 플랜 생성 (보조) | `OPENAI_API_KEY` |
+
+---
+
+## 환경 변수
+
+### Backend (.env)
+
+```bash
+# Database
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/running
+REDIS_URL=redis://localhost:6379/0
+
+# Security
+SESSION_SECRET=...
+SECRET_KEY=...
+COOKIE_SECURE=false  # 프로덕션: true
+COOKIE_SAMESITE=lax
+
+# Garmin
+GARMIN_ENCRYPTION_KEY=...
+GARMIN_BACKFILL_DAYS=0
+FIT_STORAGE_PATH=./data/fit_files
+
+# AI (Primary: Gemini)
+GOOGLE_AI_API_KEY=...
+GOOGLE_AI_MODEL=gemini-2.5-flash-lite
+OPENAI_API_KEY=...       # Fallback
+OPENAI_MODEL=gpt-4o-mini
+
+# RAG
+RAG_ENABLED=true
+RAG_TOP_K=3
+RAG_MIN_SCORE=0.3
+
+# Strava
+STRAVA_CLIENT_ID=...
+STRAVA_CLIENT_SECRET=...
+STRAVA_AUTO_UPLOAD=true
+
+# CORS
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+```
+
+### Frontend (.env)
+
+```bash
+VITE_API_BASE_URL=http://localhost:8000
+VITE_USE_MOCK_DATA=false
+```
+
+---
 
 ## 자주 발생하는 이슈
 
 ### Frontend
 
 1. **시간 포맷팅 오류**: `format.ts`에서 Math.round 60초 오버플로우 주의
-2. **API 타입 불일치**: Backend Pydantic ↔ Frontend TypeScript 동기화 필요
+2. **API 타입 불일치**: Backend Pydantic ↔ Frontend TypeScript 동기화 필요 (`npm run generate:api`)
 3. **React Query**: mutation 후 관련 쿼리 invalidation 확인
 
 ### Backend
 
-1. **라우터 문서**: `router.py` 주석과 실제 구현 일치 확인
+1. **스키마 드리프트**: 모델 변경 후 `check_schema.py --fix` 실행
 2. **CORS**: `CORS_ORIGINS` 환경변수 설정 필수
 3. **가상환경**: 항상 `.venv` 활성화 후 실행
-4. **동기화 락**: 대용량 백필(500+ 활동) 시 3시간 TTL, 1000+ 활동 시 `extend_lock()` 사용 권장
+4. **동기화 락**: 대용량 백필(500+ 활동) 시 3시간 TTL, 1000+ 활동 시 `extend_lock()` 사용
 5. **httpx base_url**: leading slash 사용 시 base_url 경로가 덮어써지므로 주의
-6. **HR 존 계산**: 표준 5존 HRR 방식 사용 (50-60%, 60-70%, 70-80%, 80-90%, 90-100%)
-7. **Strava OAuth**: 프로덕션 배포 시 Redis 기반 state 저장 필요 (현재는 단일 워커 OK)
+6. **HR 존 계산**: 표준 5존 HRR 방식 (50-60%, 60-70%, 70-80%, 80-90%, 90-100%)
+7. **Strava OAuth**: 프로덕션 배포 시 Redis 기반 state 저장 필요
+
+### AI 관련
+
+1. **AI 모델 필드명**: `context_type`/`context_data` 사용 (구: `language`/`model`)
+2. **토큰 카운트**: `token_count` 사용 (구: `tokens`)
+3. **RAG 스코어**: `min_score=0.3` 기본값, 낮은 스코어는 컨텍스트에서 제외
 
 자세한 내용은 [docs/debug-patterns.md](docs/debug-patterns.md) 참조.
 
-## 환경 변수
+---
 
-```bash
-# Backend (.env)
-DATABASE_URL=postgresql+asyncpg://...
-CORS_ORIGINS=http://localhost:5173,http://localhost:3000
-GARMIN_ENCRYPTION_KEY=...
+## 핵심 문서
 
-# Frontend (.env)
-VITE_API_BASE_URL=http://localhost:8000
-VITE_USE_MOCK_DATA=false
-```
+| 문서 | 설명 |
+|------|------|
+| [docs/debug-patterns.md](docs/debug-patterns.md) | 발견된 버그 패턴과 해결책 (58개) |
+| [docs/api-reference.md](docs/api-reference.md) | API 상세 문서 |
+| [docs/PRD.md](docs/PRD.md) | 제품 요구사항 |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | 변경 이력 |
+| [docs/blueprint.md](docs/blueprint.md) | 아키텍처 설계 |
+
+---
 
 ## 코드 스타일
 
 - **Python**: Black + Ruff, Type hints 필수
 - **TypeScript**: ESLint + Prettier
-- **커밋 메시지**: Conventional Commits (feat:, fix:, docs:, etc.)
+- **커밋 메시지**: Conventional Commits (feat:, fix:, docs:, refactor:, test:)
+
+---
+
+## 최근 주요 변경사항 (2026-01)
+
+1. **AI 플래닝 스키마 정리**: AIConversation, AIMessage 필드명 일치
+2. **VDOT 계산 서비스**: Jack Daniels 공식 기반 훈련 페이스
+3. **RAG 통합**: 러닝 가이드 문서 기반 AI 컨텍스트 강화
+4. **Strava 업로드 큐**: arq 기반 비동기 업로드 (재시도: 1m, 5m, 30m, 2h)
+5. **대시보드 컴팩트 뷰**: CompactActivities, CompactFitness, CompactMileage
+6. **대회 목표 연동**: AI 코치에서 대회 정보 참조
 
 ---
 
