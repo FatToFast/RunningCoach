@@ -5,26 +5,27 @@ RunningCoach의 전문가 에이전트 시스템입니다.
 ## 아키텍처
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Orchestrator                         │
-│              (전체 작업 조율 및 위임)                    │
-└───────────────────────┬─────────────────────────────────┘
-                        │
-        ┌───────────────┼───────────────┐
-        │               │               │
-        ▼               ▼               ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│    Garmin     │ │     Data      │ │    Strava     │
-│   Connector   │ │    Manager    │ │   Connector   │
-└───────────────┘ └───────────────┘ └───────────────┘
-        │               │               │
-        └───────────────┼───────────────┘
-                        │
-                        ▼
-                ┌───────────────┐
-                │   AI Coach    │
-                └───────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                          Orchestrator                               │
+│                    (전체 작업 조율 및 위임)                          │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+       ┌───────────────┬───────┴───────┬───────────────┐
+       │               │               │               │
+       ▼               ▼               ▼               ▼
+┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+│   Garmin    │ │    Data     │ │   Strava    │ │  AI Coach   │
+│  Connector  │ │   Manager   │ │  Connector  │ │             │
+├─────────────┤ ├─────────────┤ ├─────────────┤ ├─────────────┤
+│ - 동기화   │ │ - VDOT     │ │ - 업로드   │ │ - 훈련계획 │
+│ - 워크아웃 │ │ - 분석     │ │ - OAuth    │ │ - RAG      │
+└─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘
 ```
+
+**에이전트 협업**:
+- 동기화: Garmin Connector → Data Manager → Strava Connector
+- 훈련 계획: Data Manager → AI Coach
+- 워크아웃 푸시: AI Coach → Garmin Connector
 
 ## 에이전트 목록
 
@@ -79,23 +80,29 @@ Orchestrator
   └─2→ Garmin Connector: Garmin 전송
 ```
 
-## 에이전트 호출 방법
+## 에이전트 활용 방법
 
-### Claude Code에서
+### Claude Code Slash Commands
+
+에이전트 기능은 slash command로 구현되어 있습니다:
+
+```bash
+/sync          # Garmin 동기화 (garmin-connector)
+/plan          # 훈련 계획 생성 (ai-coach)
+/workout       # 워크아웃 설계 (ai-coach + garmin-connector)
+/upload        # Strava 업로드 (strava-connector)
+```
+
+### AI 에이전트 참조
+
+Claude Code가 작업할 때 해당 에이전트 문서를 참조합니다:
 
 ```
-/agent orchestrator "Garmin 데이터 동기화 후 Strava에 업로드해줘"
-```
+"Garmin 동기화해줘"
+  → garmin-connector.md 참조하여 작업 수행
 
-### 프로그래밍 방식
-
-```python
-from agents import orchestrator
-
-result = await orchestrator.run({
-    "action": "sync_and_upload",
-    "user_id": 1,
-})
+"12주 마라톤 훈련 계획 세워줘"
+  → ai-coach.md 참조하여 작업 수행
 ```
 
 ## 에이전트 간 통신

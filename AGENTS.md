@@ -43,34 +43,29 @@
 
 ## 프로젝트 지도
 
+> 상세한 프로젝트 구조는 [CLAUDE.md](CLAUDE.md)를 참조하세요.
+
 ```
 RunningCoach/
+├── .claude/
+│   ├── agents/             # 전문가 에이전트 정의
+│   │   ├── orchestrator.md
+│   │   ├── garmin-connector.md
+│   │   ├── data-manager.md
+│   │   ├── strava-connector.md
+│   │   └── ai-coach.md
+│   └── commands/           # Slash commands
+│       ├── sync.md, plan.md, workout.md, upload.md
 │
-├── backend/                 # FastAPI 백엔드
-│   ├── AGENTS.md           # 백엔드 규칙
-│   └── app/
-│       ├── api/v1/         # REST API 엔드포인트
-│       ├── models/         # SQLAlchemy 모델 (진실의 원천)
-│       ├── schemas/        # Pydantic 스키마 (API 계약)
-│       ├── services/       # 비즈니스 로직
-│       ├── adapters/       # 외부 서비스 연동
-│       ├── knowledge/      # RAG 시스템
-│       └── core/           # 설정, 보안, DB
+├── backend/                # FastAPI 백엔드
+│   └── AGENTS.md           # 백엔드 규칙
 │
-├── frontend/                # React 프론트엔드
-│   ├── AGENTS.md           # 프론트엔드 규칙
-│   └── src/
-│       ├── pages/          # 페이지 컴포넌트
-│       ├── components/     # 재사용 컴포넌트
-│       ├── hooks/          # React Query hooks
-│       ├── api/            # API 클라이언트
-│       └── types/          # TypeScript 타입
+├── frontend/               # React 프론트엔드
+│   └── AGENTS.md           # 프론트엔드 규칙
 │
-├── docs/                    # 문서
+├── docs/                   # 문서
 │   ├── AGENTS.md           # 문서화 규칙
-│   ├── debug-patterns.md   # 버그 패턴 기록 (필독)
-│   ├── api-reference.md    # API 문서
-│   └── PRD.md              # 제품 요구사항
+│   └── debug-patterns.md   # 버그 패턴 (필독)
 │
 ├── AGENTS.md               # 이 파일 (핵심 규칙)
 └── CLAUDE.md               # 프로젝트 상세 가이드
@@ -200,3 +195,26 @@ feat: VDOT 기반 훈련 페이스 계산 추가
 - `backend/AGENTS.md` - 백엔드 개발 규칙
 - `frontend/AGENTS.md` - 프론트엔드 개발 규칙
 - `docs/AGENTS.md` - 문서화 규칙
+
+---
+
+## 전문가 에이전트
+
+작업 유형별 전문가 에이전트 정의는 `.claude/agents/`를 참조:
+
+| 에이전트 | 역할 | 관련 파일 |
+|---------|------|----------|
+| [orchestrator](.claude/agents/orchestrator.md) | 작업 조율 | - |
+| [garmin-connector](.claude/agents/garmin-connector.md) | Garmin 연동 | adapters/, sync_service |
+| [data-manager](.claude/agents/data-manager.md) | 데이터 분석 | services/, dashboard |
+| [strava-connector](.claude/agents/strava-connector.md) | Strava 연동 | strava.py, workers/ |
+| [ai-coach](.claude/agents/ai-coach.md) | AI 훈련 계획 | ai.py, knowledge/ |
+
+### Slash Commands
+
+```bash
+/sync     # Garmin 동기화
+/plan     # 훈련 계획 생성
+/workout  # 워크아웃 설계
+/upload   # Strava 업로드
+```

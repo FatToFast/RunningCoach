@@ -192,4 +192,4 @@ pytest tests/test_garmin_adapter.py -v
 
 - [GarminConnect 라이브러리](https://github.com/cyberjunky/python-garminconnect)
 - [FIT SDK](https://developer.garmin.com/fit/overview/)
-- [debug-patterns.md #32](../docs/debug-patterns.md) - 동기화 락 이슈
+- [debug-patterns.md #32](../../docs/debug-patterns.md) - 동기화 락 이슈

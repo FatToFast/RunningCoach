@@ -316,4 +316,4 @@ pytest tests/test_strava_upload.py -v
 
 - [Strava API 문서](https://developers.strava.com/docs/reference/)
 - [stravalib 라이브러리](https://github.com/stravalib/stravalib)
-- [debug-patterns.md #33](../docs/debug-patterns.md) - OAuth state 이슈
+- [debug-patterns.md #33](../../docs/debug-patterns.md) - OAuth state 이슈

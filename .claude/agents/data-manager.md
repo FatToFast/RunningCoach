@@ -269,10 +269,10 @@ tsb = ctl - atl
 
 ```python
 # ❌ 잘못된 패턴
-secs = Math.round(seconds % 60)  # 59.5 → 60!
+secs = round(seconds % 60)  # 59.5 → 60!
 
 # ✅ 올바른 패턴
-total_secs = Math.round(seconds)
+total_secs = round(seconds)
 secs = total_secs % 60
 ```
 
@@ -306,4 +306,4 @@ pytest tests/test_dashboard.py -v
 ## 관련 문서
 
 - [Jack Daniels VDOT 공식](https://runsmartproject.com/calculator/)
-- [debug-patterns.md](../docs/debug-patterns.md) - HR 존, 시간 포맷팅 이슈
+- [debug-patterns.md](../../docs/debug-patterns.md) - HR 존, 시간 포맷팅 이슈

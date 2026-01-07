@@ -369,4 +369,4 @@ pytest tests/test_knowledge.py -v
 
 - [Google AI 문서](https://ai.google.dev/docs)
 - [Jack Daniels Running Formula](https://runsmartproject.com/)
-- [debug-patterns.md #57-58](../docs/debug-patterns.md) - AI 관련 이슈
+- [debug-patterns.md #57-58](../../docs/debug-patterns.md) - AI 관련 이슈
