@@ -1,8 +1,9 @@
-"""Analytics endpoints for period comparison and personal records.
+"""Analytics endpoints for period comparison, personal records, and VDOT calculation.
 
 Paths:
   GET /api/v1/analytics/compare - 기간 비교 분석
   GET /api/v1/analytics/personal-records - 개인 최고 기록 (PR)
+  GET /api/v1/analytics/vdot - VDOT 계산 및 훈련 페이스
 """
 
 import calendar
@@ -620,4 +621,113 @@ async def get_personal_records(
         pace_records=pace_records,
         endurance_records=endurance_records,
         recent_prs=recent_prs,
+    )
+
+
+# -------------------------------------------------------------------------
+# VDOT Calculation
+# -------------------------------------------------------------------------
+
+
+class VDOTRequest(BaseModel):
+    """Request for VDOT calculation."""
+
+    distance_meters: float
+    time_seconds: float
+
+
+class TrainingPaceResponse(BaseModel):
+    """Training pace for a specific type."""
+
+    sec_per_km: int
+    pace: str  # "M:SS" format
+
+
+class TrainingPaceRangeResponse(BaseModel):
+    """Training pace range (for Easy pace)."""
+
+    min_sec_per_km: int
+    max_sec_per_km: int
+    min_pace: str
+    max_pace: str
+
+
+class TrainingPacesResponse(BaseModel):
+    """All training paces."""
+
+    easy: TrainingPaceRangeResponse
+    marathon: TrainingPaceResponse
+    threshold: TrainingPaceResponse
+    interval: TrainingPaceResponse
+    repetition: TrainingPaceResponse
+
+
+class RaceEquivalentResponse(BaseModel):
+    """Race time equivalent for a distance."""
+
+    distance_name: str
+    distance_km: float
+    time_seconds: int
+    time_formatted: str
+
+
+class VDOTResponse(BaseModel):
+    """VDOT calculation response."""
+
+    vdot: float
+    training_paces: TrainingPacesResponse
+    race_equivalents: list[RaceEquivalentResponse]
+
+
+@router.get("/vdot", response_model=VDOTResponse)
+async def calculate_vdot_from_race(
+    current_user: Annotated[User, Depends(get_current_user)],
+    distance_meters: float = Query(..., gt=0, description="Race distance in meters"),
+    time_seconds: float = Query(..., gt=0, description="Race time in seconds"),
+) -> VDOTResponse:
+    """Calculate VDOT and training paces from a race result.
+
+    VDOT은 Jack Daniels 박사의 러닝 공식에 기반한 체력 지표입니다.
+    레이스 기록을 입력하면 VDOT과 각 훈련 유형별 적정 페이스를 계산합니다.
+
+    Training Pace Types:
+        - Easy: 편안한 조깅 (VO2max 59-74%)
+        - Marathon: 마라톤 레이스 페이스 (VO2max 75-84%)
+        - Threshold: 젖산역치 훈련 (VO2max 83-88%)
+        - Interval: VO2max 훈련 (VO2max 97-100%)
+        - Repetition: 스피드 훈련 (1500m 레이스 페이스)
+
+    Examples:
+        GET /analytics/vdot?distance_meters=5000&time_seconds=1200  # 5K 20분
+        GET /analytics/vdot?distance_meters=10000&time_seconds=2700  # 10K 45분
+        GET /analytics/vdot?distance_meters=42195&time_seconds=12600  # 마라톤 3:30
+
+    Args:
+        current_user: Authenticated user.
+        distance_meters: Race distance in meters.
+        time_seconds: Race time in seconds.
+
+    Returns:
+        VDOT value, training paces, and race equivalents.
+    """
+    from app.services.vdot import get_vdot_result
+
+    result = get_vdot_result(distance_meters, time_seconds)
+    result_dict = result.to_dict()
+
+    # Convert to response model format
+    paces = result_dict["training_paces"]
+
+    return VDOTResponse(
+        vdot=result_dict["vdot"],
+        training_paces=TrainingPacesResponse(
+            easy=TrainingPaceRangeResponse(**paces["easy"]),
+            marathon=TrainingPaceResponse(**paces["marathon"]),
+            threshold=TrainingPaceResponse(**paces["threshold"]),
+            interval=TrainingPaceResponse(**paces["interval"]),
+            repetition=TrainingPaceResponse(**paces["repetition"]),
+        ),
+        race_equivalents=[
+            RaceEquivalentResponse(**eq) for eq in result_dict["race_equivalents"]
+        ],
     )
