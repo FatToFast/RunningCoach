@@ -268,10 +268,27 @@ async def ensure_ai_training_snapshot(
     user: User,
     *,
     force: bool = False,
+    weeks: int | None = None,
 ) -> AITrainingSnapshot:
+    """Generate training snapshot for a specific time window.
+
+    Args:
+        db: Database session.
+        user: User.
+        force: Force regeneration even if cached.
+        weeks: Number of weeks to include. None = all-time, otherwise specific weeks.
+
+    Returns:
+        Generated or cached snapshot.
+    """
     now = datetime.now(timezone.utc)
     window_end = now.date()
-    window_start = window_end - timedelta(days=SNAPSHOT_WEEKS * 7 - 1)
+
+    if weeks is None:
+        # All-time: start from user creation or earliest activity
+        window_start = datetime(2000, 1, 1).date()  # Far past for all-time
+    else:
+        window_start = window_end - timedelta(days=weeks * 7 - 1)
 
     window_start_dt = datetime.combine(window_start, datetime.min.time(), tzinfo=timezone.utc)
     window_end_dt = datetime.combine(window_end, datetime.max.time(), tzinfo=timezone.utc)
@@ -317,3 +334,34 @@ async def ensure_ai_training_snapshot(
     await db.commit()
     await db.refresh(snapshot)
     return snapshot
+
+
+async def get_multi_period_snapshots(
+    db: AsyncSession,
+    user: User,
+    *,
+    force: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Generate snapshots for multiple time periods (6 weeks, 12 weeks, all-time).
+
+    Returns a dictionary with keys: 'recent_6_weeks', 'recent_12_weeks', 'all_time'.
+    Each value is the snapshot payload (dict).
+
+    Args:
+        db: Database session.
+        user: User.
+        force: Force regeneration even if cached.
+
+    Returns:
+        Dictionary containing snapshots for different time periods.
+    """
+    # Generate snapshots for each period
+    snapshot_6w = await ensure_ai_training_snapshot(db, user, force=force, weeks=6)
+    snapshot_12w = await ensure_ai_training_snapshot(db, user, force=force, weeks=12)
+    snapshot_all = await ensure_ai_training_snapshot(db, user, force=force, weeks=None)
+
+    return {
+        "recent_6_weeks": snapshot_6w.payload,
+        "recent_12_weeks": snapshot_12w.payload,
+        "all_time": snapshot_all.payload,
+    }

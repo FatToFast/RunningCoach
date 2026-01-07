@@ -93,7 +93,7 @@ export function Login() {
             <button
               type="submit"
               disabled={login.isPending}
-              className="w-full py-2.5 bg-cyan text-[var(--color-bg-primary)] font-semibold rounded-lg hover:bg-cyan/90 focus:outline-none focus:ring-2 focus:ring-cyan/50 focus:ring-offset-2 focus:ring-offset-[var(--color-bg-primary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full py-3 bg-[var(--color-accent)] text-white font-semibold rounded-lg shadow-lg shadow-[var(--color-accent)]/30 hover:bg-[var(--color-accent-strong)] hover:shadow-[var(--color-accent)]/40 focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/50 focus:ring-offset-2 focus:ring-offset-[var(--color-bg-primary)] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {login.isPending ? '로그인 중...' : '로그인'}
             </button>

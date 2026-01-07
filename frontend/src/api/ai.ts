@@ -5,15 +5,15 @@ export interface Message {
   id: number;
   role: 'user' | 'assistant';
   content: string;
-  tokens: number | null;
+  token_count: number | null;  // Backend uses 'token_count', not 'tokens'
   created_at: string;
 }
 
 export interface Conversation {
   id: number;
   title: string | null;
-  language: string;
-  model: string;
+  context_type: string | null;  // Backend: context_type (e.g., "chat", "plan")
+  context_data: Record<string, any> | null;  // Backend: context_data (contains language, model, etc.)
   created_at: string;
   updated_at: string;
 }
@@ -142,4 +142,26 @@ export const aiApi = {
     });
     return data;
   },
+};
+
+// Token Usage Tracking
+export interface TokenUsageStats {
+  period_days: number;
+  total_tokens: number;
+  message_count: number;
+  avg_tokens_per_message: number;
+}
+
+export interface TokenUsageResponse {
+  recent_6_weeks: TokenUsageStats;
+  recent_12_weeks: TokenUsageStats;
+  all_time: TokenUsageStats;
+  budget_usd?: number | null;
+  estimated_cost_usd?: number | null;
+}
+
+// Add getTokenUsage to API client
+export const getTokenUsage = async (): Promise<TokenUsageResponse> => {
+  const response = await apiClient.get<TokenUsageResponse>('/ai/usage/tokens');
+  return response.data;
 };

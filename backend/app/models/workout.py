@@ -94,7 +94,7 @@ class WorkoutSchedule(BaseModel):
     status: Mapped[str] = mapped_column(
         String(20),
         default=WorkoutScheduleStatus.SCHEDULED.value,
-        index=True,
+        # index defined in __table_args__ as ix_workout_schedules_status
     )
 
     # Garmin sync status

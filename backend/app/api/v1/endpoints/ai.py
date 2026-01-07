@@ -257,11 +257,17 @@ async def create_conversation(
     title = request.title if request else None
     language = (request.language if request and request.language else None) or settings.ai_default_language
 
+    # Store language and model in context_data (DB has context_type/context_data, not language/model fields)
+    context_data = {
+        "language": language,
+        "model": settings.google_ai_model if settings.ai_provider == "google" else settings.openai_model,
+    }
+
     conversation = AIConversation(
         user_id=current_user.id,
         title=title or "새 대화",
-        language=language,
-        model=settings.openai_model,
+        context_type="chat",  # Default to "chat", can be "plan" for plan generation mode
+        context_data=context_data,
     )
     db.add(conversation)
     await db.commit()
@@ -556,7 +562,7 @@ async def quick_chat(
         context_type="plan_generation" if request.mode == "plan" else "chat",
         context_data={
             "language": settings.ai_default_language,
-            "model": settings.openai_model,
+            "model": settings.google_ai_model if settings.ai_provider == "google" else settings.openai_model,
             "mode": request.mode,
         },
     )
@@ -918,13 +924,20 @@ async def _get_ai_plan_response(
             continue
         history.append(msg)
 
+    # RAG: Search knowledge base for relevant context (plan mode)
+    system_prompt = RUNNING_COACH_PLAN_PROMPT
+    if settings.rag_enabled:
+        rag_context = await _get_rag_context(user_message)
+        if rag_context:
+            system_prompt = f"{RUNNING_COACH_PLAN_PROMPT}\n\n[참고 자료]\n{rag_context}"
+
     # Use Google Gemini or OpenAI based on settings
     if settings.ai_provider == "google" and settings.google_ai_api_key:
         response_data = await _get_gemini_response(
             history=history,
             user_message=user_message,
             context=context,
-            system_prompt=RUNNING_COACH_PLAN_PROMPT,
+            system_prompt=system_prompt,
             metrics=metrics,
         )
     else:
@@ -932,7 +945,7 @@ async def _get_ai_plan_response(
             history=history,
             user_message=user_message,
             context=context,
-            system_prompt=RUNNING_COACH_PLAN_PROMPT,
+            system_prompt=system_prompt,
             metrics=metrics,
         )
 
@@ -1113,14 +1126,50 @@ async def import_plan(
             message=f"Successfully imported plan '{request.plan_name}' with {weeks_created} weeks and {workouts_created} workouts",
         )
 
-    except HTTPException:
+    except HTTPException as e:
+        # Log HTTPException failures (validation errors)
+        try:
+            error_msg = e.detail if isinstance(e.detail, str) else str(e.detail)
+            ai_import = AIImport(
+                user_id=current_user.id,
+                source=request.source,
+                import_type="plan",
+                raw_content=json.dumps(request.model_dump(), ensure_ascii=False),
+                parsed_data=request.model_dump() if hasattr(request, 'model_dump') else None,
+                status="failed",
+                error_message=f"Validation error: {error_msg}",
+                processed_at=datetime.now(timezone.utc),
+            )
+            db.add(ai_import)
+            await db.commit()
+        except Exception as log_error:
+            logger.error(f"Failed to log import error: {log_error}")
         raise
     except Exception as e:
-        logger.exception("Plan import failed")
+        # Log unexpected failures with detailed error message
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        logger.exception(f"Plan import failed: {error_msg}")
+
+        try:
+            ai_import = AIImport(
+                user_id=current_user.id,
+                source=request.source if hasattr(request, 'source') else "unknown",
+                import_type="plan",
+                raw_content=json.dumps(request.model_dump(), ensure_ascii=False) if hasattr(request, 'model_dump') else str(request),
+                parsed_data=request.model_dump() if hasattr(request, 'model_dump') else None,
+                status="failed",
+                error_message=error_msg,
+                processed_at=datetime.now(timezone.utc),
+            )
+            db.add(ai_import)
+            await db.commit()
+        except Exception as log_error:
+            logger.error(f"Failed to log import error: {log_error}")
+
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Import failed. Please check the plan format and try again.",
+            detail=f"Import failed: {error_msg}. Please check the plan format and try again.",
         )
 
 
@@ -1311,3 +1360,100 @@ def _format_markdown_summary(data: dict) -> str:
     ])
 
     return "\n".join(lines)
+
+
+# -------------------------------------------------------------------------
+# Token Usage Tracking
+# -------------------------------------------------------------------------
+
+
+class TokenUsageStats(BaseModel):
+    """Token usage statistics."""
+
+    period_days: int
+    total_tokens: int
+    message_count: int
+    avg_tokens_per_message: float
+
+
+class TokenUsageResponse(BaseModel):
+    """Token usage tracking response."""
+
+    recent_6_weeks: TokenUsageStats
+    recent_12_weeks: TokenUsageStats
+    all_time: TokenUsageStats
+    budget_usd: float | None = None
+    estimated_cost_usd: float | None = None
+
+
+@router.get("/usage/tokens", response_model=TokenUsageResponse)
+async def get_token_usage(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> TokenUsageResponse:
+    """Get token usage statistics for different time periods.
+
+    Returns:
+        Token usage for 6 weeks, 12 weeks, and all-time.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Helper function to get stats for a period
+    async def get_period_stats(days: int | None) -> TokenUsageStats:
+        if days is None:
+            # All-time
+            stmt = select(
+                func.count(AIMessage.id).label("message_count"),
+                func.coalesce(func.sum(AIMessage.token_count), 0).label("total_tokens"),
+            ).where(
+                AIMessage.conversation_id.in_(
+                    select(AIConversation.id).where(AIConversation.user_id == current_user.id)
+                ),
+                AIMessage.role == "assistant",  # Only count AI responses
+                AIMessage.token_count.isnot(None),
+            )
+        else:
+            cutoff = now - timedelta(days=days)
+            stmt = select(
+                func.count(AIMessage.id).label("message_count"),
+                func.coalesce(func.sum(AIMessage.token_count), 0).label("total_tokens"),
+            ).where(
+                AIMessage.conversation_id.in_(
+                    select(AIConversation.id).where(AIConversation.user_id == current_user.id)
+                ),
+                AIMessage.role == "assistant",
+                AIMessage.token_count.isnot(None),
+                AIMessage.created_at >= cutoff,
+            )
+
+        result = await db.execute(stmt)
+        row = result.one()
+        message_count = row.message_count or 0
+        total_tokens = row.total_tokens or 0
+        avg_tokens = round(total_tokens / message_count, 2) if message_count > 0 else 0.0
+
+        return TokenUsageStats(
+            period_days=days or 0,
+            total_tokens=total_tokens,
+            message_count=message_count,
+            avg_tokens_per_message=avg_tokens,
+        )
+
+    # Get stats for each period
+    stats_6w = await get_period_stats(42)  # 6 weeks
+    stats_12w = await get_period_stats(84)  # 12 weeks
+    stats_all = await get_period_stats(None)
+
+    # Estimate cost (rough estimate: $0.002 per 1K tokens for GPT-4o)
+    cost_per_1k_tokens = 0.002
+    estimated_cost = None
+    if stats_all.total_tokens > 0:
+        estimated_cost = round((stats_all.total_tokens / 1000) * cost_per_1k_tokens, 2)
+
+    return TokenUsageResponse(
+        recent_6_weeks=stats_6w,
+        recent_12_weeks=stats_12w,
+        all_time=stats_all,
+        budget_usd=settings.openai_budget_usd,
+        estimated_cost_usd=estimated_cost,
+    )

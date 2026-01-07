@@ -17,7 +17,7 @@ from app.core.database import get_db
 from app.models.activity import Activity, ActivityMetric, ActivitySample
 from app.models.race import Race
 from app.models.user import User
-from app.services.ai_snapshot import ensure_ai_training_snapshot
+from app.services.ai_snapshot import ensure_ai_training_snapshot, get_multi_period_snapshots
 
 router = APIRouter()
 
@@ -63,9 +63,10 @@ class CoachActivitySummary(BaseModel):
 
 
 class CoachContextResponse(BaseModel):
-    """AI coach context response."""
+    """AI coach context response with multi-period snapshots."""
 
-    snapshot: dict[str, Any]
+    snapshot: dict[str, Any]  # Legacy: 12-week snapshot for backward compatibility
+    snapshots: dict[str, dict[str, Any]] | None = None  # New: 6-week, 12-week, all-time snapshots
     primary_race: CoachRaceSummary | None
     activity: CoachActivitySummary | None
 
@@ -211,14 +212,34 @@ async def get_ai_coach_context(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     activity_id: int | None = Query(None, description="Activity ID for FIT analysis"),
+    multi_period: bool = Query(True, description="Include 6-week, 12-week, all-time snapshots"),
 ) -> CoachContextResponse:
-    """Return AI coach context (snapshot, primary race, latest FIT summary)."""
-    snapshot = await ensure_ai_training_snapshot(db, current_user)
+    """Return AI coach context with multi-period snapshots.
+
+    Args:
+        current_user: Authenticated user.
+        db: Database session.
+        activity_id: Optional activity ID for FIT analysis.
+        multi_period: If True, include snapshots for 6 weeks, 12 weeks, and all-time.
+
+    Returns:
+        Coach context with snapshots, race info, and activity summary.
+    """
+    # Generate multi-period snapshots (6 weeks, 12 weeks, all-time)
+    if multi_period:
+        snapshots = await get_multi_period_snapshots(db, current_user)
+        legacy_snapshot = snapshots["recent_12_weeks"]  # Backward compatibility
+    else:
+        snapshot = await ensure_ai_training_snapshot(db, current_user)
+        snapshots = None
+        legacy_snapshot = snapshot.payload
+
     race_summary = await _get_primary_race_summary(db, current_user.id)
     activity_summary = await _get_activity_summary(db, current_user.id, activity_id)
 
     return CoachContextResponse(
-        snapshot=snapshot.payload,
+        snapshot=legacy_snapshot,
+        snapshots=snapshots,
         primary_race=race_summary,
         activity=activity_summary,
     )
