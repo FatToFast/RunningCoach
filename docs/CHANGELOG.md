@@ -24,6 +24,15 @@
 - **신규**: `docs/ARCHITECTURE.md` - 시스템 아키텍처 문서
 - **신규**: `docs/USER_GUIDE.md` - 사용자 가이드
 
+#### 4. 전문가 에이전트 시스템 구축
+- **신규**: `.claude/agents/` - 전문가 에이전트 정의
+  - `orchestrator.md` - 전체 작업 조율 및 위임
+  - `garmin-connector.md` - Garmin Connect 연동 전문가
+  - `data-manager.md` - 데이터 처리/분석 전문가
+  - `strava-connector.md` - Strava 연동 전문가
+  - `ai-coach.md` - AI 기반 훈련 계획 전문가
+  - `README.md` - 에이전트 시스템 개요
+
 ---
 
 ## 2026-01-06
