@@ -1,5 +1,31 @@
 # 변경 이력 (Changelog)
 
+## 2026-01-07
+
+### 문서화 개선
+
+#### 1. AGENTS.md 파일 생성 (AI 에이전트 규칙)
+- **신규**: 루트 `AGENTS.md` - 핵심 규칙, 프로젝트 지도, 작업 흐름
+- **신규**: `backend/AGENTS.md` - 백엔드 개발 규칙 (모델, API, 서비스 패턴)
+- **신규**: `frontend/AGENTS.md` - 프론트엔드 개발 규칙 (컴포넌트, React Query, 타입)
+- **신규**: `docs/AGENTS.md` - 문서화 규칙 (변경 이력, API 문서, 버그 패턴)
+
+#### 2. CLAUDE.md 업데이트
+- **추가**: 프로젝트 개요 및 핵심 기능 설명
+- **추가**: 기술 스택 섹션 (Backend/Frontend)
+- **추가**: 핵심 서비스 설명 (sync_service, dashboard, vdot)
+- **추가**: 데이터베이스 모델 테이블 (16개 모델)
+- **추가**: 외부 연동 서비스 정리 (Garmin, Strava, Runalyze, AI)
+- **추가**: AI 관련 자주 발생하는 이슈
+- **추가**: 최근 주요 변경사항 섹션
+
+#### 3. 문서 구조화
+- **신규**: `docs/ROADMAP.md` - 프로젝트 로드맵
+- **신규**: `docs/ARCHITECTURE.md` - 시스템 아키텍처 문서
+- **신규**: `docs/USER_GUIDE.md` - 사용자 가이드
+
+---
+
 ## 2026-01-06
 
 ### 주요 개선사항
