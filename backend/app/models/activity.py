@@ -83,8 +83,13 @@ class Activity(BaseModel):
     avg_leg_spring_stiffness: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # kN/m
 
     # FIT file info
+    # fit_file_path: Path to FIT file on disk. None if file was deleted after parse.
     fit_file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # fit_file_hash: SHA-256 hash of FIT file. Preserved even after file deletion for verification.
     fit_file_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # has_fit_file: True if FIT file was successfully parsed (data is in ActivitySample/Lap/Metric).
+    #   Note: This does NOT mean the file exists on disk. Check fit_file_path for file existence.
+    #   Semantic: "FIT data was successfully ingested" not "FIT file exists".
     has_fit_file: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Sensor info (detected from FIT file device_info)

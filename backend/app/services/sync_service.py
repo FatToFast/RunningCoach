@@ -1042,8 +1042,14 @@ class GarminSyncService:
             activity.vo2max = data["vO2MaxValue"]
 
     async def _download_fit_file(self, activity: Activity, garmin_id: int) -> None:
-        """Download, parse, and store FIT file for an activity."""
+        """Download, parse, and store FIT file for an activity.
+
+        After successful parsing (with sufficient samples), the FIT file is deleted
+        if settings.delete_fit_after_parse is True. The parsed data (ActivitySample,
+        ActivityLap, ActivityMetric) remains in the database.
+        """
         import asyncio
+        import os
 
         try:
             loop = asyncio.get_event_loop()
@@ -1068,9 +1074,10 @@ class GarminSyncService:
             activity.has_fit_file = True
 
             # Upsert raw file record (avoid unique constraint violation on re-download)
-            existing_raw_file = self.session.execute(
+            existing_raw_file_result = await self.session.execute(
                 select(GarminRawFile).where(GarminRawFile.activity_id == activity.id)
-            ).scalar_one_or_none()
+            )
+            existing_raw_file = existing_raw_file_result.scalar_one_or_none()
 
             if existing_raw_file:
                 # Update existing record
@@ -1089,19 +1096,72 @@ class GarminSyncService:
                 self.session.add(raw_file)
 
             # Parse FIT file and store samples/laps
+            parse_success = False
+            sample_count = 0
             try:
                 parsed_data = await loop.run_in_executor(
                     None,
                     lambda: self.adapter.parse_fit_file(fit_data),
                 )
                 await self._store_fit_data(activity, parsed_data)
+                sample_count = len(parsed_data.get("records", []))
+                parse_success = True
             except Exception as parse_error:
                 logger.warning(f"Failed to parse FIT file for activity {garmin_id}: {parse_error}")
 
             logger.info(f"Downloaded and parsed FIT file for activity {garmin_id}")
 
+            # Delete FIT file after successful parse if enabled
+            if (
+                settings.delete_fit_after_parse
+                and parse_success
+                and sample_count >= settings.fit_min_samples_for_delete
+            ):
+                await self._delete_fit_file(activity, file_path, garmin_id)
+
         except Exception as e:
             logger.warning(f"Failed to download FIT file for activity {garmin_id}: {e}")
+
+    async def _delete_fit_file(
+        self, activity: Activity, file_path: str, garmin_id: int
+    ) -> None:
+        """Delete FIT file after successful parse.
+
+        The file is deleted to save storage space. The parsed data (ActivitySample,
+        ActivityLap, ActivityMetric) remains in the database. The activity's
+        has_fit_file flag remains True (indicates "was parsed successfully"),
+        but fit_file_path is set to None (indicates "file no longer on disk").
+
+        Args:
+            activity: Activity record to update.
+            file_path: Path to the FIT file to delete.
+            garmin_id: Garmin activity ID for logging.
+        """
+        import os
+
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(
+                    f"Deleted FIT file for activity {garmin_id} after successful parse "
+                    f"(saved space, data preserved in DB)"
+                )
+
+            # Update activity to indicate file is gone but was parsed
+            # has_fit_file = True means "FIT data was successfully parsed"
+            # fit_file_path = None means "file no longer on disk"
+            activity.fit_file_path = None
+
+            # Also update GarminRawFile record
+            raw_file_result = await self.session.execute(
+                select(GarminRawFile).where(GarminRawFile.activity_id == activity.id)
+            )
+            raw_file = raw_file_result.scalar_one_or_none()
+            if raw_file:
+                raw_file.file_path = None
+
+        except Exception as e:
+            logger.warning(f"Failed to delete FIT file for activity {garmin_id}: {e}")
 
     async def _store_fit_data(self, activity: Activity, parsed_data: dict[str, Any]) -> None:
         """Store parsed FIT data as samples and laps.

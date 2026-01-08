@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     # FIT Storage (default to ./data/fit for local dev, override in production)
     fit_storage_path: str = "./data/fit_files"
 
+    # FIT file management policy
+    delete_fit_after_parse: bool = True  # Delete FIT file after successful parse (data saved to DB)
+    fit_min_samples_for_delete: int = 10  # Minimum ActivitySample records required before deleting FIT
+
     @property
     def fit_storage_path_absolute(self) -> str:
         """Get absolute path for FIT storage.
