@@ -23,6 +23,16 @@ from pathlib import Path
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    env_path = backend_dir / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"Loaded environment from: {env_path}")
+except ImportError:
+    print("Warning: python-dotenv not installed. Using system environment variables only.")
+
 import numpy as np
 
 
