@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models import Activity, AITrainingSnapshot, GarminSyncState, HRRecord, Sleep
+from app.models.race import Race
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,95 @@ async def _get_last_sync_at(db: AsyncSession, user_id: int) -> datetime | None:
         )
     )
     return result.scalar_one_or_none()
+
+
+async def _get_race_data(db: AsyncSession, user_id: int) -> dict[str, Any]:
+    """Fetch race data for AI context.
+
+    Returns:
+        Dictionary containing:
+        - primary_race: The user's primary target race (or nearest upcoming)
+        - upcoming_races: List of upcoming races with D-day
+        - past_records: List of completed races with official times
+    """
+    now = datetime.now(timezone.utc).date()
+
+    # Fetch all races for the user
+    result = await db.execute(
+        select(Race)
+        .where(Race.user_id == user_id)
+        .order_by(Race.race_date.desc())
+    )
+    races = result.scalars().all()
+
+    upcoming_races = []
+    past_records = []
+    primary_race = None
+
+    for race in races:
+        days_until = (race.race_date - now).days
+
+        race_dict = {
+            "id": race.id,
+            "name": race.name,
+            "race_date": race.race_date.isoformat(),
+            "distance_km": race.distance_km,
+            "distance_label": race.distance_label,
+            "location": race.location,
+            "days_until": days_until,
+        }
+
+        if race.is_completed:
+            # Past race with official record
+            past_records.append({
+                **race_dict,
+                "result_time_seconds": race.result_time_seconds,
+                "result_time_formatted": _format_time(race.result_time_seconds) if race.result_time_seconds else None,
+                "result_notes": race.result_notes,
+            })
+        elif days_until >= 0:
+            # Upcoming race
+            upcoming_races.append({
+                **race_dict,
+                "goal_time_seconds": race.goal_time_seconds,
+                "goal_time_formatted": _format_time(race.goal_time_seconds) if race.goal_time_seconds else None,
+                "goal_description": race.goal_description,
+                "is_primary": race.is_primary,
+            })
+
+            # Set primary race
+            if race.is_primary and primary_race is None:
+                primary_race = upcoming_races[-1]
+
+    # If no primary race is set, use the nearest upcoming race
+    if primary_race is None and upcoming_races:
+        # Sort by days_until ascending to get nearest
+        upcoming_sorted = sorted(upcoming_races, key=lambda r: r["days_until"])
+        primary_race = upcoming_sorted[0]
+
+    # Sort past records by date descending (most recent first), limit to 10
+    past_records = sorted(past_records, key=lambda r: r["race_date"], reverse=True)[:10]
+
+    # Sort upcoming races by date ascending (nearest first)
+    upcoming_races = sorted(upcoming_races, key=lambda r: r["days_until"])
+
+    return {
+        "primary_race": primary_race,
+        "upcoming_races": upcoming_races,
+        "past_records": past_records,
+    }
+
+
+def _format_time(seconds: int | None) -> str | None:
+    """Format seconds to HH:MM:SS or MM:SS string."""
+    if seconds is None:
+        return None
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 async def _build_snapshot_payload(
@@ -264,6 +354,11 @@ async def _build_snapshot_payload(
             "missing_hr_pct": missing_hr_pct,
         },
     }
+
+    # Add race data (goals and past records)
+    race_data = await _get_race_data(db, user.id)
+    payload["races"] = race_data
+    payload["primary_race"] = race_data.get("primary_race")
 
     return payload
 
