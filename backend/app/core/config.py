@@ -135,6 +135,7 @@ class Settings(BaseSettings):
     strava_encryption_key: Optional[str] = None  # Fernet key for encrypting tokens
     strava_oauth_base_url: str = "https://www.strava.com/oauth"  # OAuth endpoints
     strava_api_base_url: str = "https://www.strava.com/api/v3"  # API endpoints
+    strava_token_refresh_buffer_seconds: int = 300  # Refresh token 5 min before expiry
     strava_auto_upload: bool = True  # Auto-upload to Strava after Garmin sync
     strava_upload_concurrency: int = 3  # Max concurrent uploads
     strava_upload_retry_delays: str = "60,300,1800,7200"  # Retry delays in seconds (1m, 5m, 30m, 2h)

@@ -113,6 +113,61 @@ async def _generate_oauth_state(user_id: int) -> str:
     return state_token
 
 
+async def _ensure_token_valid(session: StravaSession, db: AsyncSession) -> None:
+    """Ensure Strava token is valid, refresh if needed.
+
+    Refreshes token if it expires within the buffer time (default: 5 minutes).
+
+    Args:
+        session: StravaSession to check and refresh.
+        db: Database session for persisting refreshed tokens.
+
+    Raises:
+        HTTPException: If token refresh fails.
+    """
+    if not session.expires_at:
+        # No expiry info - assume valid
+        return
+
+    # Calculate refresh threshold (expiry - buffer)
+    buffer = timedelta(seconds=settings.strava_token_refresh_buffer_seconds)
+    refresh_threshold = session.expires_at - buffer
+    now = datetime.now(timezone.utc)
+
+    # Refresh if within buffer window or already expired
+    if now >= refresh_threshold:
+        logger.info(f"Refreshing Strava token for user {session.user_id} (expires at {session.expires_at})")
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{settings.strava_oauth_base_url}/token",
+                    data={
+                        "client_id": settings.strava_client_id,
+                        "client_secret": settings.strava_client_secret,
+                        "refresh_token": _decrypt_token(session.refresh_token),
+                        "grant_type": "refresh_token",
+                    },
+                )
+                response.raise_for_status()
+                tokens = response.json()
+
+            # Update session with encrypted tokens
+            session.access_token = _encrypt_token(tokens["access_token"])
+            session.refresh_token = _encrypt_token(tokens["refresh_token"])
+            session.expires_at = datetime.fromtimestamp(tokens["expires_at"], tz=timezone.utc)
+            await db.flush()
+
+            logger.info(f"Strava token refreshed successfully for user {session.user_id}, new expiry: {session.expires_at}")
+
+        except Exception as e:
+            logger.exception(f"Failed to refresh Strava token for user {session.user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Strava token expired and refresh failed. Please reconnect.",
+            )
+
+
 async def _validate_oauth_state(state: str | None, user_id: int) -> bool:
     """Validate OAuth state token for CSRF protection.
 
@@ -787,32 +842,8 @@ async def upload_single_activity(
             detail="FIT file not found on disk",
         )
 
-    # Ensure token is valid (refresh if needed)
-    if session.expires_at and session.expires_at <= datetime.now(timezone.utc):
-        # Auto-refresh token
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{settings.strava_oauth_base_url}/token",
-                    data={
-                        "client_id": settings.strava_client_id,
-                        "client_secret": settings.strava_client_secret,
-                        "refresh_token": _decrypt_token(session.refresh_token),
-                        "grant_type": "refresh_token",
-                    },
-                )
-                response.raise_for_status()
-                tokens = response.json()
-                session.access_token = tokens["access_token"]
-                session.refresh_token = tokens["refresh_token"]
-                session.expires_at = datetime.fromtimestamp(tokens["expires_at"], tz=timezone.utc)
-                await db.flush()
-        except Exception:
-            logger.exception("Failed to refresh Strava token")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Strava token expired. Please reconnect.",
-            )
+    # Ensure token is valid (refresh if needed, with 5-min buffer)
+    await _ensure_token_valid(session, db)
 
     metrics = get_metrics_backend()
     start_time = time.perf_counter()
@@ -842,10 +873,12 @@ async def upload_single_activity(
         upload_id = upload_result.get("id")
         strava_activity_id = upload_result.get("activity_id")
 
-        # If activity_id is not yet available, poll for it (up to 3 attempts)
+        # If activity_id is not yet available, poll for it with exponential backoff
         if not strava_activity_id and upload_id:
-            for _ in range(3):
-                await asyncio.sleep(2)
+            # Exponential backoff: 2s, 4s, 8s (total ~14s)
+            backoff_delays = [2, 4, 8]
+            for delay in backoff_delays:
+                await asyncio.sleep(delay)
                 async with httpx.AsyncClient() as client:
                     check_response = await client.get(
                         f"{settings.strava_api_base_url}/uploads/{upload_id}",
@@ -855,6 +888,7 @@ async def upload_single_activity(
                         check_result = check_response.json()
                         strava_activity_id = check_result.get("activity_id")
                         if strava_activity_id:
+                            logger.debug(f"Strava upload {upload_id} completed after {delay}s delay")
                             break
 
         # Create mapping record

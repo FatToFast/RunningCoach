@@ -459,12 +459,25 @@ async def chat(
         response_status = payload.get("status")
         assistant_content = payload.get("assistant_message") or "플랜 생성을 계속 진행합니다."
 
+        # Validate response status
+        if not response_status:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="AI plan response missing 'status' field",
+            )
+
+        if response_status not in ("plan", "need_info"):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"AI plan response has invalid status: '{response_status}'. Expected 'plan' or 'need_info'.",
+            )
+
         if response_status == "plan":
             plan_data = payload.get("plan")
             if not isinstance(plan_data, dict):
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="AI plan response missing plan data",
+                    detail="AI plan response status='plan' but 'plan' field is missing or invalid",
                 )
             plan_data["source"] = "ai"
             # Validate AI-generated plan JSON against schema
@@ -491,13 +504,15 @@ async def chat(
                 if save_mode == "active":
                     await activate_plan(plan_id, current_user, db)
                     plan_status = "active"
+
         elif response_status == "need_info":
+            # Validate need_info response has required fields
             missing_fields = payload.get("missing_fields") or []
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Invalid AI plan response format",
-            )
+            questions = payload.get("questions") or []
+
+            if not missing_fields and not questions:
+                logger.warning("AI plan response status='need_info' but no missing_fields or questions provided")
+                # Allow empty lists but log warning
 
     # Save user message (after AI response to avoid duplication)
     user_message = AIMessage(
@@ -611,6 +626,21 @@ async def quick_chat(
         response_status = payload.get("status")
         assistant_content = payload.get("assistant_message") or "플랜 생성을 계속 진행합니다."
 
+        # Validate response status
+        if not response_status:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="AI plan response missing 'status' field",
+            )
+
+        if response_status not in ("plan", "need_info"):
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"AI plan response has invalid status: '{response_status}'. Expected 'plan' or 'need_info'.",
+            )
+
         if response_status == "plan":
             plan_data = payload.get("plan")
             if not isinstance(plan_data, dict):
@@ -646,13 +676,13 @@ async def quick_chat(
                     await activate_plan(plan_id, current_user, db)
                     plan_status = "active"
         elif response_status == "need_info":
+            # Validate need_info response has required fields
             missing_fields = payload.get("missing_fields") or []
-        else:
-            await db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Invalid AI plan response format",
-            )
+            questions = payload.get("questions") or []
+
+            if not missing_fields and not questions:
+                logger.warning("AI plan response status='need_info' but no missing_fields or questions provided")
+                # Allow empty lists but log warning
 
     # Save user message (after AI response to avoid duplication)
     user_message = AIMessage(
