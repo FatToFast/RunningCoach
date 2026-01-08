@@ -1293,24 +1293,18 @@ class GarminConnectAdapter:
             
             # Log raw response for debugging - use INFO level so we can see it
             if data:
-                logger.info(f"get_all_day_events for {date_str} returned: type={type(data)}")
+                # Use DEBUG level for data details to avoid logging sensitive information
+                logger.debug(f"get_all_day_events for {date_str} returned: type={type(data)}")
                 if isinstance(data, dict):
-                    logger.info(f"Dict keys: {list(data.keys())}")
-                    # Log all data for debugging (truncated if too long)
-                    import json
-                    try:
-                        data_str = json.dumps(data, default=str, indent=2)
-                        if len(data_str) > 1000:
-                            logger.info(f"Data (truncated): {data_str[:1000]}...")
-                        else:
-                            logger.info(f"Full data: {data_str}")
-                    except Exception as e:
-                        logger.info(f"Data (non-serializable): {str(data)[:500]}")
+                    logger.debug(f"Dict keys: {list(data.keys())}")
+                    logger.debug(f"Dict has {len(data)} keys")
                 elif isinstance(data, list):
-                    logger.info(f"List with {len(data)} items")
-                    if data:
-                        logger.info(f"First item type: {type(data[0])}, keys: {list(data[0].keys()) if isinstance(data[0], dict) else 'not dict'}")
-            
+                    logger.debug(f"List with {len(data)} items")
+                    if data and isinstance(data[0], dict):
+                        logger.debug(f"First item keys: {list(data[0].keys())}")
+                # Summary only at INFO level (no sensitive data)
+                logger.info(f"get_all_day_events for {date_str}: fetched {len(data) if isinstance(data, (list, dict)) else 0} items")
+
             return data or {}
         except Exception as e:
             status_code = 500

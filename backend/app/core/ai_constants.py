@@ -2,11 +2,10 @@
 
 Centralized configuration for AI-related functionality including
 system prompts, model parameters, and conversation settings.
-"""
 
-# OpenAI API parameters
-AI_MAX_TOKENS = 2000
-AI_TEMPERATURE = 0.7
+Note: AI model parameters (max_tokens, temperature) have been moved to
+app.core.config.Settings for better configurability via environment variables.
+"""
 
 # System prompt for running coach persona
 RUNNING_COACH_SYSTEM_PROMPT = """당신은 전문 러닝 코치입니다. 사용자의 훈련 데이터와 목표를 기반으로 과학적이고 개인화된 훈련 계획을 제공합니다.

@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     ai_default_interval_pace: int = 270  # 4:30/km in seconds (user-adjustable)
     ai_default_tempo_pace: int = 300  # 5:00/km in seconds (user-adjustable)
 
+    # AI Model parameters
+    ai_max_tokens: int = 2000  # Maximum tokens for AI responses
+    ai_temperature_chat: float = 0.7  # Temperature for chat responses (0.0-1.0)
+    ai_temperature_plan: float = 0.5  # Temperature for plan generation (lower for more deterministic)
+
     # Token cost estimation (per 1K tokens)
     ai_token_cost_google: float = 0.00075  # Gemini pricing
     ai_token_cost_openai: float = 0.002  # GPT-4o pricing

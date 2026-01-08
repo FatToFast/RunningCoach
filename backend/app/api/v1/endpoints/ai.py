@@ -7,14 +7,12 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.ai_constants import (
-    AI_MAX_TOKENS,
-    AI_TEMPERATURE,
     RUNNING_COACH_PLAN_PROMPT,
     RUNNING_COACH_SYSTEM_PROMPT,
 )
@@ -91,7 +89,7 @@ class ConversationListResponse(BaseModel):
 class ChatRequest(BaseModel):
     """Request to chat with AI."""
 
-    message: str
+    message: str = Field(min_length=1, max_length=5000, description="User message to AI coach")
     context: dict[str, Any] | None = None
     mode: Literal["chat", "plan"] | None = None
     save_mode: Literal["draft", "approved", "active"] | None = None
@@ -909,8 +907,8 @@ async def _get_openai_response(
         response = await client.chat.completions.create(
             model=settings.openai_model,
             messages=messages,
-            max_tokens=AI_MAX_TOKENS,
-            temperature=AI_TEMPERATURE,
+            max_tokens=settings.ai_max_tokens,
+            temperature=settings.ai_temperature_chat,
         )
         status_code = 200
     except Exception:
