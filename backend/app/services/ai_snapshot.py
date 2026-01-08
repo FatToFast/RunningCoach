@@ -27,9 +27,8 @@ RECOVERY_DAYS = settings.ai_snapshot_recovery_days
 DEFAULT_INTERVAL_CUTOFF = settings.ai_default_interval_pace  # 4:30/km default
 DEFAULT_TEMPO_CUTOFF = settings.ai_default_tempo_pace  # 5:00/km default
 
-# Earliest possible date for "all-time" queries (GPS running watches became mainstream around 2006)
-# This serves as a safe lower bound that captures all realistic user data
-ALL_TIME_START_YEAR = 2006
+# Use config value for earliest possible date for "all-time" queries
+ALL_TIME_START_YEAR = settings.ai_snapshot_all_time_start_year
 
 
 def _parse_pace(value: Any) -> int | None:

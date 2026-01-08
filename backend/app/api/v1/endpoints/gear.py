@@ -11,19 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_user
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.activity import Activity
 from app.models.gear import ActivityGear, Gear, GearStatus, GearType
 from app.models.user import User
 
 router = APIRouter()
+settings = get_settings()
 
 # -------------------------------------------------------------------------
 # Configuration Constants
 # -------------------------------------------------------------------------
-
-# Default max distance for shoes before retirement (in meters)
-DEFAULT_MAX_DISTANCE_METERS = 800_000  # 800km
 
 # Percentage threshold for "near retirement" warning
 RETIREMENT_WARNING_THRESHOLD = 80  # 80%
@@ -106,7 +105,7 @@ class GearCreateRequest(BaseModel):
     gear_type: str = Field(default=GearType.RUNNING_SHOES.value)
     purchase_date: date | None = None
     initial_distance_meters: float = Field(default=0.0, ge=0)
-    max_distance_meters: float | None = Field(default=None, ge=0)  # Uses DEFAULT_MAX_DISTANCE_METERS if None
+    max_distance_meters: float | None = Field(default=None, ge=0)  # Uses settings.gear_default_max_distance_meters if None
     notes: str | None = None
 
     @field_validator("gear_type")
@@ -448,7 +447,7 @@ async def create_gear(
         gear_type=data.gear_type,
         purchase_date=data.purchase_date,
         initial_distance_meters=data.initial_distance_meters,
-        max_distance_meters=data.max_distance_meters if data.max_distance_meters is not None else DEFAULT_MAX_DISTANCE_METERS,
+        max_distance_meters=data.max_distance_meters if data.max_distance_meters is not None else settings.gear_default_max_distance_meters,
         notes=data.notes,
     )
 

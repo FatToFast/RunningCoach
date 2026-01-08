@@ -269,7 +269,7 @@ class StravaUploadService:
                         "refresh_token": session.refresh_token,
                         "grant_type": "refresh_token",
                     },
-                    timeout=30.0,
+                    timeout=settings.strava_http_timeout_short_seconds,
                 )
                 response.raise_for_status()
                 tokens = response.json()
@@ -319,7 +319,7 @@ class StravaUploadService:
                         headers={"Authorization": f"Bearer {access_token}"},
                         files=files,
                         data=data,
-                        timeout=60.0,
+                        timeout=settings.strava_http_timeout_seconds,
                     )
                     status_code = response.status_code
                     response.raise_for_status()
@@ -358,7 +358,7 @@ class StravaUploadService:
                     response = await client.get(
                         f"https://www.strava.com/api/v3/uploads/{upload_id}",
                         headers={"Authorization": f"Bearer {access_token}"},
-                        timeout=30.0,
+                        timeout=settings.strava_http_timeout_short_seconds,
                     )
                     if response.status_code == 200:
                         result = response.json()

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_user
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.activity import Activity, ActivityMetric, ActivitySample
 from app.models.race import Race
@@ -20,8 +21,7 @@ from app.models.user import User
 from app.services.ai_snapshot import ensure_ai_training_snapshot, get_multi_period_snapshots
 
 router = APIRouter()
-
-SAMPLE_LIMIT = 5000
+settings = get_settings()
 
 
 class CoachRaceSummary(BaseModel):
@@ -160,7 +160,7 @@ async def _get_activity_summary(
             ActivitySample.cadence,
         )
         .where(ActivitySample.activity_id == activity.id)
-        .limit(SAMPLE_LIMIT)
+        .limit(settings.ai_sample_limit)
     )
     rows = samples_result.all()
 

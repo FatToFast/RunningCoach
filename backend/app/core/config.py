@@ -88,6 +88,22 @@ class Settings(BaseSettings):
     # AI Provider (google or openai)
     ai_provider: str = "google"  # "google" or "openai"
 
+    # AI Snapshot settings
+    ai_snapshot_weeks: int = 6  # Default snapshot window (weeks)
+    ai_snapshot_recovery_days: int = 7  # Recovery metrics lookback (days)
+    ai_snapshot_all_time_start_year: int = 2006  # Earliest year for "all-time" queries
+    ai_default_interval_pace: int = 270  # Default interval pace (sec/km) - 4:30/km
+    ai_default_tempo_pace: int = 300  # Default tempo pace (sec/km) - 5:00/km
+    ai_sample_limit: int = 5000  # Max samples to analyze for FIT data
+
+    # Gear settings
+    gear_default_max_distance_meters: int = 800_000  # Default max distance for shoes (800km)
+
+    # Strava HTTP timeout settings
+    strava_http_timeout_seconds: int = 60  # HTTP timeout for upload requests
+    strava_http_timeout_short_seconds: int = 30  # HTTP timeout for token/status requests
+    strava_token_refresh_buffer_seconds: int = 300  # Refresh token 5 min before expiry
+
     # Google AI (Gemini)
     google_ai_api_key: Optional[str] = None
     google_ai_model: str = "gemini-2.5-flash-lite"
