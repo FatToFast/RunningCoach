@@ -5,6 +5,7 @@ Provides in-memory vector search for document chunks.
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,9 @@ logger = logging.getLogger(__name__)
 # Global retriever instance
 _retriever_instance: "KnowledgeRetriever | None" = None
 
+# Cache TTL in seconds (default: 1 hour)
+CACHE_TTL_SECONDS = 3600
+
 
 class KnowledgeRetriever:
     """FAISS-based retriever for knowledge base documents.
@@ -37,6 +41,8 @@ class KnowledgeRetriever:
         self._embedding_provider: str = "google"
         self._api_key: str | None = None
         self._embedding_model: str | None = None
+        # Cache for search results: (query, top_k, min_score) -> (timestamp, results)
+        self._cache: dict[tuple[str, int, float], tuple[float, list[RetrievalResult]]] = {}
 
     @property
     def is_initialized(self) -> bool:
@@ -132,6 +138,17 @@ class KnowledgeRetriever:
         if not self.is_initialized or self.index is None:
             return []
 
+        # Check cache
+        cache_key = (query, top_k, min_score)
+        if cache_key in self._cache:
+            timestamp, cached_results = self._cache[cache_key]
+            if time.time() - timestamp < CACHE_TTL_SECONDS:
+                logger.debug(f"RAG cache hit for query: {query[:50]}...")
+                return cached_results
+            else:
+                # Expired, remove from cache
+                del self._cache[cache_key]
+
         try:
             # Generate query embedding
             query_embedding = await generate_query_embedding(
@@ -163,6 +180,10 @@ class KnowledgeRetriever:
                         score=float(score),
                     )
                 )
+
+            # Cache the results
+            self._cache[cache_key] = (time.time(), results)
+            logger.debug(f"RAG cache miss, cached {len(results)} results for query: {query[:50]}...")
 
             return results
 
