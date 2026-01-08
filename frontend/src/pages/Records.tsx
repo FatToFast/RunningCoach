@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Trophy, Clock, Route, TrendingUp, Calendar, Zap, Flag, Edit2, X, Check, MapPin } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Trophy, Clock, Route, TrendingUp, Calendar, Zap, Flag, Edit2, X, Check, MapPin, AlertCircle } from 'lucide-react';
 import { usePersonalRecords } from '../hooks/useDashboard';
 import { useRaces, useUpdateRace } from '../hooks/useRaces';
 import type { Race, RaceUpdate } from '../api/races';
@@ -30,6 +30,9 @@ function formatDistance(meters: number) {
 
 function formatDate(dateStr: string) {
   const date = new Date(dateStr);
+  if (isNaN(date.getTime())) {
+    return '-';
+  }
   return date.toLocaleDateString('ko-KR', {
     year: 'numeric',
     month: 'short',
@@ -43,11 +46,19 @@ function parseTimeToSeconds(timeStr: string): number | null {
   if (parts.some(isNaN)) return null;
 
   if (parts.length === 3) {
-    // HH:MM:SS
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    // HH:MM:SS - validate minutes and seconds are 0-59
+    const [hours, minutes, seconds] = parts;
+    if (hours < 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59) {
+      return null;
+    }
+    return hours * 3600 + minutes * 60 + seconds;
   } else if (parts.length === 2) {
-    // MM:SS
-    return parts[0] * 60 + parts[1];
+    // MM:SS - validate seconds are 0-59
+    const [minutes, seconds] = parts;
+    if (minutes < 0 || seconds < 0 || seconds > 59) {
+      return null;
+    }
+    return minutes * 60 + seconds;
   }
   return null;
 }
@@ -192,30 +203,31 @@ function RaceEditModal({ race, onClose, onSave, isSaving }: RaceEditModalProps) 
 interface RaceCardProps {
   race: Race;
   onEdit: (race: Race) => void;
-  variant: 'upcoming' | 'completed';
+  variant: 'upcoming' | 'completed' | 'overdue';
 }
 
 function RaceCard({ race, onEdit, variant }: RaceCardProps) {
   const isUpcoming = variant === 'upcoming';
+  const isOverdue = variant === 'overdue';
 
   return (
     <div
-      className={`card group hover:border-[var(--color-accent-cyan)] transition-all ${
+      className={`card group hover:border-[var(--color-accent-cyan)] transition-all relative ${
         race.is_primary && isUpcoming ? 'border-amber' : ''
-      }`}
+      } ${isOverdue ? 'border-red/50' : ''}`}
     >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-3">
           <div
             className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-              isUpcoming ? 'bg-amber/20' : 'bg-green/20'
+              isUpcoming ? 'bg-amber/20' : isOverdue ? 'bg-red/20' : 'bg-green/20'
             }`}
           >
-            <Flag className={`w-5 h-5 ${isUpcoming ? 'text-amber' : 'text-green'}`} />
+            <Flag className={`w-5 h-5 ${isUpcoming ? 'text-amber' : isOverdue ? 'text-red' : 'text-green'}`} />
           </div>
           <div>
             <h3 className="font-display font-semibold">{race.name}</h3>
-            <p className="text-muted text-sm">{race.distance_label || `${race.distance_km}km`}</p>
+            <p className="text-muted text-sm">{race.distance_label || (race.distance_km ? `${race.distance_km}km` : '거리 미정')}</p>
           </div>
         </div>
         <button
@@ -232,6 +244,12 @@ function RaceCard({ race, onEdit, variant }: RaceCardProps) {
         {isUpcoming ? (
           <div className={`stat-value text-3xl ${getDDayColor(race.days_until)}`}>
             {getDDayText(race.days_until)}
+          </div>
+        ) : isOverdue ? (
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-5 h-5 text-red" />
+            <span className="stat-value text-xl text-red">{getDDayText(race.days_until)}</span>
+            <span className="text-sm text-muted">- 기록을 입력해주세요</span>
           </div>
         ) : (
           <div className="stat-value text-3xl text-green">
@@ -368,10 +386,25 @@ export function Records() {
   const updateRaceMutation = useUpdateRace();
   const [editingRace, setEditingRace] = useState<Race | null>(null);
 
-  // Separate races into upcoming and completed
-  const upcomingRaces =
-    racesData?.races.filter((r) => !r.is_completed && r.days_until >= 0) || [];
-  const completedRaces = racesData?.races.filter((r) => r.is_completed) || [];
+  // Separate races into upcoming, overdue, and completed (single pass with useMemo)
+  const { upcomingRaces, overdueRaces, completedRaces } = useMemo(() => {
+    const upcoming: Race[] = [];
+    const overdue: Race[] = [];
+    const completed: Race[] = [];
+
+    for (const race of racesData?.races || []) {
+      if (race.is_completed) {
+        completed.push(race);
+      } else if (race.days_until >= 0) {
+        upcoming.push(race);
+      } else {
+        // Past race but not completed - overdue
+        overdue.push(race);
+      }
+    }
+
+    return { upcomingRaces: upcoming, overdueRaces: overdue, completedRaces: completed };
+  }, [racesData?.races]);
 
   const handleRaceSave = (raceId: number, update: RaceUpdate) => {
     updateRaceMutation.mutate(
@@ -497,6 +530,29 @@ export function Records() {
         </section>
       )}
 
+      {/* Overdue Races - need result input */}
+      {overdueRaces.length > 0 && (
+        <section>
+          <h2 className="font-display text-lg font-semibold mb-4 flex items-center gap-2">
+            <AlertCircle className="w-5 h-5 text-red" />
+            기록 입력 필요
+            <span className="text-muted text-sm font-normal ml-2">
+              (대회가 지났지만 기록이 없습니다)
+            </span>
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {overdueRaces.map((race) => (
+              <RaceCard
+                key={race.id}
+                race={race}
+                onEdit={setEditingRace}
+                variant="overdue"
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Upcoming Races with D-day */}
       {upcomingRaces.length > 0 && (
         <section>
@@ -524,7 +580,7 @@ export function Records() {
             <Trophy className="w-5 h-5 text-green" />
             대회 기록
             <span className="text-muted text-sm font-normal ml-2">
-              (클릭하여 공식 기록 수정)
+              (카드에 마우스를 올리면 수정 버튼이 나타납니다)
             </span>
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
