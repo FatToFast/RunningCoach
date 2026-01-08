@@ -90,23 +90,46 @@ function RaceEditModal({ race, onClose, onSave, isSaving }: RaceEditModalProps) 
     race.result_time_seconds ? formatTime(race.result_time_seconds) : ''
   );
   const [resultNotes, setResultNotes] = useState(race.result_notes || '');
+  const [timeError, setTimeError] = useState<string | null>(null);
+
+  // Validate time format on change
+  const handleTimeChange = (value: string) => {
+    setResultTime(value);
+    if (value && !parseTimeToSeconds(value)) {
+      setTimeError('형식: 시:분:초 또는 분:초 (예: 3:45:30, 45:30)');
+    } else {
+      setTimeError(null);
+    }
+  };
 
   const handleSave = () => {
     const resultSeconds = resultTime ? parseTimeToSeconds(resultTime) : null;
+
+    // Block save if time format is invalid
+    if (resultTime && resultSeconds === null) {
+      setTimeError('올바른 시간 형식을 입력하세요');
+      return;
+    }
 
     onSave(race.id, {
       name,
       result_time_seconds: resultSeconds,
       result_notes: resultNotes || null,
-      is_completed: resultSeconds ? true : race.is_completed,
+      // Clear result → mark as incomplete, set result → mark as complete
+      is_completed: resultSeconds !== null,
     });
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="race-edit-title"
+    >
       <div className="card max-w-md w-full">
         <div className="flex items-center justify-between mb-6">
-          <h3 className="font-display text-lg font-semibold">대회 기록 수정</h3>
+          <h3 id="race-edit-title" className="font-display text-lg font-semibold">대회 기록 수정</h3>
           <button
             onClick={onClose}
             className="p-1 hover:bg-[var(--color-surface-elevated)] rounded"
@@ -136,13 +159,21 @@ function RaceEditModal({ race, onClose, onSave, isSaving }: RaceEditModalProps) 
             <input
               type="text"
               value={resultTime}
-              onChange={(e) => setResultTime(e.target.value)}
-              className="w-full px-3 py-2 bg-[var(--color-surface-elevated)] border border-[var(--color-border)] rounded-lg focus:outline-none focus:border-cyan font-mono"
+              onChange={(e) => handleTimeChange(e.target.value)}
+              className={`w-full px-3 py-2 bg-[var(--color-surface-elevated)] border rounded-lg focus:outline-none font-mono ${
+                timeError ? 'border-red focus:border-red' : 'border-[var(--color-border)] focus:border-cyan'
+              }`}
               placeholder="예: 3:45:30 또는 45:30"
+              aria-invalid={!!timeError}
+              aria-describedby={timeError ? 'time-error' : undefined}
             />
-            <p className="text-xs text-muted mt-1">
-              가민 기록과 다를 경우 공식 기록을 입력하세요
-            </p>
+            {timeError ? (
+              <p id="time-error" className="text-xs text-red mt-1">{timeError}</p>
+            ) : (
+              <p className="text-xs text-muted mt-1">
+                가민 기록과 다를 경우 공식 기록을 입력하세요. 비우면 미완료 처리됩니다.
+              </p>
+            )}
           </div>
 
           {/* Notes */}
@@ -181,7 +212,7 @@ function RaceEditModal({ race, onClose, onSave, isSaving }: RaceEditModalProps) 
           </button>
           <button
             onClick={handleSave}
-            disabled={isSaving || !name.trim()}
+            disabled={isSaving || !name.trim() || !!timeError}
             className="flex-1 px-4 py-2 bg-cyan text-black rounded-lg hover:bg-cyan/80 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {isSaving ? (
@@ -415,7 +446,7 @@ export function Records() {
     );
   };
 
-  if (isLoading) {
+  if (isLoading || racesLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-cyan animate-pulse">Loading records...</div>
