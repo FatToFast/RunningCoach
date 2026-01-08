@@ -148,6 +148,8 @@ class Settings(BaseSettings):
 
     # Sync
     sync_cron: Optional[str] = None  # e.g., "0 */6 * * *" for every 6 hours
+    sync_lock_ttl_seconds: int = 10800  # 3 hours (for large backfills)
+    sync_lock_extension_interval: int = 600  # Extend lock every 10 minutes during sync
 
     # Observability
     metrics_backend: str = "inmemory"  # "inmemory" | "prometheus"

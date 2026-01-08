@@ -17,6 +17,7 @@ from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
+from app.core.config import get_settings
 from app.core.database import get_db, async_session_maker
 from app.core.session import acquire_lock, release_lock, check_lock, extend_lock
 from app.models.garmin import GarminSession, GarminSyncState, GarminRawEvent
@@ -26,13 +27,8 @@ from app.services.sync_service import GarminSyncService, create_sync_service
 from app.adapters.garmin_adapter import GarminConnectAdapter, GarminAuthError
 
 router = APIRouter()
+settings = get_settings()
 logger = logging.getLogger(__name__)
-
-# Sync lock configuration
-# Increased to 3 hours to accommodate large backfills (500+ activities)
-# For very long syncs (1000+ activities), consider periodic lock extension
-# using extend_lock() every 10-15 minutes during sync
-SYNC_LOCK_TTL = 10800  # 3 hours max sync duration
 
 
 def _sync_lock_name(user_id: int) -> str:
@@ -176,7 +172,8 @@ async def run_sync_background(
     """Run sync in background.
 
     This function runs in a separate task and performs the actual sync.
-    Uses Redis distributed lock for multi-worker safety.
+    Uses Redis distributed lock for multi-worker safety with periodic extension
+    to support long-running syncs (1000+ activities).
 
     Args:
         user_id: User ID to sync.
@@ -187,6 +184,28 @@ async def run_sync_background(
         end_date: Optional end date filter.
     """
     lock_name = _sync_lock_name(user_id)
+
+    # Background task to periodically extend lock during long syncs
+    async def extend_lock_periodically():
+        """Extend lock every N minutes to prevent expiration during long syncs."""
+        try:
+            while True:
+                await asyncio.sleep(settings.sync_lock_extension_interval)
+                success = await extend_lock(
+                    lock_name,
+                    lock_owner,
+                    ttl_seconds=settings.sync_lock_ttl_seconds,
+                )
+                if success:
+                    logger.debug(f"Extended sync lock for user {user_id}")
+                else:
+                    logger.warning(f"Failed to extend sync lock for user {user_id}")
+        except asyncio.CancelledError:
+            # Normal cancellation when sync completes
+            pass
+
+    # Start lock extension task
+    extension_task = asyncio.create_task(extend_lock_periodically())
 
     try:
         async with async_session_maker() as session:
@@ -236,6 +255,13 @@ async def run_sync_background(
     except Exception as e:
         logger.exception(f"Background sync error for user {user_id}")
     finally:
+        # Cancel lock extension task
+        extension_task.cancel()
+        try:
+            await extension_task
+        except asyncio.CancelledError:
+            pass
+
         # Always release the lock when done
         await release_lock(lock_name, lock_owner)
 
@@ -269,7 +295,7 @@ async def run_ingest(
     """
     # Try to acquire distributed lock
     lock_name = _sync_lock_name(current_user.id)
-    lock_owner = await acquire_lock(lock_name, ttl_seconds=SYNC_LOCK_TTL)
+    lock_owner = await acquire_lock(lock_name, ttl_seconds=settings.sync_lock_ttl_seconds)
 
     if not lock_owner:
         return IngestRunResponse(
@@ -366,7 +392,7 @@ async def run_ingest_sync(
     """
     # Try to acquire distributed lock
     lock_name = _sync_lock_name(current_user.id)
-    lock_owner = await acquire_lock(lock_name, ttl_seconds=SYNC_LOCK_TTL)
+    lock_owner = await acquire_lock(lock_name, ttl_seconds=settings.sync_lock_ttl_seconds)
 
     if not lock_owner:
         raise HTTPException(
