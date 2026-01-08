@@ -97,9 +97,8 @@ class DashboardService:
         # Calculate summary stats
         summary = self._calculate_summary_stats(activities)
 
-        # Save to analytics_summaries for caching (only for completed periods)
-        if end < date.today():
-            self._save_analytics_summary(period, start, end, activities, summary)
+        # Save to analytics_summaries for caching (including current period)
+        self._save_analytics_summary(period, start, end, activities, summary)
 
         # Get recent activities (last 5)
         recent = self._get_recent_activities(limit=5)
@@ -429,7 +428,11 @@ class DashboardService:
         ]
 
     def _calculate_summary_stats(self, activities: list[Activity]) -> dict:
-        """Calculate summary statistics for activities."""
+        """Calculate summary statistics for activities.
+
+        Note: Distance and pace are calculated only for running activities,
+        while other metrics include all activity types.
+        """
         if not activities:
             return {
                 "total_distance_km": 0,
@@ -441,21 +444,31 @@ class DashboardService:
                 "total_calories": 0,
             }
 
-        total_distance = sum(a.distance_meters or 0 for a in activities)
+        # Filter running activities for distance/pace calculation
+        running_activities = [
+            a for a in activities
+            if a.activity_type and a.activity_type.lower() in ("running", "trail_running", "treadmill_running")
+        ]
+
+        # Distance: running only (마일리지)
+        total_distance = sum(a.distance_meters or 0 for a in running_activities)
+
+        # Other metrics: all activities
         total_duration = sum(a.duration_seconds or 0 for a in activities)
         total_elevation = sum(a.elevation_gain or 0 for a in activities)
         total_calories = sum(a.calories or 0 for a in activities)
 
-        # Average pace
-        if total_distance > 0:
-            avg_pace_seconds = (total_duration / total_distance) * 1000
+        # Average pace: running only
+        running_duration = sum(a.duration_seconds or 0 for a in running_activities)
+        if total_distance > 0 and running_duration > 0:
+            avg_pace_seconds = (running_duration / total_distance) * 1000
             pace_min = int(avg_pace_seconds // 60)
             pace_sec = int(avg_pace_seconds % 60)
             avg_pace = f"{pace_min}:{pace_sec:02d}/km"
         else:
             avg_pace = None
 
-        # Average HR (weighted by duration)
+        # Average HR (weighted by duration, all activities)
         hr_weighted = sum(
             (a.avg_hr or 0) * (a.duration_seconds or 0)
             for a in activities
@@ -1208,12 +1221,22 @@ class DashboardService:
         end_date: date,
         metric: str,
     ) -> list[dict]:
-        """Get weekly aggregated metric."""
+        """Get weekly aggregated metric.
+
+        Note: distance_meters metric only includes running activities.
+        """
         # Get all activities in range
         activities = self._get_activities_in_range(start_date, end_date)
 
+        # For distance metric, filter to running activities only
+        if metric == "distance_meters":
+            activities = [
+                a for a in activities
+                if a.activity_type and a.activity_type.lower() in ("running", "trail_running", "treadmill_running")
+            ]
+
         # Group by week
-        weeks = {}
+        weeks: dict[date, float] = {}
         for a in activities:
             if a.start_time:
                 # Get Monday of the week
