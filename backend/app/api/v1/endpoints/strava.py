@@ -6,9 +6,10 @@ import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import httpx
+from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -17,23 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.session import get_redis
 from app.models.activity import Activity
 from app.models.strava import StravaActivityMap, StravaSession, StravaSyncState
 from app.models.user import User
 from app.observability import get_metrics_backend
-
-# TODO: PRODUCTION - Migrate to Redis for multi-worker/multi-instance deployments
-# In-memory store for OAuth state tokens (OK for single-worker development only)
-# Maps state_token -> (user_id, expiration_timestamp)
-# For production with multiple workers or instances, implement Redis-based storage:
-#   - Use Redis SETEX for state storage with TTL
-#   - Key format: f"oauth:state:{state_token}"
-#   - Value: user_id (int)
-#   - TTL: OAUTH_STATE_TTL (600 seconds)
-# Example:
-#   await redis.setex(f"oauth:state:{state_token}", OAUTH_STATE_TTL, user_id)
-#   user_id = await redis.get(f"oauth:state:{state}")
-_oauth_states: dict[str, tuple[int, float]] = {}
 
 router = APIRouter()
 settings = get_settings()
@@ -43,8 +32,67 @@ logger = logging.getLogger(__name__)
 OAUTH_STATE_TTL = 600
 
 
-def _generate_oauth_state(user_id: int) -> str:
+def _get_cipher() -> Optional[Fernet]:
+    """Get Fernet cipher for token encryption/decryption.
+
+    Returns:
+        Fernet cipher if encryption key is configured, None otherwise.
+    """
+    if not settings.strava_encryption_key:
+        logger.warning("STRAVA_ENCRYPTION_KEY not configured - tokens will be stored in plaintext")
+        return None
+
+    try:
+        return Fernet(settings.strava_encryption_key.encode())
+    except Exception as e:
+        logger.error(f"Failed to initialize Strava encryption cipher: {e}")
+        return None
+
+
+def _encrypt_token(token: str) -> str:
+    """Encrypt a Strava token.
+
+    Args:
+        token: The plaintext token.
+
+    Returns:
+        Encrypted token (or plaintext if encryption not configured).
+    """
+    cipher = _get_cipher()
+    if not cipher:
+        return token
+
+    try:
+        return cipher.encrypt(token.encode()).decode()
+    except Exception as e:
+        logger.error(f"Failed to encrypt Strava token: {e}")
+        return token
+
+
+def _decrypt_token(encrypted_token: str) -> str:
+    """Decrypt a Strava token.
+
+    Args:
+        encrypted_token: The encrypted token.
+
+    Returns:
+        Decrypted token (or encrypted value if decryption fails/not configured).
+    """
+    cipher = _get_cipher()
+    if not cipher:
+        return encrypted_token
+
+    try:
+        return cipher.decrypt(encrypted_token.encode()).decode()
+    except Exception as e:
+        logger.error(f"Failed to decrypt Strava token: {e}")
+        return encrypted_token
+
+
+async def _generate_oauth_state(user_id: int) -> str:
     """Generate a secure OAuth state token for CSRF protection.
+
+    Stores the state in Redis for multi-worker support.
 
     Args:
         user_id: The user ID to associate with this state.
@@ -52,20 +100,23 @@ def _generate_oauth_state(user_id: int) -> str:
     Returns:
         A cryptographically secure state token.
     """
-    # Clean up expired states
-    current_time = time.time()
-    expired = [k for k, (_, exp) in _oauth_states.items() if exp < current_time]
-    for k in expired:
-        del _oauth_states[k]
-
-    # Generate new state token
+    redis_client = await get_redis()
     state_token = secrets.token_urlsafe(32)
-    _oauth_states[state_token] = (user_id, current_time + OAUTH_STATE_TTL)
+
+    # Store state in Redis with TTL
+    await redis_client.setex(
+        f"oauth:strava:state:{state_token}",
+        OAUTH_STATE_TTL,
+        str(user_id),
+    )
+
     return state_token
 
 
-def _validate_oauth_state(state: str | None, user_id: int) -> bool:
+async def _validate_oauth_state(state: str | None, user_id: int) -> bool:
     """Validate OAuth state token for CSRF protection.
+
+    Checks Redis for the state token (multi-worker safe).
 
     Args:
         state: The state token from the callback.
@@ -77,24 +128,27 @@ def _validate_oauth_state(state: str | None, user_id: int) -> bool:
     if not state:
         return False
 
-    state_data = _oauth_states.get(state)
-    if not state_data:
-        return False
+    redis_client = await get_redis()
+    key = f"oauth:strava:state:{state}"
 
-    stored_user_id, expiration = state_data
-    current_time = time.time()
+    # Get stored user_id from Redis
+    stored_user_id_str = await redis_client.get(key)
 
-    # Check expiration
-    if expiration < current_time:
-        del _oauth_states[state]
+    if not stored_user_id_str:
         return False
 
     # Check user ID matches
+    try:
+        stored_user_id = int(stored_user_id_str)
+    except ValueError:
+        await redis_client.delete(key)
+        return False
+
     if stored_user_id != user_id:
         return False
 
     # Remove used state (one-time use)
-    del _oauth_states[state]
+    await redis_client.delete(key)
     return True
 
 
@@ -201,10 +255,10 @@ async def initiate_strava_connect(
         )
 
     # Generate secure state token for CSRF protection
-    state_token = _generate_oauth_state(current_user.id)
+    state_token = await _generate_oauth_state(current_user.id)
 
     auth_url = (
-        f"https://www.strava.com/oauth/authorize"
+        f"{settings.strava_oauth_base_url}/authorize"
         f"?client_id={client_id}"
         f"&redirect_uri={redirect_uri}"
         f"&response_type=code"
@@ -235,7 +289,7 @@ async def handle_strava_callback(
         Callback result.
     """
     # Validate OAuth state for CSRF protection
-    if not _validate_oauth_state(request.state, current_user.id):
+    if not await _validate_oauth_state(request.state, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired OAuth state. Please restart the authorization flow.",
@@ -257,7 +311,7 @@ async def handle_strava_callback(
         # Exchange code for tokens
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "https://www.strava.com/oauth/token",
+                f"{settings.strava_oauth_base_url}/token",
                 data={
                     "client_id": client_id,
                     "client_secret": client_secret,
@@ -278,14 +332,14 @@ async def handle_strava_callback(
         expires_at = datetime.fromtimestamp(tokens["expires_at"], tz=timezone.utc)
 
         if session:
-            session.access_token = tokens["access_token"]
-            session.refresh_token = tokens["refresh_token"]
+            session.access_token = _encrypt_token(tokens["access_token"])
+            session.refresh_token = _encrypt_token(tokens["refresh_token"])
             session.expires_at = expires_at
         else:
             session = StravaSession(
                 user_id=current_user.id,
-                access_token=tokens["access_token"],
-                refresh_token=tokens["refresh_token"],
+                access_token=_encrypt_token(tokens["access_token"]),
+                refresh_token=_encrypt_token(tokens["refresh_token"]),
                 expires_at=expires_at,
             )
             db.add(session)
@@ -414,11 +468,11 @@ async def refresh_strava_tokens(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "https://www.strava.com/oauth/token",
+                f"{settings.strava_oauth_base_url}/token",
                 data={
                     "client_id": client_id,
                     "client_secret": client_secret,
-                    "refresh_token": session.refresh_token,
+                    "refresh_token": _decrypt_token(session.refresh_token),
                     "grant_type": "refresh_token",
                 },
             )
@@ -426,8 +480,8 @@ async def refresh_strava_tokens(
             response.raise_for_status()
             tokens = response.json()
 
-        session.access_token = tokens["access_token"]
-        session.refresh_token = tokens["refresh_token"]
+        session.access_token = _encrypt_token(tokens["access_token"])
+        session.refresh_token = _encrypt_token(tokens["refresh_token"])
         session.expires_at = datetime.fromtimestamp(tokens["expires_at"], tz=timezone.utc)
 
         await db.commit()
@@ -739,11 +793,11 @@ async def upload_single_activity(
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "https://www.strava.com/oauth/token",
+                    f"{settings.strava_oauth_base_url}/token",
                     data={
                         "client_id": settings.strava_client_id,
                         "client_secret": settings.strava_client_secret,
-                        "refresh_token": session.refresh_token,
+                        "refresh_token": _decrypt_token(session.refresh_token),
                         "grant_type": "refresh_token",
                     },
                 )
@@ -773,8 +827,8 @@ async def upload_single_activity(
                     "activity_type": "run",
                 }
                 response = await client.post(
-                    "https://www.strava.com/api/v3/uploads",
-                    headers={"Authorization": f"Bearer {session.access_token}"},
+                    f"{settings.strava_api_base_url}/uploads",
+                    headers={"Authorization": f"Bearer {_decrypt_token(session.access_token)}"},
                     files=files,
                     data=data,
                     timeout=60.0,
@@ -794,8 +848,8 @@ async def upload_single_activity(
                 await asyncio.sleep(2)
                 async with httpx.AsyncClient() as client:
                     check_response = await client.get(
-                        f"https://www.strava.com/api/v3/uploads/{upload_id}",
-                        headers={"Authorization": f"Bearer {session.access_token}"},
+                        f"{settings.strava_api_base_url}/uploads/{upload_id}",
+                        headers={"Authorization": f"Bearer {_decrypt_token(session.access_token)}"},
                     )
                     if check_response.status_code == 200:
                         check_result = check_response.json()
