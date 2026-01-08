@@ -21,6 +21,10 @@ from app.core.ai_constants import (
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.ai import AIConversation, AIImport, AIMessage
+from app.models.activity import Activity
+from app.models.health import FitnessMetricDaily
+from app.models.plan import Plan, PlanWeek
+from app.models.workout import Workout
 from app.models.user import User
 from app.observability import get_metrics_backend
 
@@ -834,9 +838,17 @@ async def _get_gemini_response(
     import google.generativeai as genai
 
     genai.configure(api_key=settings.google_ai_api_key)
+
+    # Apply generation config with same parameters as OpenAI
+    generation_config = genai.GenerationConfig(
+        max_output_tokens=AI_MAX_TOKENS,
+        temperature=AI_TEMPERATURE,
+    )
+
     model = genai.GenerativeModel(
         model_name=settings.google_ai_model,
         system_instruction=system_prompt,
+        generation_config=generation_config,
     )
 
     # Build chat history for Gemini
@@ -845,10 +857,11 @@ async def _get_gemini_response(
         role = "user" if msg.role == "user" else "model"
         gemini_history.append({"role": role, "parts": [msg.content]})
 
-    # Add context to user message if provided
+    # Add context to user message if provided (serialize dict to JSON for readability)
     full_message = user_message
     if context:
-        full_message = f"[사용자 컨텍스트: {context}]\n\n{user_message}"
+        context_str = json.dumps(context, ensure_ascii=False, indent=2)
+        full_message = f"[사용자 컨텍스트]\n{context_str}\n\n[질문]\n{user_message}"
 
     start_time = time.perf_counter()
     status_code = 500
@@ -895,8 +908,8 @@ async def _get_openai_response(
     messages = [{"role": "system", "content": system_prompt}]
 
     if context:
-        context_str = f"[사용자 컨텍스트: {context}]"
-        messages.append({"role": "system", "content": context_str})
+        context_str = json.dumps(context, ensure_ascii=False, indent=2)
+        messages.append({"role": "system", "content": f"[사용자 컨텍스트]\n{context_str}"})
 
     for msg in history:
         messages.append({"role": msg.role, "content": msg.content})
@@ -1022,9 +1035,6 @@ async def import_plan(
     Raises:
         HTTPException: If validation fails or import error occurs.
     """
-    from app.models.plan import Plan, PlanWeek
-    from app.models.workout import Workout
-
     try:
         # Validate weeks structure
         if not request.weeks:
@@ -1224,12 +1234,6 @@ async def export_summary(
     Returns:
         Summary content for ChatGPT analysis.
     """
-    import json
-    from datetime import timedelta
-
-    from app.models.activity import Activity
-    from app.models.health import FitnessMetricDaily
-
     now = datetime.now(timezone.utc)
     six_weeks_ago = now - timedelta(weeks=6)
     twelve_weeks_ago = now - timedelta(weeks=12)

@@ -20,6 +20,8 @@ export interface Conversation {
 
 export interface ConversationDetail extends Conversation {
   messages: Message[];
+  total_messages: number;
+  has_more: boolean;
 }
 
 export interface ConversationListResponse {
