@@ -87,10 +87,19 @@ export function Settings() {
     setError(null);
     setSuccess(null);
 
+    // 새 데이터 동기화: 최근 30일 데이터만 (full_backfill: false)
+    const today = new Date();
+    const monthAgo = new Date(today);
+    monthAgo.setDate(monthAgo.getDate() - 30);
+
     try {
-      const result = await syncMutation.mutateAsync({});
+      const result = await syncMutation.mutateAsync({
+        full_backfill: false,
+        start_date: monthAgo.toISOString().split('T')[0],
+        end_date: today.toISOString().split('T')[0],
+      });
       if (result.started) {
-        setSuccess('동기화가 시작되었습니다.');
+        setSuccess('새 데이터 동기화가 시작되었습니다. (최근 30일)');
       } else {
         setError(result.message || '동기화를 시작할 수 없습니다.');
       }

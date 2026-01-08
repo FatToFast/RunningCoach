@@ -29,9 +29,18 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
     .filter((d): d is string => Boolean(d))
     .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())?.[0];
 
-  const handleSync = () => {
+  // 헤더의 동기화 버튼은 "빠른 동기화" - 최근 7일간 activities만
+  const handleQuickSync = () => {
     if (!isSyncing && isConnected) {
-      syncMutation.mutate({});
+      const today = new Date();
+      const weekAgo = new Date(today);
+      weekAgo.setDate(weekAgo.getDate() - 7);
+
+      syncMutation.mutate({
+        endpoints: ['activities'],  // activities만 동기화
+        start_date: weekAgo.toISOString().split('T')[0],
+        end_date: today.toISOString().split('T')[0],
+      });
     }
   };
 
@@ -85,14 +94,14 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
                   </span>
                 )}
                 <button
-                  onClick={handleSync}
+                  onClick={handleQuickSync}
                   disabled={isSyncing}
                   className={clsx(
                     'btn btn-primary p-1.5 md:px-3 text-xs flex items-center gap-1.5',
                     isSyncing && 'opacity-70 cursor-not-allowed'
                   )}
-                  aria-label={isSyncing ? '동기화 중' : 'Garmin 데이터 동기화'}
-                  title={isSyncing ? '동기화 중...' : 'Garmin 동기화'}
+                  aria-label={isSyncing ? '동기화 중' : '최근 활동 동기화'}
+                  title={isSyncing ? '동기화 중...' : '최근 7일 활동 동기화 (전체 동기화는 설정에서)'}
                 >
                   {isSyncing ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -100,7 +109,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
                     <RefreshCw className="w-4 h-4" />
                   )}
                   <span className="hidden md:inline">
-                    {isSyncing ? '동기화 중' : '동기화'}
+                    {isSyncing ? '동기화 중' : '새 활동'}
                   </span>
                 </button>
               </>

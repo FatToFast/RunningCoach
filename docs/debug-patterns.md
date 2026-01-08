@@ -24,7 +24,13 @@ const sec = totalSeconds % 60;  // 항상 0-59 범위
 return `${min}:${String(sec).padStart(2, '0')}`;
 ```
 
-**적용 위치**: `formatPace`, `formatDuration`, `formatPaceFromDecimal`
+**적용 위치**:
+- `utils/format.ts`: `formatPace`, `formatDuration`, `formatPaceFromDecimal`
+- `pages/Records.tsx`: 로컬 `formatPace` (utils 사용 권장)
+- `pages/Trends.tsx`: 로컬 `formatPace` (utils 사용 권장)
+- `hooks/useActivities.ts`: 로컬 `formatPace` (utils 사용 권장)
+
+⚠️ **주의**: 여러 파일에 중복 정의된 함수가 있으므로 `utils/format.ts`의 공통 함수 사용을 권장합니다.
 
 ---
 
@@ -2511,4 +2517,158 @@ if weeks is None:
 
 ---
 
-*마지막 업데이트: 2026-01-07*
+### 65. Backend/Frontend 스키마 불일치 - RaceCreate 필드 누락
+
+**문제**: Frontend에서 대회 기록 생성 시 `is_completed`, `result_time_seconds`, `result_notes` 필드를 전달하지만 Backend `RaceCreate` 스키마에 해당 필드가 없어서 저장되지 않음
+
+```typescript
+// Frontend Records.tsx - RecordEditModal
+onSave(null, {
+  name,
+  race_date: raceDate,
+  is_completed: true,           // ❌ Backend RaceCreate에 없음
+  result_time_seconds: 2685,    // ❌ Backend RaceCreate에 없음
+  result_notes: "PB 달성!",     // ❌ Backend RaceCreate에 없음
+});
+```
+
+```python
+# ❌ 잘못된 패턴 - Backend RaceCreate에 결과 필드 누락
+class RaceCreate(BaseModel):
+    name: str
+    race_date: date
+    distance_km: Optional[float] = None
+    is_primary: bool = False
+    # is_completed, result_time_seconds, result_notes 없음!
+
+# ✅ 올바른 패턴 - 완료된 대회 생성 지원
+class RaceCreate(BaseModel):
+    name: str
+    race_date: date
+    distance_km: Optional[float] = None
+    is_primary: bool = False
+    # Fields for creating completed races (e.g., from personal records)
+    is_completed: bool = False
+    result_time_seconds: Optional[int] = None
+    result_notes: Optional[str] = None
+```
+
+**증상**:
+- 수정 모달에서 저장 버튼 클릭 시 아무 반응 없음 (실제로는 새 대회가 생성되지만 result_time_seconds=null)
+- DB에 중복 레코드 생성
+- `findRaceForRecord`가 `is_completed=true AND result_time_seconds IS NOT NULL` 조건으로 조회하므로 기존 대회 찾지 못함
+
+**적용 위치**:
+- `backend/app/api/v1/endpoints/races.py`: `RaceCreate` 스키마
+- `frontend/src/api/races.ts`: `RaceCreate` 인터페이스
+
+---
+
+### 66. Race Times 카드에서 공식 기록 대신 Garmin 기록 표시
+
+**문제**: Race Times 섹션에서 연결된 레이스의 공식 기록(result_time_seconds)이 아닌 원래 Garmin 활동 시간(record.value)을 표시함
+
+```typescript
+// ❌ 잘못된 패턴 - 항상 Garmin 기록 표시
+{records.distance_records.map((record) => {
+  const existingRace = findRaceForRecord(record);
+  return (
+    <RecordCard
+      value={record.value}  // 항상 Garmin 활동 시간 (46:00)
+      activityName={record.activity_name}
+      // ...
+    />
+  );
+})}
+
+// ✅ 올바른 패턴 - 공식 기록이 있으면 우선 표시
+{records.distance_records.map((record) => {
+  const existingRace = findRaceForRecord(record);
+  // 연결된 레이스가 있고 공식 기록이 있으면 공식 기록 표시
+  const displayValue = existingRace?.result_time_seconds ?? record.value;
+  const displayName = existingRace?.name ?? record.activity_name;
+  return (
+    <RecordCard
+      value={displayValue}  // 공식 기록 44:45 (있으면)
+      activityName={displayName}  // 대회명 (있으면)
+      // ...
+    />
+  );
+})}
+```
+
+**증상**:
+- DB에 공식 기록(44:45)이 저장되어 있지만 카드에는 Garmin 기록(46:00) 표시
+- 수정 모달을 열면 올바른 44:45가 표시됨 (DB에서 읽어오므로)
+- 화면과 DB 간의 표시 불일치
+
+**적용 위치**:
+- `frontend/src/pages/Records.tsx`: Race Times 섹션의 RecordCard 렌더링
+
+---
+
+### 67. 대회 기록 섹션에 Garmin PB가 누락됨
+
+**문제**: "대회 기록" 섹션이 수동으로 등록된 `completedRaces`만 표시하고, Garmin에서 가져온 `distance_records`(PB)는 표시하지 않음
+
+```typescript
+// ❌ 잘못된 패턴 - completedRaces만 표시
+const completedRaces = racesData?.races.filter((r) => r.is_completed) || [];
+
+{completedRaces.length > 0 && (
+  <section>
+    <h2>대회 기록</h2>
+    {completedRaces.map((race) => (
+      <RaceCard race={race} variant="completed" />
+    ))}
+  </section>
+)}
+
+// ✅ 올바른 패턴 - completedRaces + Garmin-only distance_records 병합
+const garminOnlyRecords = records.distance_records
+  .filter((record) => !findRaceForRecord(record))  // 연결된 레이스 없는 것만
+  .map((record) => ({
+    id: `garmin-${record.category}`,
+    name: record.activity_name || record.category,
+    race_date: record.achieved_date,
+    result_time_seconds: record.value,
+    isGarminOnly: true,
+    originalRecord: record,
+    // ... 필요한 필드들
+  }));
+
+const allRaceRecords = [
+  ...completedRaces.map(r => ({ ...r, isGarminOnly: false })),
+  ...garminOnlyRecords,
+].sort((a, b) => new Date(b.race_date).getTime() - new Date(a.race_date).getTime());
+
+{allRaceRecords.map((record) => (
+  record.isGarminOnly ? (
+    <GarminPBCard record={record} onClick={() => setEditingRecord(...)} />
+  ) : (
+    <RaceCard race={record} variant="completed" />
+  )
+))}
+```
+
+**데이터 구조**:
+- `distance_records`: Garmin에서 가져온 거리별 PB (5K, 10K, Half, Marathon 등)
+- `completedRaces`: 사용자가 수동으로 등록한 완료된 대회
+- `findRaceForRecord()`: distance_record와 매칭되는 completedRace 찾기
+
+**증상**:
+- "Race Times" 섹션에는 Garmin PB가 표시되지만
+- "대회 기록" 섹션에는 수동 등록된 대회만 표시됨
+- Garmin PB 중 대회로 등록되지 않은 기록이 누락됨
+
+**해결**:
+- 두 데이터 소스를 병합하여 "대회 기록" 섹션에 표시
+- Garmin-only 기록은 "Garmin PB" 배지와 "클릭하여 대회로 등록" 안내 표시
+- 클릭 시 RecordEditModal 열어서 대회로 변환 가능
+
+**적용 위치**:
+- `frontend/src/pages/Records.tsx`: "대회 기록" 섹션 렌더링 로직
+
+---
+
+*마지막 업데이트: 2026-01-08*

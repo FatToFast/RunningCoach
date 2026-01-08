@@ -333,8 +333,10 @@ export function useActivityLaps(id: number, splitDistance?: number) {
 // Utility functions for formatting
 export function formatPace(seconds: number | null): string {
   if (seconds == null) return '--:--';
-  const min = Math.floor(seconds / 60);
-  const sec = Math.round(seconds % 60);
+  // 초단위로 반올림 후 분/초 계산 (60초 오버플로우 방지)
+  const totalSec = Math.round(seconds);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
   return `${min}:${String(sec).padStart(2, '0')}`;
 }
 

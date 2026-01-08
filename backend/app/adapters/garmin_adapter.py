@@ -1269,6 +1269,176 @@ class GarminConnectAdapter:
         finally:
             self._observe_api_call("get_goals", status_code, start_time)
 
+    def get_all_day_events(self, target_date: date) -> dict[str, Any]:
+        """Get all-day events from Garmin Connect for a specific date.
+
+        This includes autodetected activities and scheduled events.
+
+        Args:
+            target_date: Date to get events for.
+
+        Returns:
+            Dictionary with event data.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            date_str = target_date.isoformat()  # YYYY-MM-DD format
+            data = self._client.get_all_day_events(date_str)
+            status_code = 200
+            
+            # Log raw response for debugging - use INFO level so we can see it
+            if data:
+                logger.info(f"get_all_day_events for {date_str} returned: type={type(data)}")
+                if isinstance(data, dict):
+                    logger.info(f"Dict keys: {list(data.keys())}")
+                    # Log all data for debugging (truncated if too long)
+                    import json
+                    try:
+                        data_str = json.dumps(data, default=str, indent=2)
+                        if len(data_str) > 1000:
+                            logger.info(f"Data (truncated): {data_str[:1000]}...")
+                        else:
+                            logger.info(f"Full data: {data_str}")
+                    except Exception as e:
+                        logger.info(f"Data (non-serializable): {str(data)[:500]}")
+                elif isinstance(data, list):
+                    logger.info(f"List with {len(data)} items")
+                    if data:
+                        logger.info(f"First item type: {type(data[0])}, keys: {list(data[0].keys()) if isinstance(data[0], dict) else 'not dict'}")
+            
+            return data or {}
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get all-day events for {target_date}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            raise GarminAPIError(f"Failed to get all-day events: {e}") from e
+        finally:
+            self._observe_api_call("get_all_day_events", status_code, start_time)
+
+    def get_events_in_range(
+        self, start_date: date, end_date: date
+    ) -> list[dict[str, Any]]:
+        """Get all-day events from Garmin Connect for a date range.
+
+        Iterates through dates and collects events. Note: This may make
+        multiple API calls (one per day).
+
+        Args:
+            start_date: Start date (inclusive).
+            end_date: End date (inclusive).
+
+        Returns:
+            List of event dictionaries with date information.
+
+        Raises:
+            GarminAPIError: If API call fails.
+        """
+        self._ensure_authenticated()
+        start_time = time.perf_counter()
+        status_code = 500
+        events: list[dict[str, Any]] = []
+        
+        try:
+            current_date = start_date
+            from datetime import timedelta
+            
+            while current_date <= end_date:
+                try:
+                    date_events = self.get_all_day_events(current_date)
+                    # Add date info to each event for reference
+                    if date_events:
+                        # Log structure for debugging
+                        logger.info(f"Processing events for {current_date}: type={type(date_events)}")
+                        
+                        event_list: list[dict[str, Any]] = []
+                        
+                        # Handle different response structures
+                        if isinstance(date_events, dict):
+                            # Try multiple possible keys for events
+                            for key in ["events", "calendarEvents", "calendar_events", "items", "data", "calendarList"]:
+                                if key in date_events:
+                                    value = date_events[key]
+                                    if isinstance(value, list):
+                                        event_list.extend(value)
+                                        logger.debug(f"Found {len(value)} events in key '{key}'")
+                                        break
+                                    elif isinstance(value, dict):
+                                        # Nested dict might contain events
+                                        for nested_key in ["events", "items"]:
+                                            if nested_key in value and isinstance(value[nested_key], list):
+                                                event_list.extend(value[nested_key])
+                                                logger.debug(f"Found {len(value[nested_key])} events in nested key '{key}.{nested_key}'")
+                                                break
+                            
+                            # If no list found in common keys, check if dict itself is event data
+                            if not event_list:
+                                # Check if this dict looks like a single event (has common event fields)
+                                event_fields = ["eventName", "name", "title", "eventTypeName", "eventTypeId", "eventTypeKey", "eventTypeDesc"]
+                                if any(key in date_events for key in event_fields):
+                                    event_list = [date_events]
+                                    logger.debug(f"Treating dict as single event with keys: {list(date_events.keys())}")
+                                else:
+                                    # Log all keys to help debug - use INFO so we can see it
+                                    logger.info(f"Dict doesn't look like an event. All keys: {list(date_events.keys())}")
+                                    # Try to extract any nested structures
+                                    for k, v in date_events.items():
+                                        if isinstance(v, (list, dict)):
+                                            logger.info(f"  Key '{k}': type={type(v)}, length={len(v) if isinstance(v, (list, dict)) else 'N/A'}")
+                                            if isinstance(v, list) and v:
+                                                logger.info(f"    First item type: {type(v[0])}, keys: {list(v[0].keys()) if isinstance(v[0], dict) else 'N/A'}")
+                                            elif isinstance(v, dict):
+                                                logger.info(f"    Nested dict keys: {list(v.keys())}")
+                                    # As last resort, if we see any list-like structure, try to use it
+                                    for k, v in date_events.items():
+                                        if isinstance(v, list) and len(v) > 0:
+                                            logger.info(f"Found list in key '{k}' with {len(v)} items, trying to use it")
+                                            event_list.extend(v)
+                                            break
+                        elif isinstance(date_events, list):
+                            event_list = date_events
+                            logger.info(f"Response is directly a list with {len(date_events)} items")
+                        
+                        # Add date to each event and append to results
+                        for event in event_list:
+                            if isinstance(event, dict):
+                                event["event_date"] = current_date.isoformat()
+                                events.append(event)
+                                
+                                # Log event details for debugging - use INFO so we can see it
+                                event_name = event.get("eventName") or event.get("name") or event.get("title") or "Unknown"
+                                event_keys = list(event.keys())
+                                logger.info(f"Added event: '{event_name}' on {current_date}, keys: {event_keys}")
+                            else:
+                                logger.warning(f"Skipping non-dict event item: type={type(event)}, value={str(event)[:100]}")
+                        
+                        if event_list:
+                            logger.info(f"Found {len(event_list)} events for {current_date}, total so far: {len(events)}")
+                        else:
+                            logger.info(f"No events extracted for {current_date} (raw response was not empty but parsing found no events)")
+                            
+                except Exception as e:
+                    logger.warning(f"Failed to get events for {current_date}: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+                    # Continue with next date even if one fails
+                
+                current_date += timedelta(days=1)
+            
+            status_code = 200
+            return events
+        except Exception as e:
+            status_code = 500
+            logger.error(f"Failed to get events in range {start_date} to {end_date}: {e}")
+            raise GarminAPIError(f"Failed to get events in range: {e}") from e
+        finally:
+            self._observe_api_call("get_events_in_range", status_code, start_time)
+
 
 # Global adapter instance (for simple single-user MVP)
 _adapter: Optional[GarminConnectAdapter] = None

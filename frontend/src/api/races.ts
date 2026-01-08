@@ -25,6 +25,10 @@ export interface RaceCreate {
   goal_time_seconds?: number | null;
   goal_description?: string | null;
   is_primary?: boolean;
+  // Fields for creating completed races (e.g., from personal records)
+  is_completed?: boolean;
+  result_time_seconds?: number | null;
+  result_notes?: string | null;
 }
 
 export interface RaceUpdate {
@@ -125,4 +129,46 @@ export const racesApi = {
     });
     return data;
   },
+
+  // Get Garmin events from Event Dashboard
+  getGarminEvents: async (startDate: string, endDate: string): Promise<GarminEventsResponse> => {
+    const { data } = await apiClient.get('/races/garmin/events', {
+      params: { start_date: startDate, end_date: endDate },
+    });
+    return data;
+  },
+
+  // Import Garmin events as races
+  importGarminEvents: async (request: {
+    startDate: string;
+    endDate: string;
+    selectedEventDates?: string[];
+    selectedEventNames?: string[];
+    filterRacesOnly?: boolean;
+  }): Promise<Race[]> => {
+    const { data } = await apiClient.post('/races/garmin/events/import', {
+      start_date: request.startDate,
+      end_date: request.endDate,
+      selected_event_dates: request.selectedEventDates,
+      selected_event_names: request.selectedEventNames,
+      filter_races_only: request.filterRacesOnly ?? false,
+    });
+    return data;
+  },
 };
+
+export interface GarminEvent {
+  event_date: string;
+  event_type: string;
+  name: string;
+  location: string | null;
+  distance_km: number | null;
+  distance_label: string | null;
+  notes: string | null;
+  raw_data: Record<string, unknown>;
+}
+
+export interface GarminEventsResponse {
+  events: GarminEvent[];
+  total: number;
+}

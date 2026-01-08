@@ -1,5 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { racesApi, type RaceCreate, type RaceUpdate, type GarminRaceImport } from '../api/races';
+import {
+  racesApi,
+  type RaceCreate,
+  type RaceUpdate,
+  type GarminRaceImport,
+  type GarminEventsResponse,
+} from '../api/races';
 
 // Get all races
 export function useRaces(includeCompleted = false) {
@@ -37,6 +43,8 @@ export function useCreateRace() {
     mutationFn: (race: RaceCreate) => racesApi.createRace(race),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['races'] });
+      // Also invalidate personal records as new race may affect records view
+      queryClient.invalidateQueries({ queryKey: ['personal-records'] });
     },
   });
 }
@@ -50,6 +58,8 @@ export function useUpdateRace() {
       racesApi.updateRace(raceId, race),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['races'] });
+      // Also invalidate personal records as race times may be updated
+      queryClient.invalidateQueries({ queryKey: ['personal-records'] });
     },
   });
 }
@@ -96,6 +106,36 @@ export function useImportFromGarmin() {
     mutationFn: (raceData: GarminRaceImport) => racesApi.importFromGarmin(raceData),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['races'] });
+    },
+  });
+}
+
+// Get Garmin events from Event Dashboard
+export function useGarminEvents(startDate: string, endDate: string) {
+  return useQuery({
+    queryKey: ['races', 'garmin-events', startDate, endDate],
+    queryFn: () => racesApi.getGarminEvents(startDate, endDate),
+    enabled: !!startDate && !!endDate,
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  });
+}
+
+// Import Garmin events as races mutation
+export function useImportGarminEvents() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (request: {
+      startDate: string;
+      endDate: string;
+      selectedEventDates?: string[];
+      selectedEventNames?: string[];
+      filterRacesOnly?: boolean;
+    }) => racesApi.importGarminEvents(request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['races'] });
+      queryClient.invalidateQueries({ queryKey: ['personal-records'] });
+      queryClient.invalidateQueries({ queryKey: ['races', 'garmin-events'] });
     },
   });
 }
