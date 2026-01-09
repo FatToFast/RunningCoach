@@ -12,6 +12,7 @@
     "generate:api:check": "npm run generate:api && git diff --exit-code src/types/generated/api.ts || (echo 'API types are out of sync. Run npm run generate:api' && exit 1)"
   },
   "dependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.90.14",
     "@types/mapbox-gl": "^3.4.1",
     "axios": "^1.13.2",
@@ -22,8 +23,10 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-map-gl": "^8.1.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.11.0",
-    "recharts": "^3.6.0"
+    "recharts": "^3.6.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

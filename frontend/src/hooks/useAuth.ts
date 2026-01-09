@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { authApi } from '../api/auth';
+import { garminApi } from '../api/garmin';
 import type { LoginRequest, User } from '../api/auth';
 import { garminSyncKeys } from './useGarminSync';
 
@@ -17,8 +18,37 @@ export function useLogin() {
 
   return useMutation({
     mutationFn: (credentials: LoginRequest) => authApi.login(credentials),
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       queryClient.setQueryData(['user'], data.user);
+
+      // Auto-sync if Garmin is connected and needs sync
+      if (data.garmin?.needs_sync && data.garmin.session_valid) {
+        try {
+          // Calculate start_date: 7 days ago from today
+          const endDate = new Date();
+          const startDate = new Date();
+          startDate.setDate(startDate.getDate() - 7);
+
+          const formatDate = (d: Date) => d.toISOString().split('T')[0];
+
+          console.log(
+            `[Auto-sync] Starting auto-sync for last 7 days (${formatDate(startDate)} to ${formatDate(endDate)})`
+          );
+
+          await garminApi.runSync({
+            start_date: formatDate(startDate),
+            end_date: formatDate(endDate),
+          });
+
+          // Invalidate queries to refresh data after sync starts
+          queryClient.invalidateQueries({ queryKey: garminSyncKeys.all });
+          queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+          queryClient.invalidateQueries({ queryKey: ['activities'] });
+        } catch (error) {
+          console.error('[Auto-sync] Failed to start auto-sync:', error);
+          // Don't throw - login succeeded, just sync failed
+        }
+      }
     },
   });
 }

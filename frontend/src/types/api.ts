@@ -645,6 +645,11 @@ export interface WorkoutStep {
   target_pace: string | null;
   target_hr_zone: number | null;
   description: string | null;
+  // End condition: 'lap_button' = 랩 버튼 누름, 'distance' = 거리, 'time' = 시간
+  end_condition?: 'lap_button' | 'distance' | 'time' | null;
+  // Garmin repeat group fields
+  is_repeat_marker?: boolean; // 반복 그룹 마커인지
+  repeat_count?: number | null; // 반복 횟수
 }
 
 export interface Workout {

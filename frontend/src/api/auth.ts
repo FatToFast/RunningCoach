@@ -13,10 +13,18 @@ export interface User {
   last_login_at?: string | null;
 }
 
+export interface GarminSyncInfo {
+  connected: boolean;
+  session_valid: boolean;
+  last_sync: string | null;
+  needs_sync: boolean;
+}
+
 export interface LoginResponse {
   success: boolean;
   user: User;
   message: string;
+  garmin: GarminSyncInfo | null;
 }
 
 export interface GarminConnectRequest {

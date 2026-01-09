@@ -30,8 +30,27 @@ export interface ConversationListResponse {
 export interface ChatRequest {
   message: string;
   context?: Record<string, unknown>;
-  mode?: 'chat' | 'plan';
+  mode?: 'chat' | 'plan' | 'workout';
   save_mode?: 'draft' | 'approved' | 'active';
+}
+
+export interface WorkoutData {
+  name: string;
+  workout_type: 'easy' | 'long' | 'tempo' | 'interval' | 'hills' | 'fartlek' | 'recovery';
+  structure: WorkoutStep[];
+  notes?: string | null;
+}
+
+export interface WorkoutStep {
+  type: 'warmup' | 'main' | 'cooldown' | 'rest' | 'recovery';
+  duration_minutes?: number | null;
+  distance_km?: number | null;
+  target_pace?: string | null;
+  target_hr_zone?: number | null;
+  description?: string | null;
+  // Garmin repeat group fields
+  is_repeat_marker?: boolean;
+  repeat_count?: number | null;
 }
 
 export interface ChatResponse {
@@ -42,6 +61,8 @@ export interface ChatResponse {
   import_id?: number | null;
   plan_status?: 'draft' | 'approved' | 'active' | null;
   missing_fields?: string[] | null;
+  workout_id?: number | null;
+  workout?: WorkoutData | null;
 }
 
 export interface ConversationCreateRequest {

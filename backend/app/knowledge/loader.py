@@ -1,10 +1,15 @@
 """Document loader and chunk splitter for knowledge base.
 
-Loads markdown files and splits them into chunks suitable for embedding.
+Loads markdown and PDF files and splits them into chunks suitable for embedding.
 """
 
 import re
 from pathlib import Path
+
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None  # type: ignore[assignment, misc]
 
 from app.knowledge.models import DocumentChunk
 
@@ -17,10 +22,10 @@ DEFAULT_CHUNK_OVERLAP = 100  # characters
 def load_documents(
     documents_dir: Path | None = None,
 ) -> list[DocumentChunk]:
-    """Load all markdown documents from the knowledge base directory.
+    """Load all markdown and PDF documents from the knowledge base directory.
 
     Args:
-        documents_dir: Directory containing markdown files.
+        documents_dir: Directory containing markdown and PDF files.
             Defaults to the 'documents' subdirectory of this module.
 
     Returns:
@@ -34,15 +39,35 @@ def load_documents(
 
     chunks: list[DocumentChunk] = []
 
-    # Sort files for consistent ordering
+    # Load markdown files
     md_files = sorted(documents_dir.glob("*.md"))
-
     for md_file in md_files:
         if md_file.name.startswith("_") or md_file.name == "README.md":
             continue
 
         file_chunks = _parse_markdown_file(md_file)
         chunks.extend(file_chunks)
+
+    # Load PDF files
+    if PdfReader is not None:
+        pdf_files = sorted(documents_dir.glob("*.pdf"))
+        for pdf_file in pdf_files:
+            if pdf_file.name.startswith("_"):
+                continue
+
+            file_chunks = _parse_pdf_file(pdf_file)
+            chunks.extend(file_chunks)
+    else:
+        # Log warning if pypdf is not installed
+        pdf_files = list(documents_dir.glob("*.pdf"))
+        if pdf_files:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "PDF files found but pypdf is not installed. "
+                "Install with: pip install pypdf"
+            )
 
     return chunks
 
@@ -112,6 +137,71 @@ def _parse_markdown_file(file_path: Path) -> list[DocumentChunk]:
             )
 
     return chunks
+
+
+def _parse_pdf_file(file_path: Path) -> list[DocumentChunk]:
+    """Parse a PDF file into document chunks.
+
+    Extracts text from all pages and splits into chunks.
+
+    Args:
+        file_path: Path to the PDF file.
+
+    Returns:
+        List of DocumentChunk objects from this file.
+
+    Raises:
+        ImportError: If pypdf is not installed.
+        ValueError: If PDF cannot be read.
+    """
+    if PdfReader is None:
+        raise ImportError(
+            "pypdf is required for PDF processing. Install with: pip install pypdf"
+        )
+
+    try:
+        reader = PdfReader(str(file_path))
+        filename = file_path.stem  # e.g., "training_guide"
+
+        # Extract text from all pages
+        full_text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                full_text += page_text + "\n\n"
+
+        if not full_text.strip():
+            return []
+
+        chunks: list[DocumentChunk] = []
+
+        # Split text into chunks (PDF doesn't have markdown headers, so we split by paragraphs)
+        text_chunks = _split_text(
+            full_text,
+            chunk_size=DEFAULT_CHUNK_SIZE,
+            chunk_overlap=DEFAULT_CHUNK_OVERLAP,
+        )
+
+        for chunk_idx, chunk_text in enumerate(text_chunks):
+            chunk_id = f"{filename}_c{chunk_idx:03d}"
+            chunks.append(
+                DocumentChunk(
+                    id=chunk_id,
+                    source=file_path.name,
+                    title=f"Page {chunk_idx + 1}",  # Simple title for PDF chunks
+                    content=chunk_text,
+                    metadata={
+                        "chunk_index": chunk_idx,
+                        "total_chunks": len(text_chunks),
+                        "file_type": "pdf",
+                    },
+                )
+            )
+
+        return chunks
+
+    except Exception as e:
+        raise ValueError(f"Failed to parse PDF file {file_path}: {e}") from e
 
 
 def _split_text(

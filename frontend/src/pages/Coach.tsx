@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   MessageSquare,
   Send,
@@ -9,7 +11,8 @@ import {
   Loader2,
   Copy,
   Check,
-  Download
+  Download,
+  Dumbbell
 } from 'lucide-react';
 import {
   useConversations,
@@ -21,39 +24,49 @@ import {
   useExportSummary,
   useCoachContext
 } from '../hooks/useAI';
-import type { Message } from '../api/ai';
+import { useCreateWorkout } from '../hooks/useWorkouts';
+import type { Message, WorkoutData } from '../api/ai';
 
 type PlanSaveMode = 'draft' | 'approved' | 'active';
 
-function parsePlanCommand(message: string): {
-  mode: 'chat' | 'plan';
+function parseCommand(message: string): {
+  mode: 'chat' | 'plan' | 'workout';
   saveMode?: PlanSaveMode;
   cleanedMessage: string;
 } {
-  if (!message.startsWith('/plan')) {
-    return { mode: 'chat', cleanedMessage: message };
+  if (message.startsWith('/plan')) {
+    const [command, ...rest] = message.split(' ');
+    let saveMode: PlanSaveMode = 'draft';
+
+    if (command.includes(':active')) {
+      saveMode = 'active';
+    } else if (command.includes(':approved')) {
+      saveMode = 'approved';
+    }
+
+    return {
+      mode: 'plan',
+      saveMode,
+      cleanedMessage: rest.join(' ').trim(),
+    };
   }
 
-  const [command, ...rest] = message.split(' ');
-  let saveMode: PlanSaveMode = 'draft';
-
-  if (command.includes(':active')) {
-    saveMode = 'active';
-  } else if (command.includes(':approved')) {
-    saveMode = 'approved';
+  if (message.startsWith('/workout')) {
+    const [, ...rest] = message.split(' ');
+    return {
+      mode: 'workout',
+      cleanedMessage: rest.join(' ').trim(),
+    };
   }
 
-  return {
-    mode: 'plan',
-    saveMode,
-    cleanedMessage: rest.join(' ').trim(),
-  };
+  return { mode: 'chat', cleanedMessage: message };
 }
 
 export function Coach() {
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const [inputMessage, setInputMessage] = useState('');
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [pendingWorkout, setPendingWorkout] = useState<WorkoutData | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { data: conversationsData, isLoading: conversationsLoading } = useConversations();
@@ -65,6 +78,7 @@ export function Coach() {
   const chat = useChat();
   const sendMessage = useSendMessage(selectedConversationId || 0);
   const exportSummary = useExportSummary();
+  const createWorkout = useCreateWorkout();
 
   // 메시지 스크롤
   useEffect(() => {
@@ -100,12 +114,17 @@ export function Coach() {
 
     const message = inputMessage.trim();
     const context = (coachContext ?? undefined) as Record<string, unknown> | undefined;
-    const parsed = parsePlanCommand(message);
+    const parsed = parseCommand(message);
     setInputMessage('');
 
     try {
       if (parsed.mode === 'plan' && !parsed.cleanedMessage) {
         alert('플랜 생성 요청 내용을 입력해주세요. 예: /plan 12주 마라톤 3:30 목표');
+        return;
+      }
+
+      if (parsed.mode === 'workout' && !parsed.cleanedMessage) {
+        alert('워크아웃 생성 요청 내용을 입력해주세요. 예: /workout 800m x 5 인터벌');
         return;
       }
 
@@ -116,11 +135,17 @@ export function Coach() {
         save_mode: parsed.saveMode,
       };
 
+      let response;
       if (selectedConversationId) {
-        await sendMessage.mutateAsync(request);
+        response = await sendMessage.mutateAsync(request);
       } else {
-        const response = await chat.mutateAsync(request);
+        response = await chat.mutateAsync(request);
         setSelectedConversationId(response.conversation_id);
+      }
+
+      // AI가 워크아웃을 생성한 경우 상태에 저장
+      if (response?.workout) {
+        setPendingWorkout(response.workout);
       }
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -143,6 +168,34 @@ export function Coach() {
     } catch (error) {
       console.error('Failed to export summary:', error);
       alert('클립보드 복사에 실패했습니다.');
+    }
+  };
+
+  const handleSaveWorkout = async () => {
+    if (!pendingWorkout) return;
+
+    try {
+      // WorkoutData -> WorkoutCreateRequest 변환
+      const structure = pendingWorkout.structure.map((step) => ({
+        type: step.type,
+        duration_minutes: step.duration_minutes ?? null,
+        distance_km: step.distance_km ?? null,
+        target_pace: step.target_pace ?? null,
+        target_hr_zone: step.target_hr_zone ?? null,
+        description: step.description ?? null,
+      }));
+
+      await createWorkout.mutateAsync({
+        name: pendingWorkout.name,
+        workout_type: pendingWorkout.workout_type,
+        structure,
+        notes: pendingWorkout.notes ?? undefined,
+      });
+      alert('워크아웃이 저장되었습니다.');
+      setPendingWorkout(null);
+    } catch (error) {
+      console.error('Failed to save workout:', error);
+      alert('워크아웃 저장에 실패했습니다.');
     }
   };
 
@@ -300,7 +353,15 @@ export function Coach() {
                         : 'bg-[var(--color-bg-tertiary)]'
                     }`}
                   >
-                    <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                    {message.role === 'user' ? (
+                      <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                    ) : (
+                      <div className="text-sm markdown-body">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {message.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
                     <p className={`text-xs mt-1 ${
                       message.role === 'user' ? 'text-cyan-100' : 'text-muted'
                     }`}>
@@ -335,6 +396,35 @@ export function Coach() {
                   </div>
                   <div className="bg-[var(--color-bg-tertiary)] px-4 py-3 rounded-2xl">
                     <Loader2 className="w-5 h-5 animate-spin text-muted" />
+                  </div>
+                </div>
+              )}
+              {/* 워크아웃 저장 버튼 */}
+              {pendingWorkout && (
+                <div className="flex gap-3 justify-center">
+                  <div className="bg-[var(--color-accent-soft)] border border-[var(--color-border-accent)] px-4 py-3 rounded-xl flex items-center gap-3">
+                    <Dumbbell className="w-5 h-5 text-cyan" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">{pendingWorkout.name}</p>
+                      <p className="text-xs text-muted">워크아웃이 생성되었습니다</p>
+                    </div>
+                    <button
+                      onClick={handleSaveWorkout}
+                      disabled={createWorkout.isPending}
+                      className="px-3 py-1.5 bg-cyan text-[var(--color-bg-primary)] text-sm font-medium rounded-lg hover:bg-cyan/90 transition-colors disabled:opacity-50"
+                    >
+                      {createWorkout.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        '저장'
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setPendingWorkout(null)}
+                      className="px-2 py-1.5 text-muted hover:text-[var(--color-text-primary)] text-sm transition-colors"
+                    >
+                      취소
+                    </button>
                   </div>
                 </div>
               )}

@@ -50,12 +50,22 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class GarminSyncInfo(BaseModel):
+    """Garmin connection and sync info included in login response."""
+
+    connected: bool
+    session_valid: bool = False
+    last_sync: datetime | None = None
+    needs_sync: bool = False  # True if last sync > 7 days ago or never synced
+
+
 class LoginResponse(BaseModel):
     """Response for successful login."""
 
     success: bool
     message: str
     user: dict[str, Any]
+    garmin: GarminSyncInfo | None = None
 
 
 class UserResponse(BaseModel):
@@ -90,6 +100,70 @@ class GarminStatusResponse(BaseModel):
     session_valid: bool = False
     last_login: datetime | None = None
     last_sync: datetime | None = None
+
+
+# -------------------------------------------------------------------------
+# Helper Functions
+# -------------------------------------------------------------------------
+
+
+async def _get_garmin_sync_info(db: AsyncSession, user_id: int) -> GarminSyncInfo | None:
+    """Get Garmin connection and sync info for login response.
+
+    Determines if auto-sync is needed based on:
+    - Garmin connection exists and session is valid
+    - Last sync was more than 7 days ago or never synced
+
+    Args:
+        db: Database session.
+        user_id: User ID.
+
+    Returns:
+        GarminSyncInfo or None if not connected.
+    """
+    from datetime import timedelta
+
+    # Check Garmin session
+    result = await db.execute(
+        select(GarminSession).where(GarminSession.user_id == user_id)
+    )
+    garmin_session = result.scalar_one_or_none()
+
+    if not garmin_session:
+        return GarminSyncInfo(connected=False)
+
+    session_valid = garmin_session.is_valid
+
+    # Get latest sync state (any endpoint)
+    sync_result = await db.execute(
+        select(GarminSyncState)
+        .where(GarminSyncState.user_id == user_id)
+        .order_by(GarminSyncState.last_success_at.desc())
+        .limit(1)
+    )
+    sync_state = sync_result.scalar_one_or_none()
+
+    last_sync = sync_state.last_success_at if sync_state else None
+
+    # Determine if sync is needed (never synced or last sync > 7 days ago)
+    needs_sync = False
+    if session_valid:
+        if last_sync is None:
+            needs_sync = True
+        else:
+            # Ensure timezone-aware comparison
+            now = datetime.now(tz.utc)
+            if last_sync.tzinfo is None:
+                last_sync = last_sync.replace(tzinfo=tz.utc)
+            days_since_sync = (now - last_sync).days
+            needs_sync = days_since_sync >= 1  # Sync if last sync was 1+ days ago
+
+    return GarminSyncInfo(
+        connected=True,
+        session_valid=session_valid,
+        last_sync=last_sync,
+        needs_sync=needs_sync,
+    )
 
 
 # -------------------------------------------------------------------------
@@ -172,7 +246,7 @@ async def login(
         db: Database session.
 
     Returns:
-        Login success response.
+        Login success response with Garmin sync status.
 
     Raises:
         HTTPException: If credentials are invalid.
@@ -206,6 +280,9 @@ async def login(
         max_age=settings.session_ttl_seconds,
     )
 
+    # Check Garmin connection status for auto-sync decision
+    garmin_info = await _get_garmin_sync_info(db, user.id)
+
     return LoginResponse(
         success=True,
         message="Login successful",
@@ -215,6 +292,7 @@ async def login(
             "display_name": user.display_name,
             "timezone": user.timezone,
         },
+        garmin=garmin_info,
     )
 
 

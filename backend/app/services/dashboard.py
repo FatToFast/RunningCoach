@@ -20,6 +20,15 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
+# Running activity types to include in mileage calculations
+RUNNING_ACTIVITY_TYPES = [
+    "running",
+    "track_running",
+    "treadmill_running",
+    "trail_running",
+    "virtual_run",
+]
+
 
 class DashboardService:
     """Service for dashboard data aggregation."""
@@ -390,7 +399,17 @@ class DashboardService:
         end_date: date,
         activity_type: Optional[str] = None,
     ) -> list[Activity]:
-        """Get activities within date range."""
+        """Get activities within date range.
+
+        Args:
+            start_date: Start date (inclusive).
+            end_date: End date (inclusive).
+            activity_type: Filter by activity type. If "running", includes all
+                running types (running, track_running, treadmill_running, etc.).
+
+        Returns:
+            List of activities sorted by start_time descending.
+        """
         query = select(Activity).where(
             Activity.user_id == self.user_id,
             func.date(Activity.start_time) >= start_date,
@@ -398,7 +417,11 @@ class DashboardService:
         )
 
         if activity_type:
-            query = query.where(Activity.activity_type == activity_type)
+            if activity_type == "running":
+                # Include all running types for mileage calculations
+                query = query.where(Activity.activity_type.in_(RUNNING_ACTIVITY_TYPES))
+            else:
+                query = query.where(Activity.activity_type == activity_type)
 
         query = query.order_by(Activity.start_time.desc())
 
@@ -1208,9 +1231,9 @@ class DashboardService:
         end_date: date,
         metric: str,
     ) -> list[dict]:
-        """Get weekly aggregated metric."""
-        # Get all activities in range
-        activities = self._get_activities_in_range(start_date, end_date)
+        """Get weekly aggregated metric for running activities."""
+        # Get running activities in range (includes track_running, treadmill_running, etc.)
+        activities = self._get_activities_in_range(start_date, end_date, "running")
 
         # Group by week
         weeks = {}

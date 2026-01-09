@@ -19,7 +19,7 @@ export const garminSyncKeys = {
 
 /**
  * Hook to get Garmin sync/ingest status (/ingest/status).
- * Fetched once on mount, then manually refreshed via useGarminSync.
+ * Polls every 3 seconds while sync is running, otherwise no auto-refetch.
  *
  * Note: This is different from useGarminStatus in useAuth.ts which uses /auth/garmin/status
  */
@@ -27,7 +27,11 @@ export function useGarminSyncStatus(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: garminSyncKeys.status(),
     queryFn: garminApi.getStatus,
-    staleTime: 5 * 60 * 1000, // 5 minutes - no auto-refetch
+    staleTime: 0, // Always fresh when refetched
+    refetchInterval: (query) => {
+      // Poll every 3 seconds while sync is running
+      return query.state.data?.running ? 3000 : false;
+    },
     ...options,
   });
 }

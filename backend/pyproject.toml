@@ -39,6 +39,7 @@ dependencies = [
     # RAG (Retrieval-Augmented Generation)
     "faiss-cpu>=1.7.4",
     "numpy>=1.26.0",
+    "pypdf>=4.0.0",
     # Strava
     "stravalib>=1.6",
 ]

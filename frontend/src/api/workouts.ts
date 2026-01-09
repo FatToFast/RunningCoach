@@ -110,4 +110,10 @@ export const workoutsApi = {
     });
     return data;
   },
+
+  // Refresh workout from Garmin
+  refreshFromGarmin: async (id: number): Promise<{ success: boolean; message: string; workout: Workout | null }> => {
+    const { data } = await apiClient.post(`/workouts/${id}/refresh-garmin`);
+    return data;
+  },
 };

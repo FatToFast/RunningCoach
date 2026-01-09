@@ -15,6 +15,7 @@ from app.api.v1.endpoints.auth import get_current_user
 from app.core.ai_constants import (
     RUNNING_COACH_PLAN_PROMPT,
     RUNNING_COACH_SYSTEM_PROMPT,
+    RUNNING_COACH_WORKOUT_PROMPT,
 )
 from app.core.config import get_settings
 from app.core.database import get_db
@@ -91,7 +92,7 @@ class ChatRequest(BaseModel):
 
     message: str = Field(min_length=1, max_length=5000, description="User message to AI coach")
     context: dict[str, Any] | None = None
-    mode: Literal["chat", "plan"] | None = None
+    mode: Literal["chat", "plan", "workout"] | None = None
     save_mode: Literal["draft", "approved", "active"] | None = None
 
 
@@ -105,6 +106,8 @@ class ChatResponse(BaseModel):
     import_id: int | None = None
     plan_status: str | None = None
     missing_fields: list[str] | None = None
+    workout_id: int | None = None
+    workout: dict[str, Any] | None = None
 
 
 # -------------------------------------------------------------------------
@@ -427,10 +430,19 @@ async def chat(
     import_id = None
     plan_status = None
     missing_fields = None
+    workout_id = None
+    workout_data = None
 
     try:
         if request.mode == "plan":
             ai_response = await _get_ai_plan_response(
+                conversation=conversation,
+                user_message=request.message,
+                context=request.context,
+                db=db,
+            )
+        elif request.mode == "workout":
+            ai_response = await _get_ai_workout_response(
                 conversation=conversation,
                 user_message=request.message,
                 context=request.context,
@@ -514,6 +526,41 @@ async def chat(
                 logger.warning("AI plan response status='need_info' but no missing_fields or questions provided")
                 # Allow empty lists but log warning
 
+    elif request.mode == "workout":
+        payload = ai_response.get("payload") or {}
+        response_status = payload.get("status")
+        assistant_content = payload.get("assistant_message") or "워크아웃 생성을 계속 진행합니다."
+
+        # Validate response status
+        if not response_status:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="AI workout response missing 'status' field",
+            )
+
+        if response_status not in ("workout", "need_info"):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"AI workout response has invalid status: '{response_status}'. Expected 'workout' or 'need_info'.",
+            )
+
+        if response_status == "workout":
+            workout_payload = payload.get("workout")
+            if not isinstance(workout_payload, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="AI workout response status='workout' but 'workout' field is missing or invalid",
+                )
+            # Return workout data for frontend to save
+            workout_data = workout_payload
+
+        elif response_status == "need_info":
+            missing_fields = payload.get("missing_fields") or []
+            questions = payload.get("questions") or []
+
+            if not missing_fields and not questions:
+                logger.warning("AI workout response status='need_info' but no missing_fields or questions provided")
+
     # Save user message (after AI response to avoid duplication)
     user_message = AIMessage(
         conversation_id=conversation_id,
@@ -546,6 +593,8 @@ async def chat(
         import_id=import_id,
         plan_status=plan_status,
         missing_fields=missing_fields,
+        workout_id=workout_id,
+        workout=workout_data,
     )
 
 
@@ -574,10 +623,11 @@ async def quick_chat(
     # DB schema uses context_type and context_data instead of language/model
     # Use Unicode-safe truncation to avoid cutting multi-byte characters
     title = _truncate_unicode_safe(request.message, 50)
+    context_type = "plan_generation" if request.mode == "plan" else ("workout_generation" if request.mode == "workout" else "chat")
     conversation = AIConversation(
         user_id=current_user.id,
         title=title,
-        context_type="plan_generation" if request.mode == "plan" else "chat",
+        context_type=context_type,
         context_data={
             "language": settings.ai_default_language,
             "model": settings.google_ai_model if settings.ai_provider == "google" else settings.openai_model,
@@ -592,10 +642,19 @@ async def quick_chat(
     import_id = None
     plan_status = None
     missing_fields = None
+    workout_id = None
+    workout_data = None
 
     try:
         if request.mode == "plan":
             ai_response = await _get_ai_plan_response(
+                conversation=conversation,
+                user_message=request.message,
+                context=request.context,
+                db=db,
+            )
+        elif request.mode == "workout":
+            ai_response = await _get_ai_workout_response(
                 conversation=conversation,
                 user_message=request.message,
                 context=request.context,
@@ -684,6 +743,44 @@ async def quick_chat(
                 logger.warning("AI plan response status='need_info' but no missing_fields or questions provided")
                 # Allow empty lists but log warning
 
+    elif request.mode == "workout":
+        payload = ai_response.get("payload") or {}
+        response_status = payload.get("status")
+        assistant_content = payload.get("assistant_message") or "워크아웃 생성을 계속 진행합니다."
+
+        # Validate response status
+        if not response_status:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="AI workout response missing 'status' field",
+            )
+
+        if response_status not in ("workout", "need_info"):
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"AI workout response has invalid status: '{response_status}'. Expected 'workout' or 'need_info'.",
+            )
+
+        if response_status == "workout":
+            workout_payload = payload.get("workout")
+            if not isinstance(workout_payload, dict):
+                await db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="AI workout response status='workout' but 'workout' field is missing or invalid",
+                )
+            # Return workout data for frontend to save
+            workout_data = workout_payload
+
+        elif response_status == "need_info":
+            missing_fields = payload.get("missing_fields") or []
+            questions = payload.get("questions") or []
+
+            if not missing_fields and not questions:
+                logger.warning("AI workout response status='need_info' but no missing_fields or questions provided")
+
     # Save user message (after AI response to avoid duplication)
     user_message = AIMessage(
         conversation_id=conversation.id,
@@ -716,6 +813,8 @@ async def quick_chat(
         import_id=import_id,
         plan_status=plan_status,
         missing_fields=missing_fields,
+        workout_id=workout_id,
+        workout=workout_data,
     )
 
 
@@ -1015,6 +1114,81 @@ async def _get_ai_plan_response(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="AI plan response is not valid JSON",
+        ) from exc
+
+    return {
+        "content": content,
+        "payload": payload,
+        "tokens": response_data.get("tokens"),
+    }
+
+
+async def _get_ai_workout_response(
+    conversation: AIConversation,
+    user_message: str,
+    context: dict[str, Any] | None,
+    db: AsyncSession,
+) -> dict[str, Any]:
+    """Get AI workout response in JSON format using Google Gemini or OpenAI.
+
+    Args:
+        conversation: Current conversation.
+        user_message: User's message.
+        context: Optional context (training data, VDOT, etc.).
+        db: Database session.
+
+    Returns:
+        Dict with content, payload (parsed JSON), and token count.
+    """
+    metrics = get_metrics_backend()
+
+    history_limit = settings.ai_max_history_messages
+    msg_result = await db.execute(
+        select(AIMessage)
+        .where(AIMessage.conversation_id == conversation.id)
+        .order_by(AIMessage.created_at.desc())
+        .limit(history_limit)
+    )
+    history_raw = list(reversed(msg_result.scalars().all()))
+
+    history: list = []
+    for msg in history_raw:
+        if history and history[-1].role == msg.role and history[-1].content == msg.content:
+            continue
+        history.append(msg)
+
+    # RAG: Search knowledge base for relevant context (workout mode)
+    system_prompt = RUNNING_COACH_WORKOUT_PROMPT
+    if settings.rag_enabled:
+        rag_context = await _get_rag_context(user_message)
+        if rag_context:
+            system_prompt = f"{RUNNING_COACH_WORKOUT_PROMPT}\n\n[참고 자료]\n{rag_context}"
+
+    # Use Google Gemini or OpenAI based on settings
+    if settings.ai_provider == "google" and settings.google_ai_api_key:
+        response_data = await _get_gemini_response(
+            history=history,
+            user_message=user_message,
+            context=context,
+            system_prompt=system_prompt,
+            metrics=metrics,
+        )
+    else:
+        response_data = await _get_openai_response(
+            history=history,
+            user_message=user_message,
+            context=context,
+            system_prompt=system_prompt,
+            metrics=metrics,
+        )
+
+    content = response_data["content"] or ""
+    try:
+        payload = _extract_json_payload(content)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI workout response is not valid JSON",
         ) from exc
 
     return {

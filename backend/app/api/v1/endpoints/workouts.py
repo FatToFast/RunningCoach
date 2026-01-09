@@ -35,6 +35,7 @@ class WorkoutStepCreate(BaseModel):
     target_pace: str | None = None
     target_hr_zone: int | None = None
     description: str | None = None
+    repeat_count: int | None = None  # 반복 횟수 (인터벌 등)
 
 
 class WorkoutCreate(BaseModel):
@@ -729,6 +730,7 @@ def _parse_single_step(step: dict) -> dict | None:
         "interval": "main",
         "recovery": "recovery",
         "rest": "rest",
+        "active": "main",  # Garmin uses "active" for main interval work
     }
     mapped_type = type_mapping.get(step_type_key, "main")
 
@@ -753,43 +755,68 @@ def _parse_single_step(step: dict) -> dict | None:
     elif end_condition_key == "time":
         # Value is in seconds
         parsed_step["duration_minutes"] = round(end_value / 60, 1) if end_value else None
+    elif end_condition_key == "lap.button":
+        # Manual lap - no specific duration/distance
+        parsed_step["description"] = parsed_step.get("description") or "랩 버튼으로 종료"
 
     # Parse target (pace, HR zone, speed)
     target_type = step.get("targetType", {})
     target_type_key = target_type.get("workoutTargetTypeKey", "")
     target_value = step.get("targetValue", {}) if isinstance(step.get("targetValue"), dict) else {}
 
-    # Target value can also be in targetValueOne/targetValueTwo for ranges
+    # Target value can also be in targetValueOne/targetValueTwo for ranges (m/s for pace)
     target_value_one = step.get("targetValueOne")
     target_value_two = step.get("targetValueTwo")
 
-    if target_type_key == "pace.zone":
-        # Pace zone - use low/high values (in m/s)
-        low_speed = target_value.get("lowInMetersPerSecond") or target_value_one
-        high_speed = target_value.get("highInMetersPerSecond") or target_value_two
-        if low_speed and high_speed:
-            # Use average pace
-            avg_speed = (low_speed + high_speed) / 2
-            parsed_step["target_pace"] = _parse_pace_from_speed(avg_speed)
-        elif low_speed:
-            parsed_step["target_pace"] = _parse_pace_from_speed(low_speed)
-    elif target_type_key == "speed.zone":
-        # Speed zone - similar to pace
-        low_speed = target_value.get("lowInMetersPerSecond") or target_value_one
-        high_speed = target_value.get("highInMetersPerSecond") or target_value_two
-        if low_speed and high_speed:
-            avg_speed = (low_speed + high_speed) / 2
-            parsed_step["target_pace"] = _parse_pace_from_speed(avg_speed)
-        elif high_speed:
+    # Handle pace/speed targets
+    if target_type_key in ("pace.zone", "speed.zone"):
+        # Try to get pace from nested dict first
+        low_speed = target_value.get("lowInMetersPerSecond")
+        high_speed = target_value.get("highInMetersPerSecond")
+
+        # Fall back to targetValueOne/targetValueTwo (these are in m/s)
+        if not low_speed and target_value_one is not None:
+            try:
+                low_speed = float(target_value_one)
+            except (TypeError, ValueError):
+                pass
+        if not high_speed and target_value_two is not None:
+            try:
+                high_speed = float(target_value_two)
+            except (TypeError, ValueError):
+                pass
+
+        # Calculate pace from speed
+        if low_speed and high_speed and low_speed > 0 and high_speed > 0:
+            # Show range: slow pace - fast pace
+            slow_pace = _parse_pace_from_speed(low_speed)  # Lower speed = slower pace
+            fast_pace = _parse_pace_from_speed(high_speed)  # Higher speed = faster pace
+            if slow_pace and fast_pace:
+                parsed_step["target_pace"] = f"{fast_pace}-{slow_pace}"
+        elif high_speed and high_speed > 0:
             parsed_step["target_pace"] = _parse_pace_from_speed(high_speed)
+        elif low_speed and low_speed > 0:
+            parsed_step["target_pace"] = _parse_pace_from_speed(low_speed)
     elif target_type_key == "heart.rate.zone":
         # HR zone - extract zone number
         zone_number = target_value.get("zoneNumber")
         if zone_number:
             parsed_step["target_hr_zone"] = zone_number
-        elif target_value_one:
-            # Sometimes it's just a number indicating zone
-            parsed_step["target_hr_zone"] = int(target_value_one) if target_value_one <= 5 else None
+        elif target_value_one is not None:
+            try:
+                zone = int(target_value_one)
+                if 1 <= zone <= 5:
+                    parsed_step["target_hr_zone"] = zone
+            except (TypeError, ValueError):
+                pass
+    elif target_type_key == "cadence":
+        # Cadence target (SPM) - add to description
+        if target_value_one and target_value_two:
+            cadence_desc = f"케이던스: {int(target_value_one)}-{int(target_value_two)} SPM"
+            if parsed_step["description"]:
+                parsed_step["description"] = f"{parsed_step['description']} ({cadence_desc})"
+            else:
+                parsed_step["description"] = cadence_desc
 
     return parsed_step
 
@@ -812,14 +839,14 @@ def _parse_garmin_workout_steps(workout_data: dict) -> list[dict]:
                 repeat_count = step.get("numberOfIterations", 1)
                 nested_steps = step.get("workoutSteps", [])
 
-                # Add a marker for repeat group start
+                # Add a marker for repeat group start with repeat count
                 steps.append({
                     "type": "main",
                     "duration_minutes": None,
                     "distance_km": None,
                     "target_pace": None,
                     "target_hr_zone": None,
-                    "description": f"🔄 {repeat_count}회 반복",
+                    "description": f"🔄 {repeat_count}회 반복 시작",
                     "is_repeat_marker": True,
                     "repeat_count": repeat_count,
                 })
@@ -828,9 +855,12 @@ def _parse_garmin_workout_steps(workout_data: dict) -> list[dict]:
                 for nested_step in nested_steps:
                     parsed = _parse_single_step(nested_step)
                     if parsed:
-                        # Add repeat context to description if needed
-                        if parsed["description"]:
-                            parsed["description"] = f"[x{repeat_count}] {parsed['description']}"
+                        # Store repeat count in each nested step for reference
+                        parsed["repeat_count"] = repeat_count
+                        # Enhance description to show this is part of a repeat group
+                        original_desc = parsed.get("description") or ""
+                        if original_desc:
+                            parsed["description"] = f"[x{repeat_count}] {original_desc}"
                         steps.append(parsed)
             else:
                 # Regular step (warmup, cooldown, etc.)
@@ -1020,6 +1050,114 @@ async def import_garmin_workouts(
         skipped=skipped,
         errors=errors,
     )
+
+
+class GarminRefreshResponse(BaseModel):
+    """Response from refreshing a workout from Garmin."""
+
+    success: bool
+    message: str
+    workout: WorkoutResponse | None = None
+
+
+@router.post("/{workout_id}/refresh-garmin", response_model=GarminRefreshResponse)
+async def refresh_from_garmin(
+    workout_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+) -> GarminRefreshResponse:
+    """Refresh workout structure from Garmin Connect.
+
+    Re-parses the Garmin workout with the latest parsing logic.
+
+    Args:
+        workout_id: Local workout ID.
+        current_user: Authenticated user.
+        db: Database session.
+
+    Returns:
+        Refresh result with updated workout.
+    """
+    # Get local workout
+    result = await db.execute(
+        select(Workout).where(
+            Workout.id == workout_id,
+            Workout.user_id == current_user.id,
+        )
+    )
+    workout = result.scalar_one_or_none()
+
+    if not workout:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workout not found",
+        )
+
+    if not workout.garmin_workout_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This workout was not imported from Garmin",
+        )
+
+    # Get Garmin session
+    session_result = await db.execute(
+        select(GarminSession).where(GarminSession.user_id == current_user.id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if not session or not session.is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin account not connected",
+        )
+
+    adapter = GarminConnectAdapter()
+    try:
+        adapter.restore_session(session.session_data)
+    except GarminAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Garmin session expired. Please reconnect.",
+        ) from exc
+
+    try:
+        loop = asyncio.get_event_loop()
+        garmin_workout = await loop.run_in_executor(
+            None,
+            lambda gid=workout.garmin_workout_id: adapter.get_workout_by_id(gid),
+        )
+
+        if not garmin_workout:
+            return GarminRefreshResponse(
+                success=False,
+                message=f"Garmin workout {workout.garmin_workout_id} not found",
+                workout=None,
+            )
+
+        # Re-parse workout structure with latest logic
+        structure = _parse_garmin_workout_steps(garmin_workout)
+
+        # Update local workout
+        workout.name = garmin_workout.get("workoutName", workout.name)
+        workout.workout_type = _map_garmin_workout_type(garmin_workout.get("subTypeKey"))
+        workout.structure = structure if structure else None
+        workout.notes = garmin_workout.get("description") or workout.notes
+        workout.updated_at = datetime.now(timezone.utc)
+
+        await db.commit()
+        await db.refresh(workout)
+
+        return GarminRefreshResponse(
+            success=True,
+            message="Workout refreshed from Garmin",
+            workout=WorkoutResponse.model_validate(workout),
+        )
+
+    except GarminAPIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to fetch Garmin workout: {exc}",
+        ) from exc
 
 
 @router.get("/garmin/raw/{workout_id}")

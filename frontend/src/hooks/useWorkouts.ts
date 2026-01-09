@@ -146,6 +146,18 @@ export function useImportGarminWorkouts() {
   });
 }
 
+export function useRefreshFromGarmin() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: number) => workoutsApi.refreshFromGarmin(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['workouts'] });
+      queryClient.invalidateQueries({ queryKey: ['workouts', 'detail', id] });
+    },
+  });
+}
+
 // -------------------------------------------------------------------------
 // Utility Functions
 // -------------------------------------------------------------------------

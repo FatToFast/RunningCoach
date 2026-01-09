@@ -129,7 +129,7 @@ class GarminRawFile(BaseModel):
     )
 
     file_type: Mapped[str] = mapped_column(String(20), default="fit")
-    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # None when file deleted after parse
     file_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

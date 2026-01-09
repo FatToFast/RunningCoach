@@ -2671,4 +2671,126 @@ const allRaceRecords = [
 
 ---
 
-*마지막 업데이트: 2026-01-08*
+### 68. 주간 마일리지에 러닝 타입이 누락됨
+
+**문제**: `activity_type == "running"`으로 정확히 일치하는 활동만 필터링하여, `track_running`, `treadmill_running` 등 다른 러닝 타입이 제외됨
+
+```python
+# ❌ 잘못된 패턴 - "running"만 정확히 일치
+def _get_activities_in_range(
+    self, start_date: date, end_date: date, activity_type: Optional[str] = None
+) -> list[Activity]:
+    query = select(Activity).where(...)
+    if activity_type:
+        query = query.where(Activity.activity_type == activity_type)  # "running"만 매칭
+    return list(self.db.execute(query).scalars().all())
+
+# ✅ 올바른 패턴 - 모든 러닝 타입 포함
+RUNNING_ACTIVITY_TYPES = [
+    "running",
+    "track_running",
+    "treadmill_running",
+    "trail_running",
+    "virtual_run",
+]
+
+def _get_activities_in_range(
+    self, start_date: date, end_date: date, activity_type: Optional[str] = None
+) -> list[Activity]:
+    query = select(Activity).where(...)
+    if activity_type:
+        if activity_type == "running":
+            query = query.where(Activity.activity_type.in_(RUNNING_ACTIVITY_TYPES))
+        else:
+            query = query.where(Activity.activity_type == activity_type)
+    return list(self.db.execute(query).scalars().all())
+```
+
+**증상**:
+- 대시보드 주간 마일리지가 실제보다 적게 표시됨
+- 트랙, 트레드밀 러닝이 마일리지에 미반영
+- 예: 실제 60km 달렸는데 0.65km만 표시
+
+**Garmin 활동 타입**:
+- `running`: 일반 야외 러닝
+- `track_running`: 트랙 러닝
+- `treadmill_running`: 트레드밀 러닝
+- `trail_running`: 트레일 러닝
+- `virtual_run`: 가상 러닝
+
+**적용 위치**:
+- `backend/app/services/dashboard.py`: `RUNNING_ACTIVITY_TYPES`, `_get_activities_in_range`
+
+---
+
+### 69. Garmin 워크아웃 Import 시 반복 횟수/페이스 누락
+
+**문제**: Garmin에서 워크아웃을 가져올 때 인터벌의 반복 횟수와 목표 페이스가 표시되지 않음
+
+```python
+# ❌ 잘못된 패턴 - targetValueOne/Two를 숫자로 처리 안함
+target_value_one = step.get("targetValueOne")  # float 값인데
+low_speed = target_value.get("lowInMetersPerSecond") or target_value_one
+# → target_value가 빈 dict면 or 연산자로 target_value_one 사용
+# → 하지만 타입 변환 없이 그대로 사용하면 오류 발생 가능
+
+# ✅ 올바른 패턴 - 명시적 타입 변환
+if not low_speed and target_value_one is not None:
+    try:
+        low_speed = float(target_value_one)
+    except (TypeError, ValueError):
+        pass
+```
+
+```python
+# ❌ 잘못된 패턴 - 반복 그룹 내 스텝에 repeat_count 미저장
+for nested_step in nested_steps:
+    parsed = _parse_single_step(nested_step)
+    if parsed:
+        parsed["description"] = f"[x{repeat_count}] {parsed['description']}"
+        steps.append(parsed)  # repeat_count가 없음!
+
+# ✅ 올바른 패턴 - repeat_count를 각 스텝에 저장
+for nested_step in nested_steps:
+    parsed = _parse_single_step(nested_step)
+    if parsed:
+        parsed["repeat_count"] = repeat_count  # 반복 횟수 저장
+        steps.append(parsed)
+```
+
+```typescript
+// ❌ 잘못된 패턴 - WorkoutStep 타입에 repeat_count 필드 없음
+export interface WorkoutStep {
+  type: string;
+  duration_minutes: number | null;
+  // ... repeat_count 누락
+}
+
+// ✅ 올바른 패턴
+export interface WorkoutStep {
+  type: string;
+  duration_minutes: number | null;
+  // ...
+  is_repeat_marker?: boolean;  // 반복 그룹 마커
+  repeat_count?: number | null;  // 반복 횟수
+}
+```
+
+**증상**:
+- Garmin에서 가져온 인터벌 워크아웃에 반복 횟수가 표시 안됨
+- 목표 페이스가 비어 있음 (null)
+- 예: "800m x 5 @ 3:30" → "800m (페이스 없음)"
+
+**Garmin 워크아웃 구조**:
+- `RepeatGroupDTO`: 반복 그룹 (numberOfIterations = 반복 횟수)
+- `targetValueOne`/`targetValueTwo`: 페이스/속도 범위 (m/s 단위)
+- `stepTypeKey`: "warmup", "cooldown", "interval", "active", "recovery"
+
+**적용 위치**:
+- `backend/app/api/v1/endpoints/workouts.py`: `_parse_single_step`, `_parse_garmin_workout_steps`
+- `frontend/src/types/api.ts`: `WorkoutStep` 인터페이스
+- `frontend/src/pages/Workouts.tsx`: 스텝 표시 UI
+
+---
+
+*마지막 업데이트: 2026-01-09*
