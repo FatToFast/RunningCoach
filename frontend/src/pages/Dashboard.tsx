@@ -1,16 +1,20 @@
 import { useState, useMemo } from 'react';
-import { CompactStats } from '../components/dashboard/CompactStats';
-import { CompactFitness } from '../components/dashboard/CompactFitness';
-import { CompactMileage } from '../components/dashboard/CompactMileage';
-import { CompactActivities } from '../components/dashboard/CompactActivities';
-import { TrainingPacesCard } from '../components/dashboard/TrainingPacesCard';
-import { useDashboardSummary, useTrends } from '../hooks/useDashboard';
+import { CompactStats } from '../components/Dashboard/CompactStats';
+import { CompactFitness } from '../components/Dashboard/CompactFitness';
+import { CompactMileage } from '../components/Dashboard/CompactMileage';
+import { CompactActivities } from '../components/Dashboard/CompactActivities';
+import { TrainingPacesCard } from '../components/Dashboard/TrainingPacesCard';
+import { CompactComparison } from '../components/Dashboard/CompactComparison';
+import { InjuryRiskWidget } from '../components/Dashboard/InjuryRiskWidget';
+import { useDashboardSummary, useTrends, useCompare } from '../hooks/useDashboard';
 
 export function Dashboard() {
   const [period, setPeriod] = useState<'week' | 'month'>('week');
   const { data: dashboard, isLoading, error } = useDashboardSummary({ period });
   // Trends API에서 실제 주간 거리 데이터 가져오기 (8주 = 주간, 26주 = 월간 집계용)
   const { data: trends } = useTrends(period === 'week' ? 8 : 26);
+  // 기간 비교 데이터
+  const { data: compareData, isLoading: compareLoading } = useCompare({ period });
 
   // 마일리지 차트 데이터 생성 - Trends API의 weekly_distance 사용
   const mileageData = useMemo(() => {
@@ -115,8 +119,15 @@ export function Dashboard() {
 
       {/* Main Content - Runalyze 스타일 2열 레이아웃 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Left Column - 마일리지 + 피트니스 */}
+        {/* Left Column - 비교 + 마일리지 + 피트니스 */}
         <div className="space-y-4">
+          {/* 기간 비교 */}
+          <CompactComparison
+            data={compareData}
+            isLoading={compareLoading}
+            period={period}
+          />
+
           {/* 마일리지 차트 */}
           <CompactMileage data={mileageData} period={period} />
 
@@ -124,10 +135,13 @@ export function Dashboard() {
           <CompactFitness fitness={fitness_status} health={health_status} />
         </div>
 
-        {/* Right Column - 활동 + 페이스 */}
+        {/* Right Column - 활동 + 부상위험 + 페이스 */}
         <div className="space-y-4">
           {/* 최근 활동 */}
           <CompactActivities activities={recent_activities} maxItems={5} />
+
+          {/* 부상 위험 분석 */}
+          <InjuryRiskWidget fitness={fitness_status} />
 
           {/* Training Paces */}
           <TrainingPacesCard paces={training_paces} />

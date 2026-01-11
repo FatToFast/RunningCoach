@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+const USE_MOCK_DATA = import.meta.env.VITE_USE_MOCK_DATA === 'true';
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -14,6 +15,10 @@ export const apiClient = axios.create({
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
+    // Skip redirect in mock mode
+    if (USE_MOCK_DATA) {
+      return Promise.reject(error);
+    }
     if (error.response?.status === 401) {
       const url = error.config?.url || '';
       // Don't redirect for:
