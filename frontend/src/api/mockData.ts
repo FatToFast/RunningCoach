@@ -124,6 +124,10 @@ export const mockDashboardSummary: DashboardSummary = {
     ctl: 71,
     atl: 70,
     tsb: -27,
+    ctl_percent: 85,
+    atl_percent: 78,
+    max_ctl: 84,
+    max_atl: 90,
     weekly_trimp: 485,
     weekly_tss: 312,
     // Runalyze-style extended metrics
@@ -243,14 +247,14 @@ export const mockTrendsResponse: TrendsResponse = {
     { date: '2024-12-23', value: 52 },
   ],
   ctl_atl: [
-    { date: '2024-11-04', ctl: 45.2, atl: 52.1, tsb: -6.9 },
-    { date: '2024-11-11', ctl: 48.5, atl: 58.3, tsb: -9.8 },
-    { date: '2024-11-18', ctl: 52.1, atl: 65.2, tsb: -13.1 },
-    { date: '2024-11-25', ctl: 50.8, atl: 55.4, tsb: -4.6 },
-    { date: '2024-12-02', ctl: 53.2, atl: 62.8, tsb: -9.6 },
-    { date: '2024-12-09', ctl: 56.5, atl: 70.2, tsb: -13.7 },
-    { date: '2024-12-16', ctl: 55.8, atl: 65.5, tsb: -9.7 },
-    { date: '2024-12-23', ctl: 58.2, atl: 72.5, tsb: -14.3 },
+    { date: '2024-11-04', ctl: 45.2, atl: 52.1, tsb: -6.9, ctl_percent: 54, atl_percent: 58 },
+    { date: '2024-11-11', ctl: 48.5, atl: 58.3, tsb: -9.8, ctl_percent: 58, atl_percent: 65 },
+    { date: '2024-11-18', ctl: 52.1, atl: 65.2, tsb: -13.1, ctl_percent: 62, atl_percent: 72 },
+    { date: '2024-11-25', ctl: 50.8, atl: 55.4, tsb: -4.6, ctl_percent: 60, atl_percent: 62 },
+    { date: '2024-12-02', ctl: 53.2, atl: 62.8, tsb: -9.6, ctl_percent: 63, atl_percent: 70 },
+    { date: '2024-12-09', ctl: 56.5, atl: 70.2, tsb: -13.7, ctl_percent: 67, atl_percent: 78 },
+    { date: '2024-12-16', ctl: 55.8, atl: 65.5, tsb: -9.7, ctl_percent: 66, atl_percent: 73 },
+    { date: '2024-12-23', ctl: 58.2, atl: 72.5, tsb: -14.3, ctl_percent: 69, atl_percent: 81 },
   ],
 };
 

@@ -41,14 +41,6 @@ const queryClient = new QueryClient({
   },
 });
 
-// Placeholder pages
-const PlaceholderPage = ({ title }: { title: string }) => (
-  <div className="card">
-    <h1 className="font-display text-2xl font-bold mb-4">{title}</h1>
-    <p className="text-muted">This page is under construction.</p>
-  </div>
-);
-
 // 404 Not Found page (for protected routes)
 const NotFound = () => (
   <div className="card text-center py-12">

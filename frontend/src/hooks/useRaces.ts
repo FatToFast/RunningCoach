@@ -1,11 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  racesApi,
-  type RaceCreate,
-  type RaceUpdate,
-  type GarminRaceImport,
-  type GarminEventsResponse,
-} from '../api/races';
+import { racesApi, type Race, type RaceCreate, type RaceUpdate, type GarminRaceImport } from '../api/races';
 
 // Get all races
 export function useRaces(includeCompleted = false) {
@@ -43,8 +37,6 @@ export function useCreateRace() {
     mutationFn: (race: RaceCreate) => racesApi.createRace(race),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['races'] });
-      // Also invalidate personal records as new race may affect records view
-      queryClient.invalidateQueries({ queryKey: ['personal-records'] });
     },
   });
 }
@@ -58,8 +50,6 @@ export function useUpdateRace() {
       racesApi.updateRace(raceId, race),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['races'] });
-      // Also invalidate personal records as race times may be updated
-      queryClient.invalidateQueries({ queryKey: ['personal-records'] });
     },
   });
 }
@@ -110,32 +100,53 @@ export function useImportFromGarmin() {
   });
 }
 
-// Get Garmin events from Event Dashboard
-export function useGarminEvents(startDate: string, endDate: string) {
-  return useQuery({
-    queryKey: ['races', 'garmin-events', startDate, endDate],
-    queryFn: () => racesApi.getGarminEvents(startDate, endDate),
-    enabled: !!startDate && !!endDate,
-    staleTime: 1000 * 60 * 5, // 5 minutes
+// Garmin event type for import modal
+export interface GarminEvent {
+  name: string;
+  event_date: string;
+  event_type?: string;
+  distance_km?: number | null;
+  distance_label?: string | null;
+  location?: string | null;
+  notes?: string | null;
+}
+
+export interface GarminEventsResponse {
+  events: GarminEvent[];
+}
+
+// Stub: Fetch Garmin events (not yet implemented on backend)
+export function useGarminEvents(_startDate: string, _endDate: string) {
+  return useQuery<GarminEventsResponse, Error>({
+    queryKey: ['garmin-events', _startDate, _endDate],
+    queryFn: async () => {
+      // Backend API not yet implemented - return empty events
+      return { events: [] };
+    },
+    enabled: false, // Disabled until backend is ready
   });
 }
 
-// Import Garmin events as races mutation
+// Stub: Import multiple Garmin events (not yet implemented on backend)
+export interface GarminEventsImportParams {
+  startDate: string;
+  endDate: string;
+  filterRacesOnly: boolean;
+  selectedEventDates: string[];
+  selectedEventNames: string[];
+}
+
 export function useImportGarminEvents() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (request: {
-      startDate: string;
-      endDate: string;
-      selectedEventDates?: string[];
-      selectedEventNames?: string[];
-      filterRacesOnly?: boolean;
-    }) => racesApi.importGarminEvents(request),
+    mutationFn: async (_params: GarminEventsImportParams): Promise<Race[]> => {
+      // Backend API not yet implemented - return empty array
+      console.warn('Garmin events import not yet implemented');
+      return [];
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['races'] });
-      queryClient.invalidateQueries({ queryKey: ['personal-records'] });
-      queryClient.invalidateQueries({ queryKey: ['races', 'garmin-events'] });
     },
   });
 }

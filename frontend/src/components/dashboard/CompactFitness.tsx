@@ -267,10 +267,10 @@ export function CompactFitness({ fitness, health }: CompactFitnessProps) {
                     fontSize: '10px',
                     padding: '4px 8px',
                   }}
-                  formatter={(value: number, name: string) => {
+                  formatter={(value: number | undefined, name: string | undefined) => {
                     const label = name === 'ctl' ? 'CTL' : name === 'atl' ? 'ATL' : 'TSB';
                     const unit = name === 'tsb' ? '' : '%';
-                    return [`${value?.toFixed(0)}${unit}`, label];
+                    return [`${value?.toFixed(0) ?? '--'}${unit}`, label];
                   }}
                 />
                 <ReferenceLine y={0} stroke="var(--color-border)" strokeDasharray="3 3" />

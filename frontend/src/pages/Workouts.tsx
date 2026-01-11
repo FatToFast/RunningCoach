@@ -16,9 +16,6 @@ import {
   Loader2,
   Edit3,
   Trash2,
-  GripVertical,
-  RefreshCw,
-  Repeat,
 } from 'lucide-react';
 import {
   useWorkouts,
@@ -32,7 +29,6 @@ import {
   useDeleteSchedule,
   useGarminWorkouts,
   useImportGarminWorkouts,
-  useRefreshFromGarmin,
   getWorkoutTypeLabel,
   getWorkoutTypeColor,
   getWorkoutTypeIcon,
@@ -368,7 +364,6 @@ function WorkoutEditModal({
   const [notes, setNotes] = useState(workout.notes || '');
   const [steps, setSteps] = useState<WorkoutStep[]>(workout.structure || []);
   const updateWorkout = useUpdateWorkout();
-  const refreshFromGarmin = useRefreshFromGarmin();
 
   const workoutTypes = ['easy', 'long', 'tempo', 'interval', 'hills', 'fartlek', 'recovery'];
   const stepTypes = ['warmup', 'main', 'cooldown', 'rest', 'recovery'];
@@ -383,105 +378,8 @@ function WorkoutEditModal({
         target_pace: null,
         target_hr_zone: null,
         description: null,
-        end_condition: null,
-        repeat_count: null,
       },
     ]);
-  };
-
-  const handleAddRepeatGroup = () => {
-    // 반복 그룹: 마커 + 메인 + 회복 단계
-    setSteps([
-      ...steps,
-      {
-        type: 'main',
-        duration_minutes: null,
-        distance_km: null,
-        target_pace: null,
-        target_hr_zone: null,
-        description: '🔄 반복 그룹 시작',
-        end_condition: null,
-        is_repeat_marker: true,
-        repeat_count: 5,
-      },
-      {
-        type: 'main',
-        duration_minutes: null,
-        distance_km: 1,
-        target_pace: null,
-        target_hr_zone: null,
-        description: '인터벌',
-        end_condition: 'distance',
-        repeat_count: 5,
-      },
-      {
-        type: 'recovery',
-        duration_minutes: null,
-        distance_km: 0.2,
-        target_pace: null,
-        target_hr_zone: null,
-        description: '회복 조깅',
-        end_condition: 'distance',
-        repeat_count: 5,
-      },
-    ]);
-  };
-
-  const handleUpdateRepeatCount = (markerIndex: number, newCount: number) => {
-    // 마커와 그 그룹 내 모든 단계의 repeat_count 업데이트
-    const newSteps = [...steps];
-    const currentCount = newSteps[markerIndex].repeat_count || 1;
-
-    // 마커 업데이트
-    newSteps[markerIndex] = { ...newSteps[markerIndex], repeat_count: newCount };
-
-    // 그룹 내 단계들 업데이트 (마커 다음부터 다음 마커 또는 끝까지)
-    for (let i = markerIndex + 1; i < newSteps.length; i++) {
-      if (newSteps[i].is_repeat_marker) break;
-      if (newSteps[i].repeat_count === currentCount) {
-        newSteps[i] = { ...newSteps[i], repeat_count: newCount };
-      }
-    }
-
-    setSteps(newSteps);
-  };
-
-  const handleAddStepToGroup = (markerIndex: number) => {
-    const repeatCount = steps[markerIndex].repeat_count || 1;
-    // 그룹의 마지막 단계 위치 찾기
-    let insertIndex = markerIndex + 1;
-    for (let i = markerIndex + 1; i < steps.length; i++) {
-      if (steps[i].is_repeat_marker) break;
-      if (steps[i].repeat_count === repeatCount) {
-        insertIndex = i + 1;
-      }
-    }
-
-    const newSteps = [...steps];
-    newSteps.splice(insertIndex, 0, {
-      type: 'main',
-      duration_minutes: null,
-      distance_km: null,
-      target_pace: null,
-      target_hr_zone: null,
-      description: null,
-      end_condition: null,
-      repeat_count: repeatCount,
-    });
-    setSteps(newSteps);
-  };
-
-  const handleDeleteRepeatGroup = (markerIndex: number) => {
-    const repeatCount = steps[markerIndex].repeat_count || 1;
-    // 마커와 그룹 내 모든 단계 삭제
-    const newSteps = steps.filter((step, i) => {
-      if (i === markerIndex) return false;
-      if (i > markerIndex && !step.is_repeat_marker && step.repeat_count === repeatCount) {
-        return false;
-      }
-      return true;
-    });
-    setSteps(newSteps);
   };
 
   const handleUpdateStep = (index: number, field: keyof WorkoutStep, value: string | number | null) => {
@@ -504,270 +402,6 @@ function WorkoutEditModal({
     setSteps(newSteps);
   };
 
-  // 단계를 그룹별로 렌더링하는 함수
-  const renderStepsWithGroups = () => {
-    const elements: JSX.Element[] = [];
-    let i = 0;
-
-    while (i < steps.length) {
-      const step = steps[i];
-
-      if (step.is_repeat_marker) {
-        // 반복 그룹 시작 - 그룹 내 단계들 수집
-        const groupSteps: { step: WorkoutStep; index: number }[] = [];
-        const repeatCount = step.repeat_count || 1;
-        const markerIndex = i;
-
-        // 그룹 내 단계들 찾기
-        for (let j = i + 1; j < steps.length; j++) {
-          if (steps[j].is_repeat_marker) break;
-          if (steps[j].repeat_count === repeatCount) {
-            groupSteps.push({ step: steps[j], index: j });
-          } else {
-            break;
-          }
-        }
-
-        // 반복 그룹 렌더링 (Garmin 스타일)
-        elements.push(
-          <div
-            key={`group-${i}`}
-            className="border-2 border-amber/50 rounded-lg overflow-hidden bg-amber/5"
-          >
-            {/* 그룹 헤더 */}
-            <div className="flex items-center justify-between px-3 py-2 bg-amber/10 border-b border-amber/30">
-              <div className="flex items-center gap-2">
-                <Repeat className="w-4 h-4 text-amber" />
-                <span className="text-sm font-medium text-amber">{repeatCount}회 반복</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  value={repeatCount}
-                  onChange={(e) => handleUpdateRepeatCount(markerIndex, Number(e.target.value) || 1)}
-                  className="w-12 px-1 py-0.5 text-xs text-center bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded"
-                  min="1"
-                  max="50"
-                />
-                <span className="text-xs text-muted">회</span>
-                <button
-                  type="button"
-                  onClick={() => handleAddStepToGroup(markerIndex)}
-                  className="p-1 text-cyan hover:bg-cyan/10 rounded"
-                  title="그룹에 단계 추가"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteRepeatGroup(markerIndex)}
-                  className="p-1 text-red-400 hover:bg-red-500/10 rounded"
-                  title="반복 그룹 삭제"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* 그룹 내 단계들 */}
-            <div className="p-2 space-y-2">
-              {groupSteps.map(({ step: groupStep, index: stepIndex }) => (
-                <div
-                  key={stepIndex}
-                  className="border border-[var(--color-border)] rounded-lg p-2 bg-[var(--color-bg-secondary)]"
-                >
-                  {renderStepContent(groupStep, stepIndex, true)}
-                </div>
-              ))}
-              {groupSteps.length === 0 && (
-                <div className="text-center text-xs text-muted py-2">
-                  그룹에 단계를 추가하세요
-                </div>
-              )}
-            </div>
-          </div>
-        );
-
-        // 마커 + 그룹 내 단계 수만큼 건너뛰기
-        i += 1 + groupSteps.length;
-      } else {
-        // 일반 단계 (그룹 외부)
-        elements.push(
-          <div
-            key={i}
-            className="border border-[var(--color-border)] rounded-lg p-3 bg-[var(--color-bg-tertiary)]/30"
-          >
-            {renderStepContent(step, i, false)}
-          </div>
-        );
-        i++;
-      }
-    }
-
-    return elements;
-  };
-
-  // 단계 내용 렌더링 (그룹 내/외 공용) - 모든 필드 동일하게 표시
-  const renderStepContent = (step: WorkoutStep, index: number, isInGroup: boolean) => (
-    <>
-      <div className="flex items-start gap-2">
-        {/* 순서 및 이동 버튼 (그룹 외부만) */}
-        {!isInGroup && (
-          <div className="flex flex-col items-center gap-1 pt-1">
-            <button
-              type="button"
-              onClick={() => handleMoveStep(index, 'up')}
-              disabled={index === 0}
-              className="p-0.5 hover:bg-[var(--color-bg-tertiary)] rounded disabled:opacity-30"
-            >
-              <ChevronRight className="w-3 h-3 -rotate-90" />
-            </button>
-            <span className="text-[10px] text-muted font-mono">{index + 1}</span>
-            <button
-              type="button"
-              onClick={() => handleMoveStep(index, 'down')}
-              disabled={index === steps.length - 1}
-              className="p-0.5 hover:bg-[var(--color-bg-tertiary)] rounded disabled:opacity-30"
-            >
-              <ChevronRight className="w-3 h-3 rotate-90" />
-            </button>
-          </div>
-        )}
-
-        {/* 컬러 인디케이터 (그룹 내) */}
-        {isInGroup && (
-          <div className={`w-1 self-stretch rounded-full ${getStepTypeColor(step.type)}`} />
-        )}
-
-        {/* Step Content - 모든 필드 표시 */}
-        <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <div>
-            <label className="text-[10px] text-muted">유형</label>
-            <select
-              value={step.type}
-              onChange={(e) => handleUpdateStep(index, 'type', e.target.value)}
-              className="input w-full text-xs py-1"
-            >
-              {stepTypes.map((type) => (
-                <option key={type} value={type}>
-                  {getStepTypeLabel(type)}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-[10px] text-muted">종료 조건</label>
-            <select
-              value={step.end_condition || ''}
-              onChange={(e) =>
-                handleUpdateStep(index, 'end_condition', e.target.value || null)
-              }
-              className="input w-full text-xs py-1"
-            >
-              <option value="">자동</option>
-              <option value="distance">거리</option>
-              <option value="time">시간</option>
-              <option value="lap_button">랩 버튼</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-[10px] text-muted">거리 (km)</label>
-            <input
-              type="number"
-              value={step.distance_km || ''}
-              onChange={(e) =>
-                handleUpdateStep(index, 'distance_km', e.target.value ? Number(e.target.value) : null)
-              }
-              className="input w-full text-xs py-1"
-              placeholder="-"
-              min="0"
-              step="0.1"
-              disabled={step.end_condition === 'lap_button' || step.end_condition === 'time'}
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted">시간 (분)</label>
-            <input
-              type="number"
-              value={step.duration_minutes || ''}
-              onChange={(e) =>
-                handleUpdateStep(index, 'duration_minutes', e.target.value ? Number(e.target.value) : null)
-              }
-              className="input w-full text-xs py-1"
-              placeholder="-"
-              min="0"
-              step="0.5"
-              disabled={step.end_condition === 'lap_button' || step.end_condition === 'distance'}
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted">목표 페이스</label>
-            <input
-              type="text"
-              value={step.target_pace || ''}
-              onChange={(e) =>
-                handleUpdateStep(index, 'target_pace', e.target.value || null)
-              }
-              className="input w-full text-xs py-1"
-              placeholder="예: 4:20"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-muted">HR Zone</label>
-            <select
-              value={step.target_hr_zone || ''}
-              onChange={(e) =>
-                handleUpdateStep(index, 'target_hr_zone', e.target.value ? Number(e.target.value) : null)
-              }
-              className="input w-full text-xs py-1"
-            >
-              <option value="">-</option>
-              {[1, 2, 3, 4, 5].map((zone) => (
-                <option key={zone} value={zone}>
-                  Zone {zone}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="col-span-2">
-            <label className="text-[10px] text-muted">설명</label>
-            <input
-              type="text"
-              value={step.description || ''}
-              onChange={(e) =>
-                handleUpdateStep(index, 'description', e.target.value || null)
-              }
-              className="input w-full text-xs py-1"
-              placeholder="단계 설명..."
-            />
-          </div>
-        </div>
-
-        {/* Delete Button */}
-        <button
-          type="button"
-          onClick={() => handleDeleteStep(index)}
-          className="p-1 text-red-400 hover:bg-red-500/10 rounded"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Step Summary (그룹 내/외 모두 표시) */}
-      <div className="mt-2 flex items-center gap-2 flex-wrap">
-        <div className={`w-2 h-2 rounded-full ${getStepTypeColor(step.type)}`} />
-        <span className="text-[10px] text-muted">
-          {getStepTypeLabel(step.type)}
-          {step.end_condition === 'lap_button' && ' · 랩 버튼'}
-          {step.end_condition !== 'lap_button' && step.duration_minutes && ` · ${step.duration_minutes}분`}
-          {step.end_condition !== 'lap_button' && step.distance_km && ` · ${step.distance_km}km`}
-          {step.target_pace && ` @ ${step.target_pace}/km`}
-          {step.target_hr_zone && ` · Zone ${step.target_hr_zone}`}
-        </span>
-      </div>
-    </>
-  );
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -785,29 +419,6 @@ function WorkoutEditModal({
       onSuccess();
     } catch (error) {
       console.error('Failed to update workout:', error);
-    }
-  };
-
-  const handleRefreshFromGarmin = async () => {
-    if (!confirm('Garmin에서 워크아웃 데이터를 다시 가져옵니다. 현재 편집 중인 내용은 덮어씌워집니다. 계속하시겠습니까?')) {
-      return;
-    }
-
-    try {
-      const result = await refreshFromGarmin.mutateAsync(workout.id);
-      if (result.success && result.workout) {
-        // Update local state with refreshed data
-        setName(result.workout.name);
-        setWorkoutType(result.workout.workout_type);
-        setNotes(result.workout.notes || '');
-        setSteps(result.workout.structure || []);
-        alert('워크아웃이 Garmin에서 새로고침되었습니다.');
-      } else {
-        alert(result.message || '새로고침에 실패했습니다.');
-      }
-    } catch (error) {
-      console.error('Failed to refresh from Garmin:', error);
-      alert('Garmin에서 새로고침하는 중 오류가 발생했습니다.');
     }
   };
 
@@ -862,24 +473,14 @@ function WorkoutEditModal({
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-sm text-muted">워크아웃 단계</label>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleAddRepeatGroup}
-                  className="text-xs text-amber hover:text-amber/80 flex items-center gap-1"
-                >
-                  <Repeat className="w-3 h-3" />
-                  반복 그룹
-                </button>
-                <button
-                  type="button"
-                  onClick={handleAddStep}
-                  className="text-xs text-cyan hover:text-cyan/80 flex items-center gap-1"
-                >
-                  <Plus className="w-3 h-3" />
-                  단계 추가
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={handleAddStep}
+                className="text-xs text-cyan hover:text-cyan/80 flex items-center gap-1"
+              >
+                <Plus className="w-3 h-3" />
+                단계 추가
+              </button>
             </div>
 
             {steps.length === 0 ? (
@@ -888,27 +489,151 @@ function WorkoutEditModal({
               </div>
             ) : (
               <div className="space-y-2">
-                {renderStepsWithGroups()}
+                {steps.map((step, index) => (
+                  <div
+                    key={index}
+                    className="border border-[var(--color-border)] rounded-lg p-3 bg-[var(--color-bg-tertiary)]/30"
+                  >
+                    <div className="flex items-start gap-2">
+                      {/* Drag Handle & Order */}
+                      <div className="flex flex-col items-center gap-1 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => handleMoveStep(index, 'up')}
+                          disabled={index === 0}
+                          className="p-0.5 hover:bg-[var(--color-bg-tertiary)] rounded disabled:opacity-30"
+                        >
+                          <ChevronRight className="w-3 h-3 -rotate-90" />
+                        </button>
+                        <span className="text-[10px] text-muted font-mono">{index + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveStep(index, 'down')}
+                          disabled={index === steps.length - 1}
+                          className="p-0.5 hover:bg-[var(--color-bg-tertiary)] rounded disabled:opacity-30"
+                        >
+                          <ChevronRight className="w-3 h-3 rotate-90" />
+                        </button>
+                      </div>
+
+                      {/* Step Content */}
+                      <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div>
+                          <label className="text-[10px] text-muted">유형</label>
+                          <select
+                            value={step.type}
+                            onChange={(e) => handleUpdateStep(index, 'type', e.target.value)}
+                            className="input w-full text-xs py-1"
+                          >
+                            {stepTypes.map((type) => (
+                              <option key={type} value={type}>
+                                {getStepTypeLabel(type)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-muted">시간 (분)</label>
+                          <input
+                            type="number"
+                            value={step.duration_minutes || ''}
+                            onChange={(e) =>
+                              handleUpdateStep(index, 'duration_minutes', e.target.value ? Number(e.target.value) : null)
+                            }
+                            className="input w-full text-xs py-1"
+                            placeholder="-"
+                            min="0"
+                            step="0.5"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-muted">거리 (km)</label>
+                          <input
+                            type="number"
+                            value={step.distance_km || ''}
+                            onChange={(e) =>
+                              handleUpdateStep(index, 'distance_km', e.target.value ? Number(e.target.value) : null)
+                            }
+                            className="input w-full text-xs py-1"
+                            placeholder="-"
+                            min="0"
+                            step="0.1"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-muted">목표 페이스</label>
+                          <input
+                            type="text"
+                            value={step.target_pace || ''}
+                            onChange={(e) =>
+                              handleUpdateStep(index, 'target_pace', e.target.value || null)
+                            }
+                            className="input w-full text-xs py-1"
+                            placeholder="예: 5:00"
+                          />
+                        </div>
+                        <div className="col-span-2 sm:col-span-3">
+                          <label className="text-[10px] text-muted">설명</label>
+                          <input
+                            type="text"
+                            value={step.description || ''}
+                            onChange={(e) =>
+                              handleUpdateStep(index, 'description', e.target.value || null)
+                            }
+                            className="input w-full text-xs py-1"
+                            placeholder="단계 설명..."
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-muted">HR Zone</label>
+                          <select
+                            value={step.target_hr_zone || ''}
+                            onChange={(e) =>
+                              handleUpdateStep(index, 'target_hr_zone', e.target.value ? Number(e.target.value) : null)
+                            }
+                            className="input w-full text-xs py-1"
+                          >
+                            <option value="">-</option>
+                            {[1, 2, 3, 4, 5].map((zone) => (
+                              <option key={zone} value={zone}>
+                                Zone {zone}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Delete Button */}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteStep(index)}
+                        className="p-1 text-red-400 hover:bg-red-500/10 rounded"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Step Type Indicator */}
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${getStepTypeColor(step.type)}`} />
+                      <span className="text-[10px] text-muted">
+                        {getStepTypeLabel(step.type)}
+                        {step.duration_minutes && ` · ${step.duration_minutes}분`}
+                        {step.distance_km && ` · ${step.distance_km}km`}
+                        {step.target_pace && ` @ ${step.target_pace}/km`}
+                      </span>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
           {/* Garmin Info */}
           {workout.garmin_workout_id && (
-            <div className="text-xs text-muted bg-[var(--color-bg-tertiary)] p-3 rounded-lg flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-green-500" />
-                Garmin Connect에서 가져온 워크아웃입니다. (ID: {workout.garmin_workout_id})
-              </div>
-              <button
-                type="button"
-                onClick={handleRefreshFromGarmin}
-                disabled={refreshFromGarmin.isPending}
-                className="flex items-center gap-1.5 px-2 py-1 text-cyan hover:bg-cyan/10 rounded transition-colors disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${refreshFromGarmin.isPending ? 'animate-spin' : ''}`} />
-                {refreshFromGarmin.isPending ? '새로고침 중...' : 'Garmin에서 새로고침'}
-              </button>
+            <div className="text-xs text-muted bg-[var(--color-bg-tertiary)] p-3 rounded-lg flex items-center gap-2">
+              <Check className="w-4 h-4 text-green-500" />
+              Garmin Connect에서 가져온 워크아웃입니다. (ID: {workout.garmin_workout_id})
             </div>
           )}
         </form>
@@ -1015,13 +740,11 @@ function WorkoutItem({
   onEdit,
   onDelete,
   onPushToGarmin,
-  onRefreshFromGarmin,
 }: {
   workout: Workout;
   onEdit: () => void;
   onDelete: () => void;
   onPushToGarmin: () => void;
-  onRefreshFromGarmin?: () => void;
 }) {
   const [showMenu, setShowMenu] = useState(false);
   const stepCount = workout.structure?.length || 0;
@@ -1090,18 +813,6 @@ function WorkoutItem({
                 >
                   <Upload className="w-4 h-4" />
                   Garmin 전송
-                </button>
-              )}
-              {workout.garmin_workout_id && onRefreshFromGarmin && (
-                <button
-                  onClick={() => {
-                    onRefreshFromGarmin();
-                    setShowMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-sm hover:bg-[var(--color-bg-tertiary)] flex items-center gap-2 text-cyan"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  Garmin에서 새로고침
                 </button>
               )}
               <button
@@ -1516,17 +1227,6 @@ export function Workouts() {
                   onEdit={() => setEditingWorkout(workout)}
                   onDelete={() => handleDeleteWorkout(workout.id)}
                   onPushToGarmin={() => handlePushToGarmin(workout.id)}
-                  onRefreshFromGarmin={
-                    workout.garmin_workout_id
-                      ? () => {
-                          refreshFromGarmin.mutate(workout.id, {
-                            onSuccess: () => {
-                              // 워크아웃 목록이 자동으로 갱신됨 (useRefreshFromGarmin에서 invalidateQueries 호출)
-                            },
-                          });
-                        }
-                      : undefined
-                  }
                 />
               ))
             )}

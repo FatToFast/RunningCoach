@@ -10,8 +10,6 @@ const mockUser: User = {
   email: 'mock@example.com',
   display_name: 'Mock User',
   timezone: 'Asia/Seoul',
-  garmin_connected: true,
-  strava_connected: false,
 };
 
 export function useUser() {
