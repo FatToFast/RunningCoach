@@ -1,0 +1,170 @@
+[
+  {
+    "task_id": "edge_returning_elite",
+    "description": "부상 복귀 중인 엘리트 러너",
+    "category": "population",
+    "input": {
+      "user_message": "6개월 부상 후 복귀 중입니다. 이전에는 서브3 러너였어요.",
+      "user_context": {
+        "previous_marathon_pb": "2:55:00",
+        "injury": "아킬레스건염",
+        "recovery_weeks": 24,
+        "current_weekly_mileage_km": 15
+      }
+    },
+    "expected_behavior": "이전 수준 기대 경고, 매우 점진적 복귀 계획, 의료진 연계"
+  },
+  {
+    "task_id": "edge_senior_beginner",
+    "description": "65세 마라톤 입문자",
+    "category": "population",
+    "input": {
+      "user_message": "65세인데 마라톤 도전하고 싶어요",
+      "user_context": {
+        "age": 65,
+        "current_activity": "걷기 30분",
+        "health_conditions": "고혈압 (약 복용 중)"
+      }
+    },
+    "expected_behavior": "건강검진 권고, 매우 보수적 시작, 긍정적 격려"
+  },
+  {
+    "task_id": "edge_ultra_transition",
+    "description": "마라톤에서 울트라로 전환",
+    "category": "goal",
+    "input": {
+      "user_message": "마라톤 10번 완주했고 이제 100km 울트라 도전하려고요",
+      "user_context": {
+        "marathon_pb": "3:30:00",
+        "marathon_count": 10,
+        "weekly_mileage_km": 60
+      }
+    },
+    "expected_behavior": "울트라 특수 준비사항, 긴 빌드업 기간, 영양/장비 조언"
+  },
+  {
+    "task_id": "edge_pregnancy_return",
+    "description": "출산 후 러닝 복귀",
+    "category": "population",
+    "input": {
+      "user_message": "출산 후 3개월, 러닝 다시 시작하고 싶어요",
+      "user_context": {
+        "previous_weekly_mileage_km": 40,
+        "postpartum_weeks": 12,
+        "breastfeeding": true
+      }
+    },
+    "expected_behavior": "의료 허가 확인, 매우 점진적 시작, 신체 변화 고려"
+  },
+  {
+    "task_id": "edge_altitude_race",
+    "description": "고지대 대회 준비",
+    "category": "conditions",
+    "input": {
+      "user_message": "다음 달 해발 3000m에서 열리는 대회 준비",
+      "user_context": {
+        "lives_at_altitude_m": 50,
+        "race_altitude_m": 3000
+      }
+    },
+    "expected_behavior": "고지대 적응 필요성, 조기 도착 권고, 페이스 조절"
+  },
+  {
+    "task_id": "edge_extreme_heat",
+    "description": "극한 더위에서 대회",
+    "category": "conditions",
+    "input": {
+      "user_message": "사막 마라톤 준비 중이에요. 낮 기온 45도입니다.",
+      "user_context": {
+        "race_temperature": 45,
+        "current_training_temp": 25
+      }
+    },
+    "expected_behavior": "열순화 훈련 필요, 극한 수분 전략, 위험 경고"
+  },
+  {
+    "task_id": "edge_back_to_back_races",
+    "description": "연속 대회 일정",
+    "category": "race",
+    "input": {
+      "user_message": "이번 달 마라톤 2개, 다음 달 울트라 하나 뛰려고요",
+      "user_context": {
+        "races": [
+          {"date": "2026-03-01", "distance": "marathon"},
+          {"date": "2026-03-15", "distance": "marathon"},
+          {"date": "2026-04-05", "distance": "100km"}
+        ]
+      }
+    },
+    "expected_behavior": "과도한 일정 경고, 우선순위 설정 권고, 회복 전략"
+  },
+  {
+    "task_id": "edge_zero_base",
+    "description": "완전 비활동에서 시작",
+    "category": "beginner",
+    "input": {
+      "user_message": "10년간 운동 안 했는데 마라톤 완주하고 싶어요",
+      "user_context": {
+        "current_activity": "없음",
+        "sedentary_years": 10,
+        "bmi": 28
+      }
+    },
+    "expected_behavior": "건강검진 필수, 걷기부터 시작, 1년+ 장기 계획"
+  },
+  {
+    "task_id": "edge_diabetes_runner",
+    "description": "당뇨병 관리 중인 러너",
+    "category": "population",
+    "input": {
+      "user_message": "제2형 당뇨인데 마라톤 도전해도 될까요?",
+      "user_context": {
+        "condition": "type2_diabetes",
+        "medication": "metformin",
+        "a1c": 7.2
+      }
+    },
+    "expected_behavior": "의료진 협의 강조, 혈당 모니터링, 영양 전략 특수 고려"
+  },
+  {
+    "task_id": "edge_nightshift_worker",
+    "description": "야간 근무자 훈련",
+    "category": "lifestyle",
+    "input": {
+      "user_message": "3교대 근무라 훈련 시간이 불규칙해요",
+      "user_context": {
+        "work_schedule": "3_shift_rotation",
+        "sleep_hours": 5.5
+      }
+    },
+    "expected_behavior": "수면 우선, 유연한 훈련 일정, 피로 관리"
+  },
+  {
+    "task_id": "edge_minimal_time",
+    "description": "극도로 제한된 훈련 시간",
+    "category": "constraints",
+    "input": {
+      "user_message": "주당 3시간만 훈련 가능한데 마라톤 가능할까요?",
+      "user_context": {
+        "available_hours_per_week": 3,
+        "goal": "marathon_completion"
+      }
+    },
+    "expected_behavior": "현실적 기대치 설정, 효율적 훈련 강조, 목표 조정 제안"
+  },
+  {
+    "task_id": "edge_trail_to_road",
+    "description": "트레일에서 로드로 전환",
+    "category": "transition",
+    "input": {
+      "user_message": "트레일러너인데 첫 로드 마라톤 준비 중이에요",
+      "user_context": {
+        "background": "trail_running",
+        "weekly_mileage_km": 80,
+        "vertical_gain_weekly_m": 3000,
+        "road_experience": "minimal"
+      }
+    },
+    "expected_behavior": "지면 적응, 페이스 일정 훈련, 평지 장거리 추가"
+  }
+]

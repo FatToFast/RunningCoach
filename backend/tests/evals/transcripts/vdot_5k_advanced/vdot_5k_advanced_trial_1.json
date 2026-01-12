@@ -1,0 +1,27 @@
+{
+  "trial_id": "vdot_5k_advanced_trial_1",
+  "task_id": "vdot_5k_advanced",
+  "timestamp": "2026-01-13T01:27:30.613097",
+  "task_input": {
+    "distance_meters": 5000,
+    "time_seconds": 1080
+  },
+  "execution_result": {
+    "response": "Mock response",
+    "token_count": 100
+  },
+  "rag_queries": [],
+  "rag_results": [],
+  "llm_calls": [],
+  "grader_results": {
+    "mock_grader": {
+      "passed": true,
+      "score": 1.0
+    }
+  },
+  "final_score": 1.0,
+  "passed": true,
+  "duration_ms": 0,
+  "token_count": 100,
+  "error": null
+}

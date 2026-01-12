@@ -1,0 +1,25 @@
+{
+  "eval_id": "pr_check_20260113_012730",
+  "eval_name": "pr_check",
+  "total_tasks": 19,
+  "total_trials": 19,
+  "overall_pass_rate": 1.0,
+  "pass_at_3": 1.0,
+  "pass_pow_3": 1.0,
+  "avg_score": 1.0,
+  "failing_tasks": 0,
+  "duration_seconds": 0.002814,
+  "by_category": {
+    "vdot": {
+      "pass_at_1": 1.0,
+      "pass_at_3": 1.0,
+      "pass_pow_3": 1.0,
+      "avg_score": 1.0,
+      "score_std": 0.0,
+      "avg_latency_ms": 0,
+      "avg_token_count": 100,
+      "total_trials": 19,
+      "total_tasks": 19
+    }
+  }
+}

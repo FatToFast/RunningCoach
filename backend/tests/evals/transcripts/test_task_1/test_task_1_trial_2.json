@@ -1,0 +1,24 @@
+{
+  "trial_id": "test_task_1_trial_2",
+  "task_id": "test_task_1",
+  "timestamp": "2026-01-13T01:27:24.036162",
+  "task_input": {},
+  "execution_result": {
+    "response": "mock response",
+    "token_count": 100
+  },
+  "rag_queries": [],
+  "rag_results": [],
+  "llm_calls": [],
+  "grader_results": {
+    "mock_grader": {
+      "passed": true,
+      "score": 1.0
+    }
+  },
+  "final_score": 1.0,
+  "passed": true,
+  "duration_ms": 0,
+  "token_count": 100,
+  "error": null
+}
