@@ -20,5 +20,9 @@ COPY . .
 # Expose port
 EXPOSE 8000
 
-# Run the application (PORT is set by Railway)
-CMD ["/bin/sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Copy start script
+COPY start.sh .
+RUN chmod +x start.sh
+
+# Run the application
+CMD ["./start.sh"]
