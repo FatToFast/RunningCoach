@@ -37,8 +37,6 @@
 #### Frontend
 - **개선**: 워크아웃 타입 배열 상수화 (`WORKOUT_TYPES`)
 - **수정**: Dashboard import 경로 대소문자 버그 해결
-- **준비**: Clerk 인증 통합을 위한 구조 준비
-- **준비**: R2 직접 업로드를 위한 훅 설계
 
 ### AI 코치 프롬프트 개선
 - 사용자 제공 파일/표의 페이스 우선 지침 추가
@@ -48,8 +46,31 @@
 
 #### 마이그레이션 스크립트
 - **신규**: `backend/scripts/migrate_users_to_clerk.py` - 기존 사용자 Clerk 마이그레이션
+  - Clerk API를 통한 사용자 생성
+  - 기존 사용자와 Clerk 사용자 ID 매핑
+  - Dry-run 및 검증 모드 지원
 - **신규**: `backend/scripts/migrate_fits_to_r2.py` - 로컬 FIT 파일 R2 업로드
+  - gzip 압축 후 R2 업로드 (65% 절감)
+  - 대량 파일 배치 처리
+  - 선택적 로컬 파일 삭제
 - **신규**: `backend/scripts/check_r2_migration.py` - 마이그레이션 상태 확인
+  - 스토리지 사용량 통계
+  - 사용자별 마이그레이션 진행률
+  - R2 파일 검증
+- **신규**: `backend/scripts/migrate_to_neon.py` - Neon DB 마이그레이션
+  - pg_dump/psql을 통한 안전한 마이그레이션
+  - Alembic 마이그레이션 자동 실행
+  - 데이터 무결성 검증
+
+#### 환경 설정
+- **업데이트**: `backend/.env.example`에 클라우드 서비스 설정 추가
+  - Clerk 인증 키 (Publishable, Secret, Webhook, JWKS)
+  - Neon 데이터베이스 URL
+  - R2 스토리지 설정 (Account ID, Access Key, Bucket)
+- **패키지**: `pyproject.toml`에 필요 패키지 추가
+  - pyjwt[crypto] - Clerk JWT 검증
+  - boto3 - R2 스토리지 (S3 호환)
+  - svix - Clerk 웹훅 검증
 
 ### 배포 전략
 - **Backend**: Railway 배포 준비 (nixpacks 빌더)
