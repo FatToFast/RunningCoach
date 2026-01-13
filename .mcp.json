@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "serena-mcp-server",
+      "args": [
+        "--project",
+        "/Users/jyjeong/Documents/GitHub/runningcoach"
+      ],
+      "env": {}
+    }
+  }
+}

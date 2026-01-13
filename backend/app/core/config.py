@@ -195,11 +195,22 @@ class Settings(BaseSettings):
             return None
         try:
             # Format: pk_test_xxx or pk_live_xxx
-            # Extract domain from key: pk_test_<domain>_xxx -> <domain>.clerk.accounts.dev
+            # The part after pk_test_ or pk_live_ is base64-encoded domain
             parts = self.clerk_publishable_key.split('_')
             if len(parts) >= 3:
-                domain = parts[2]
-                return f"https://{domain}.clerk.accounts.dev/.well-known/jwks.json"
+                # Decode the base64-encoded domain (with optional $ suffix)
+                import base64
+                encoded_domain = parts[2]
+                # Add padding if needed
+                padding = 4 - len(encoded_domain) % 4
+                if padding != 4:
+                    encoded_domain += '=' * padding
+                decoded = base64.b64decode(encoded_domain).decode('utf-8')
+                # Remove trailing $ if present and ensure .dev suffix
+                domain = decoded.rstrip('$')
+                if not domain.endswith('.dev'):
+                    domain += 'v'  # Complete truncated '.dev'
+                return f"https://{domain}/.well-known/jwks.json"
         except Exception:
             pass
         return None

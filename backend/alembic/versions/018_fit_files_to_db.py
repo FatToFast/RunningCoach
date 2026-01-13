@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import BYTEA
 
 # revision identifiers
 revision = "018_fit_files_to_db"
-down_revision = "017"
+down_revision = "015_fix_workout_schedule_schema"
 branch_labels = None
 depends_on = None
 

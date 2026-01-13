@@ -1,0 +1,39 @@
+# language of the project (csharp, python, rust, java, typescript, go, cpp, or ruby)
+# This is a multi-language project (Python backend + TypeScript frontend)
+# Serena supports one language per project, but we can work with both by:
+# - Using 'python' for backend-focused work
+# - Using 'typescript' for frontend-focused work
+# Current: python (backend has more complex business logic)
+language: python
+
+# whether to use the project's gitignore file to ignore files
+ignore_all_files_in_gitignore: true
+
+# list of additional paths to ignore
+ignored_paths:
+  - "**/__pycache__/**"
+  - "**/node_modules/**"
+  - "**/.venv/**"
+  - "**/dist/**"
+  - "**/build/**"
+
+# whether the project is in read-only mode
+read_only: false
+
+# list of tool names to exclude
+excluded_tools: []
+
+# initial prompt for the project
+initial_prompt: |
+  RunningCoach is an AI-powered running coach application with:
+  - Backend: FastAPI + SQLAlchemy + PostgreSQL (backend/)
+  - Frontend: React + TypeScript + Vite (frontend/)
+  - Key features: Garmin/Strava sync, AI training plans, VDOT calculations
+
+  Key files:
+  - Backend API: backend/app/api/v1/
+  - Frontend pages: frontend/src/pages/
+  - Frontend hooks: frontend/src/hooks/
+  - Types: frontend/src/types/
+
+project_name: "runningcoach"

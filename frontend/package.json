@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "start": "npx serve -s dist -l ${PORT:-3000}",
     "generate:api": "openapi-typescript http://localhost:8000/api/v1/openapi.json -o src/types/generated/api.ts",
     "generate:api:check": "npm run generate:api && git diff --exit-code src/types/generated/api.ts || (echo 'API types are out of sync. Run npm run generate:api' && exit 1)"
   },
