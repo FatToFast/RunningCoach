@@ -1,5 +1,106 @@
 # 변경 이력 (Changelog)
 
+## 2026-01-13 (v2)
+
+### 클라우드 마이그레이션 완전 구현 (Phase 1-5)
+
+#### Phase 1: 데이터베이스 스키마 동기화
+- **수정**: `backend/app/models/user.py`
+  - `clerk_user_id` 필드 추가 (unique, indexed)
+  - `password_hash` nullable로 변경 (Clerk OAuth 사용자용)
+- **수정**: `backend/app/models/activity.py`
+  - `r2_key` 필드 추가 (R2 오브젝트 키)
+  - `storage_provider` 필드 추가 (local/r2/s3)
+  - `storage_metadata` JSON 필드 추가 (파일 크기, 해시, 상태)
+
+#### Phase 2: Backend 완전 구현
+- **수정**: `backend/app/core/config.py`
+  - Clerk 설정 추가 (publishable_key, secret_key, webhook_secret)
+  - R2 설정 추가 (account_id, access_key, secret_key, bucket_name)
+  - `clerk_jwks_url` 프로퍼티 (JWKS URL 자동 생성)
+  - `r2_endpoint_url`, `r2_enabled` 프로퍼티
+- **재작성**: `backend/app/core/clerk_auth.py`
+  - Config 기반 초기화 (os.getenv → settings)
+  - 포괄적인 logging 시스템
+  - `ClerkAuth.verify_token()` - JWT 검증
+  - `ClerkAuth.get_clerk_user_data()` - 사용자 정보 조회
+  - `get_current_user_clerk()` - FastAPI 의존성
+  - `verify_webhook_signature()` - Svix 서명 검증
+- **신규**: `backend/app/core/hybrid_auth.py`
+  - Clerk JWT + Session 쿠키 하이브리드 인증
+  - `get_current_user_hybrid()` - 양쪽 인증 지원
+  - 자동 fallback (Clerk 실패 시 세션으로)
+- **재작성**: `backend/app/services/r2_storage.py`
+  - Lazy 초기화 (boto3 클라이언트)
+  - gzip 압축/해제 지원
+  - SHA-256 해시 검증
+  - `upload_fit()`, `download_fit()`, `delete_fit()`
+  - `generate_presigned_upload_url()`, `generate_presigned_download_url()`
+  - `get_storage_stats()` - 스토리지 통계
+- **재작성**: `backend/app/api/v1/endpoints/upload.py`
+  - Pydantic 모델 기반 응답
+  - 향상된 검증 및 에러 처리
+  - 종합 logging
+- **신규**: `backend/app/api/v1/endpoints/webhooks.py`
+  - Clerk 웹훅 처리 (`user.created`, `user.updated`, `user.deleted`)
+  - Svix 서명 검증
+  - 자동 사용자 생성/업데이트/소프트 삭제
+- **수정**: `backend/app/api/v1/router.py`
+  - `/upload`, `/webhooks` 라우트 등록
+  - `/debug` 엔드포인트 (개발 환경만)
+
+#### Phase 3: Frontend Clerk 통합
+- **수정**: `frontend/package.json`
+  - `@clerk/clerk-react` 의존성 추가
+- **신규**: `frontend/src/contexts/AuthContext.tsx`
+  - 통합 인증 상태 관리
+  - `useAuthContext()`, `useCurrentUser()`, `useAuthToken()` 훅
+  - Clerk + 세션 하이브리드 지원
+- **수정**: `frontend/src/api/client.ts`
+  - 토큰 getter 함수 설정
+  - Authorization 헤더 자동 추가 인터셉터
+  - 인증 모드 인식 에러 처리
+- **수정**: `frontend/src/App.tsx`
+  - `ClerkProvider` 조건부 래핑
+  - `TokenSetup` 컴포넌트 (API 클라이언트 연동)
+  - Clerk 로그인/회원가입 라우트
+  - `VITE_AUTH_MODE` 환경변수 기반 조건부 렌더링
+- **신규**: `frontend/.env.example`
+  - 인증 설정 문서화
+
+#### Phase 4: 테스트 코드
+- **신규**: `backend/tests/test_cloud_services.py`
+  - `TestClerkAuth`: JWT 검증, 만료/무효 토큰, 자동 사용자 생성
+  - `TestR2Storage`: 키 생성, 압축, 업로드/다운로드, presigned URL
+  - `TestWebhooks`: user.created/updated/deleted 처리
+  - `TestActivityR2Fields`: Activity 모델 R2 필드 테스트
+  - `TestUserClerkFields`: User 모델 Clerk 필드 테스트
+
+#### Phase 5: 검증 및 디버깅 시스템
+- **신규**: `backend/app/core/debug_utils.py`
+  - `DebugLogger` 클래스 (중앙화된 로깅, 타이밍 통계)
+  - `CloudMigrationDebug` 클래스 (클라우드 마이그레이션 전용)
+  - `debug_timer()`, `trace_auth()`, `trace_storage()` 컨텍스트 매니저
+  - `@debug_endpoint` 데코레이터
+  - `/debug/logs`, `/debug/errors`, `/debug/timing` API (개발 환경)
+- **신규**: `backend/scripts/verify_cloud_migration.py`
+  - 환경변수 확인
+  - 데이터베이스 스키마 검증
+  - Clerk/R2 설정 검증
+  - Backend 엔드포인트 확인
+  - Frontend 설정 확인
+- **신규**: `backend/scripts/run_cloud_tests.sh`
+  - 전체 클라우드 테스트 실행 스크립트
+- **신규**: `docs/cloud-migration.md`
+  - 아키텍처 다이어그램
+  - 구성 요소 설명 (Clerk, R2, Neon)
+  - 마이그레이션 단계
+  - API 엔드포인트 문서
+  - 디버깅 가이드
+  - 트러블슈팅
+
+---
+
 ## 2026-01-13
 
 ### 클라우드 마이그레이션 아키텍처 구현

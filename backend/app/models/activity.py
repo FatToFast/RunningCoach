@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, JSON, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship, deferred
 
 from app.models.base import BaseModel
@@ -101,6 +101,20 @@ class Activity(BaseModel):
     #   Note: This does NOT mean the file exists on disk. Check fit_file_path for file existence.
     #   Semantic: "FIT data was successfully ingested" not "FIT file exists".
     has_fit_file: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Cloud storage (R2/S3) fields
+    r2_key: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True, index=True,
+        comment="R2 object storage key"
+    )
+    storage_provider: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True,
+        comment="Storage provider: local, r2, s3"
+    )
+    storage_metadata: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True,
+        comment="Storage metadata (size, hash, upload status, etc)"
+    )
 
     # Sensor info (detected from FIT file device_info)
     has_stryd: Mapped[bool] = mapped_column(Boolean, default=False)

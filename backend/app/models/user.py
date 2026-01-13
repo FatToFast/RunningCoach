@@ -31,12 +31,19 @@ class User(BaseModel):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    # password_hash is nullable for Clerk-only users (OAuth)
+    password_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     display_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     timezone: Mapped[str] = mapped_column(String(50), default="Asia/Seoul")
     last_login_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+
+    # Clerk authentication (for cloud deployment)
+    clerk_user_id: Mapped[Optional[str]] = mapped_column(
+        String(255), unique=True, index=True, nullable=True,
+        comment="Clerk authentication user ID"
     )
 
     # User profile for training calculations

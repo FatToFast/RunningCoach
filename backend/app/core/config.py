@@ -179,6 +179,68 @@ class Settings(BaseSettings):
     admin_password: Optional[str] = None
     admin_display_name: Optional[str] = None
 
+    # ======================
+    # Cloud Services (Clerk + Neon + R2)
+    # ======================
+
+    # Clerk Authentication
+    clerk_publishable_key: Optional[str] = None
+    clerk_secret_key: Optional[str] = None
+    clerk_webhook_secret: Optional[str] = None
+
+    @property
+    def clerk_jwks_url(self) -> Optional[str]:
+        """Get Clerk JWKS URL from publishable key."""
+        if not self.clerk_publishable_key:
+            return None
+        try:
+            # Format: pk_test_xxx or pk_live_xxx
+            # Extract domain from key: pk_test_<domain>_xxx -> <domain>.clerk.accounts.dev
+            parts = self.clerk_publishable_key.split('_')
+            if len(parts) >= 3:
+                domain = parts[2]
+                return f"https://{domain}.clerk.accounts.dev/.well-known/jwks.json"
+        except Exception:
+            pass
+        return None
+
+    @property
+    def clerk_enabled(self) -> bool:
+        """Check if Clerk authentication is configured."""
+        return bool(self.clerk_publishable_key and self.clerk_secret_key)
+
+    # Cloudflare R2 Storage
+    r2_account_id: Optional[str] = None
+    r2_access_key: Optional[str] = None
+    r2_secret_key: Optional[str] = None
+    r2_bucket_name: str = "fit-files"
+
+    @property
+    def r2_endpoint_url(self) -> Optional[str]:
+        """Get R2 endpoint URL."""
+        if not self.r2_account_id:
+            return None
+        return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+
+    @property
+    def r2_enabled(self) -> bool:
+        """Check if R2 storage is configured."""
+        return bool(self.r2_account_id and self.r2_access_key and self.r2_secret_key)
+
+    # Neon Database (uses database_url, just add helper property)
+    @property
+    def is_neon_database(self) -> bool:
+        """Check if using Neon database."""
+        return "neon.tech" in self.database_url if self.database_url else False
+
+    # Cloud deployment mode
+    cloud_mode: bool = False  # Set to True to enable cloud services
+
+    @property
+    def is_cloud_deployment(self) -> bool:
+        """Check if running in cloud deployment mode."""
+        return self.cloud_mode or (self.clerk_enabled and self.r2_enabled)
+
 
 _INSECURE_DEFAULT = "change-me-in-production"
 

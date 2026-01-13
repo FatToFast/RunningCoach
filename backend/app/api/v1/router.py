@@ -174,6 +174,8 @@ from app.api.v1.endpoints import (
     sleep,
     strava,
     strength,
+    upload,
+    webhooks,
     workouts,
 )
 
@@ -257,6 +259,26 @@ api_router.include_router(calendar_notes.router, prefix="/calendar-notes", tags=
 # Races (대회 일정)
 # -------------------------------------------------------------------------
 api_router.include_router(races.router, prefix="/races", tags=["races"])
+
+# -------------------------------------------------------------------------
+# Cloud Storage (R2 direct uploads)
+# -------------------------------------------------------------------------
+api_router.include_router(upload.router, prefix="/upload", tags=["upload"])
+
+# -------------------------------------------------------------------------
+# Webhooks (Clerk, etc.)
+# -------------------------------------------------------------------------
+api_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
+
+# -------------------------------------------------------------------------
+# Debug Endpoints (development only)
+# -------------------------------------------------------------------------
+from app.core.config import get_settings
+
+_settings = get_settings()
+if _settings.debug:
+    from app.core.debug_utils import get_debug_router
+    api_router.include_router(get_debug_router(), prefix="/debug", tags=["debug"])
 
 # -------------------------------------------------------------------------
 # Legacy/Alias Routes (backward compatibility)

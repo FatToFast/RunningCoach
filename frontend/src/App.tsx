@@ -1,8 +1,16 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ClerkProvider, SignIn, SignUp, useAuth } from '@clerk/clerk-react';
 import { Layout } from './components/layout/Layout';
 import { Login } from './pages/Login';
+import { AuthProvider } from './contexts/AuthContext';
+import { setTokenGetter } from './api/client';
+
+// Environment configuration
+const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
+const AUTH_MODE = import.meta.env.VITE_AUTH_MODE || 'session';
+const CLERK_ENABLED = !!CLERK_PUBLISHABLE_KEY && (AUTH_MODE === 'clerk' || AUTH_MODE === 'hybrid');
 
 // Lazy-loaded page components for code splitting
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -61,40 +69,156 @@ const PublicNotFound = () => (
   </div>
 );
 
-function App() {
+/**
+ * Component to set up token getter for API client
+ */
+function TokenSetup() {
+  const { getToken } = useAuth();
+
+  useEffect(() => {
+    if (CLERK_ENABLED) {
+      setTokenGetter(getToken);
+    }
+  }, [getToken]);
+
+  return null;
+}
+
+/**
+ * Clerk Sign-In page wrapper
+ */
+const ClerkSignInPage = () => (
+  <div className="min-h-screen bg-[var(--color-bg-primary)] flex items-center justify-center p-4">
+    <div className="w-full max-w-md">
+      <div className="text-center mb-8">
+        <h1 className="font-display text-2xl font-bold">RunningCoach</h1>
+        <p className="text-muted text-sm mt-2">러닝 데이터 분석 & AI 코칭</p>
+      </div>
+      <SignIn
+        appearance={{
+          elements: {
+            rootBox: 'w-full',
+            card: 'bg-[var(--color-bg-secondary)] border border-[var(--color-border)]',
+          },
+        }}
+        routing="path"
+        path="/sign-in"
+        signUpUrl="/sign-up"
+      />
+    </div>
+  </div>
+);
+
+/**
+ * Clerk Sign-Up page wrapper
+ */
+const ClerkSignUpPage = () => (
+  <div className="min-h-screen bg-[var(--color-bg-primary)] flex items-center justify-center p-4">
+    <div className="w-full max-w-md">
+      <div className="text-center mb-8">
+        <h1 className="font-display text-2xl font-bold">RunningCoach</h1>
+        <p className="text-muted text-sm mt-2">러닝 데이터 분석 & AI 코칭</p>
+      </div>
+      <SignUp
+        appearance={{
+          elements: {
+            rootBox: 'w-full',
+            card: 'bg-[var(--color-bg-secondary)] border border-[var(--color-border)]',
+          },
+        }}
+        routing="path"
+        path="/sign-up"
+        signInUrl="/sign-in"
+      />
+    </div>
+  </div>
+);
+
+/**
+ * Main App Routes
+ */
+function AppRoutes() {
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <Routes>
+        {/* Public routes */}
+        <Route path="/login" element={<Login />} />
+
+        {/* Clerk auth routes (only if Clerk enabled) */}
+        {CLERK_ENABLED && (
+          <>
+            <Route path="/sign-in/*" element={<ClerkSignInPage />} />
+            <Route path="/sign-up/*" element={<ClerkSignUpPage />} />
+          </>
+        )}
+
+        {/* Protected routes - Layout handles auth guard */}
+        <Route element={<Layout />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/activities" element={<Activities />} />
+          <Route path="/activities/:id" element={<ActivityDetail />} />
+          <Route path="/trends" element={<Trends />} />
+          <Route path="/records" element={<Records />} />
+          <Route path="/calendar" element={<Calendar />} />
+          <Route path="/gear" element={<Gear />} />
+          <Route path="/gear/:id" element={<GearDetail />} />
+          <Route path="/strength" element={<Strength />} />
+          <Route path="/workouts" element={<Workouts />} />
+          <Route path="/ai" element={<Coach />} />
+          <Route path="/settings" element={<Settings />} />
+          {/* Protected 404 catch-all (user is authenticated) */}
+          <Route path="*" element={<NotFound />} />
+        </Route>
+
+        {/* Public 404 catch-all (outside Layout, for /login/* typos etc.) */}
+        <Route path="*" element={<PublicNotFound />} />
+      </Routes>
+    </Suspense>
+  );
+}
+
+/**
+ * App with providers
+ */
+function AppWithProviders() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Suspense fallback={<PageLoader />}>
-          <Routes>
-            {/* Public routes */}
-            <Route path="/login" element={<Login />} />
-
-            {/* Protected routes - Layout handles auth guard */}
-            <Route element={<Layout />}>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/activities" element={<Activities />} />
-              <Route path="/activities/:id" element={<ActivityDetail />} />
-              <Route path="/trends" element={<Trends />} />
-              <Route path="/records" element={<Records />} />
-              <Route path="/calendar" element={<Calendar />} />
-              <Route path="/gear" element={<Gear />} />
-              <Route path="/gear/:id" element={<GearDetail />} />
-              <Route path="/strength" element={<Strength />} />
-              <Route path="/workouts" element={<Workouts />} />
-              <Route path="/ai" element={<Coach />} />
-              <Route path="/settings" element={<Settings />} />
-              {/* Protected 404 catch-all (user is authenticated) */}
-              <Route path="*" element={<NotFound />} />
-            </Route>
-
-            {/* Public 404 catch-all (outside Layout, for /login/* typos etc.) */}
-            <Route path="*" element={<PublicNotFound />} />
-          </Routes>
-        </Suspense>
-      </BrowserRouter>
+      <AuthProvider>
+        {CLERK_ENABLED && <TokenSetup />}
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </AuthProvider>
     </QueryClientProvider>
   );
+}
+
+/**
+ * Main App component
+ */
+function App() {
+  // If Clerk is enabled, wrap with ClerkProvider
+  if (CLERK_ENABLED) {
+    return (
+      <ClerkProvider
+        publishableKey={CLERK_PUBLISHABLE_KEY}
+        appearance={{
+          variables: {
+            colorPrimary: '#00D4FF',
+            colorBackground: '#1a1a2e',
+            colorText: '#ffffff',
+            colorInputBackground: '#2a2a4e',
+            colorInputText: '#ffffff',
+          },
+        }}
+      >
+        <AppWithProviders />
+      </ClerkProvider>
+    );
+  }
+
+  // Session-only mode - no Clerk wrapper needed
+  return <AppWithProviders />;
 }
 
 export default App;
