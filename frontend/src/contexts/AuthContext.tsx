@@ -11,7 +11,7 @@
  * - "hybrid": Try Clerk first, fall back to session
  */
 
-import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useMemo, type ReactNode } from 'react';
 import { useAuth as useClerkAuth, useUser as useClerkUser } from '@clerk/clerk-react';
 import { apiClient } from '../api/client';
 
