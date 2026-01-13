@@ -4,6 +4,7 @@
 
 ### Fixed
 - `backend/railway.json`: `startCommand`를 `sh -c`로 감싸 `${PORT:-8000}`가 확장되도록 수정
+- `backend/pyproject.toml`: `readme`를 인라인 텍스트로 변경해 Nixpacks 메타데이터 생성 실패 해결
 
 ---
 

@@ -1,0 +1,46 @@
+# Web framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Database
+sqlalchemy>=2.0.25
+alembic>=1.13.1
+asyncpg>=0.29.0
+
+# Validation & Settings
+pydantic[email]>=2.5.3
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
+# Garmin integration
+garminconnect>=0.2.8
+fitparse>=1.2.0
+
+# HTTP client
+httpx>=0.26.0
+
+# Session & Task queue
+redis>=5.0.1
+arq>=0.26.0
+
+# Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+cryptography>=41.0.7
+
+# AI
+openai>=1.6.0
+google-generativeai>=0.8.0
+
+# RAG (Retrieval-Augmented Generation)
+faiss-cpu>=1.7.4
+numpy>=1.26.0
+pypdf>=4.0.0
+
+# Strava
+stravalib>=1.6
+
+# Cloud Services
+pyjwt[crypto]>=2.8.0
+boto3>=1.34.0
+svix>=1.20.0

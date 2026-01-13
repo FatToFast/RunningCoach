@@ -960,27 +960,6 @@ return FileResponse(path=file_real_path, ...)
 
 ---
 
-### 28. Railway startCommand 포트 확장 실패
-
-**문제**: `startCommand`에 `${PORT:-8000}`를 사용했지만 셸 확장이 적용되지 않아 uvicorn이 문자열을 포트로 파싱하면서 실패
-
-**원인**: Nixpacks/Railway가 `startCommand`를 셸 없이 exec 형태로 실행해 parameter expansion이 동작하지 않음
-
-**해결**: `sh -c`로 감싸 셸 확장을 보장
-
-```json
-// ❌ 잘못된 패턴
-"startCommand": "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
-
-// ✅ 올바른 패턴
-"startCommand": "sh -c \"uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}\""
-```
-
-**적용 위치**: `backend/railway.json:deploy.startCommand`
-**날짜**: 2026-01-14
-
----
-
 ### 28. 응답 스키마에 채워지지 않는 필드
 
 **문제**: Pydantic 모델에 필드가 있지만 실제로 채워지지 않아 항상 null 반환
@@ -2835,4 +2814,46 @@ export interface WorkoutStep {
 
 ---
 
-*마지막 업데이트: 2026-01-13*
+### 71. Railway startCommand 포트 확장 실패
+
+**문제**: `startCommand`에 `${PORT:-8000}`를 사용했지만 셸 확장이 적용되지 않아 uvicorn이 문자열을 포트로 파싱하면서 실패
+
+**원인**: Nixpacks/Railway가 `startCommand`를 셸 없이 exec 형태로 실행해 parameter expansion이 동작하지 않음
+
+**해결**: `sh -c`로 감싸 셸 확장을 보장
+
+```json
+// ❌ 잘못된 패턴
+"startCommand": "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+
+// ✅ 올바른 패턴
+"startCommand": "sh -c \"uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+```
+
+**적용 위치**: `backend/railway.json:deploy.startCommand`
+**날짜**: 2026-01-14
+
+---
+
+### 72. Nixpacks 빌드에서 README 누락으로 메타데이터 생성 실패
+
+**문제**: Nixpacks가 `pyproject.toml`만 복사한 상태에서 `pip install .`을 실행해 `README.md`가 없다는 오류로 메타데이터 생성이 실패
+
+**원인**: `readme = "README.md"`가 파일 경로를 요구하지만 빌드 단계에 README가 포함되지 않음
+
+**해결**: `readme`를 인라인 텍스트로 정의해 파일 의존성을 제거
+
+```toml
+# ❌ 잘못된 패턴
+readme = "README.md"
+
+# ✅ 올바른 패턴
+readme = { text = "# RunningCoach Backend\n\nFastAPI backend for the RunningCoach application.", content-type = "text/markdown" }
+```
+
+**적용 위치**: `backend/pyproject.toml`
+**날짜**: 2026-01-14
+
+---
+
+*마지막 업데이트: 2026-01-14*
