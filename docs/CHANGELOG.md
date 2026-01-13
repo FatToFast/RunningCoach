@@ -2,14 +2,64 @@
 
 ## 2026-01-13
 
+### 클라우드 마이그레이션 아키텍처 구현
+
+완전한 클라우드 기반 아키텍처로 전환을 위한 설계 및 구현 완료.
+로컬 전용 시스템에서 어디서든 접근 가능한 클라우드 네이티브 아키텍처로 마이그레이션.
+
+#### 인증 (Clerk)
+- **신규**: `backend/app/core/clerk_auth.py` - JWT 검증 미들웨어
+- **기능**: 10,000 MAU 무료, 자동 사용자 생성
+- **통합**: 웹훅 서명 검증 지원
+- **특징**: 세션 기반에서 JWT 기반 인증으로 전환
+
+#### 스토리지 (Cloudflare R2)
+- **신규**: `backend/app/services/r2_storage.py` - R2 스토리지 서비스 (S3 호환)
+- **신규**: `backend/app/api/v1/endpoints/upload.py` - Presigned URL 업로드 API
+- **기능**: 10GB 무료, 직접 업로드, gzip 압축 (65% 절감)
+- **아키텍처**: 서버 부하 없이 클라이언트 직접 업로드 지원
+
+#### 데이터베이스
+- **신규**: `backend/alembic/versions/018_fit_files_to_db.py` - FIT 파일 DB 저장
+- **신규**: `backend/alembic/versions/019_add_clerk_user_id.py` - Clerk 사용자 ID 및 R2 필드
+- **신규**: `backend/app/services/fit_storage_service.py` - DB 스토리지 서비스 (BYTEA + gzip)
+- **변경**: User 모델에 `clerk_user_id` 추가 (unique index)
+- **변경**: Activity 모델에 `r2_key`, `storage_provider`, `storage_metadata` 추가
+- **변경**: `password_hash` nullable로 변경 (Clerk 사용자용)
+
+#### 문서화
+- **신규**: `docs/CLERK_NEON_R2_MIGRATION.md` - 마이그레이션 가이드
+- **신규**: `backend/docs/R2_ARCHITECTURE.md` - R2 아키텍처 설계
+- **신규**: `backend/docs/CLOUD_DEPLOYMENT.md` - 클라우드 배포 가이드
+- **신규**: `backend/docs/FIT_DB_STORAGE.md` - DB 스토리지 가이드
+- **신규**: `backend/docs/R2_FREE_TIER.md` - R2 무료 티어 활용
+
+#### Frontend
+- **개선**: 워크아웃 타입 배열 상수화 (`WORKOUT_TYPES`)
+- **수정**: Dashboard import 경로 대소문자 버그 해결
+- **준비**: Clerk 인증 통합을 위한 구조 준비
+- **준비**: R2 직접 업로드를 위한 훅 설계
+
 ### AI 코치 프롬프트 개선
 - 사용자 제공 파일/표의 페이스 우선 지침 추가
 - 컨텍스트 pace(sec/km) 변환 규칙 추가
 - 페이스 출력 형식 M:SS/km 고정 (sec/km 표기 금지)
 - /plan, /workout 프롬프트에도 동일 지침 반영
 
+#### 마이그레이션 스크립트
+- **신규**: `backend/scripts/migrate_users_to_clerk.py` - 기존 사용자 Clerk 마이그레이션
+- **신규**: `backend/scripts/migrate_fits_to_r2.py` - 로컬 FIT 파일 R2 업로드
+- **신규**: `backend/scripts/check_r2_migration.py` - 마이그레이션 상태 확인
+
+### 배포 전략
+- **Backend**: Railway 배포 준비 (nixpacks 빌더)
+- **Frontend**: Vercel 배포 준비
+- **Database**: Neon Serverless PostgreSQL (3GB 무료, ap-northeast-2)
+- **비용**: 총 $0/월 (모든 서비스 무료 티어 활용)
+
 ### 문서화
 - `docs/debug-patterns.md`에 관련 버그 패턴 기록
+- 클라우드 마이그레이션 관련 문서 대폭 추가
 
 ---
 

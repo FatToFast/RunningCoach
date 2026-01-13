@@ -27,6 +27,11 @@ RunningCoach는 Garmin 데이터를 기반으로 AI가 생성한 과학적 훈�
 - [Feature Map](docs/feature-map.md) - 기능별 파일 맵
 - [Changelog](docs/CHANGELOG.md) - 변경 이력
 
+### Cloud Migration Guides
+- [Clerk + Neon + R2 Migration](docs/CLERK_NEON_R2_MIGRATION.md) - 클라우드 마이그레이션 가이드
+- [R2 Architecture](backend/docs/R2_ARCHITECTURE.md) - R2 스토리지 아키텍처
+- [Cloud Deployment](backend/docs/CLOUD_DEPLOYMENT.md) - 클라우드 배포 가이드
+
 ## Tech Stack
 
 ### Backend
@@ -36,17 +41,26 @@ RunningCoach는 Garmin 데이터를 기반으로 AI가 생성한 과학적 훈�
 - PostgreSQL + TimescaleDB
 - Redis
 - garminconnect
+- Google Gemini AI (Primary)
+- OpenAI GPT (Fallback)
 
 ### Frontend
-- React + TypeScript
-- Vite
-- TailwindCSS
+- React 19 + TypeScript
+- Vite 7
+- TailwindCSS 4
 - Recharts
 - React Query (TanStack Query)
+- MapLibre GL
+
+### Cloud Services (New)
+- **Authentication**: Clerk (10,000 MAU Free)
+- **Database**: Neon Serverless PostgreSQL (3GB Free)
+- **Storage**: Cloudflare R2 (10GB Free)
+- **Deployment**: Railway/Vercel
 
 ### Infrastructure
-- Docker + Docker Compose
-- NAS 배포
+- Docker + Docker Compose (Local Development)
+- Cloud-Native Architecture (Production)
 
 ## Quick Start
 
