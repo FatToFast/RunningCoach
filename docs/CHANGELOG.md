@@ -1,5 +1,12 @@
 # 변경 이력 (Changelog)
 
+## 2026-01-14
+
+### Fixed
+- `backend/railway.json`: `startCommand`를 `sh -c`로 감싸 `${PORT:-8000}`가 확장되도록 수정
+
+---
+
 ## 2026-01-13 (v2)
 
 ### 클라우드 마이그레이션 완전 구현 (Phase 1-5)
