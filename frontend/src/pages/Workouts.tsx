@@ -53,6 +53,9 @@ function formatDateForInput(date: Date): string {
   return date.toISOString().split('T')[0];
 }
 
+// Workout Types Constant
+const WORKOUT_TYPES = ['easy', 'long', 'tempo', 'interval', 'hills', 'fartlek', 'recovery'] as const;
+
 // Workout Form Modal
 function WorkoutForm({
   onClose,
@@ -65,8 +68,6 @@ function WorkoutForm({
   const [workoutType, setWorkoutType] = useState('easy');
   const [notes, setNotes] = useState('');
   const createWorkout = useCreateWorkout();
-
-  const workoutTypes = ['easy', 'long', 'tempo', 'interval', 'hills', 'fartlek', 'recovery'];
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,7 +104,7 @@ function WorkoutForm({
           <div>
             <label className="block text-sm text-muted mb-1">유형</label>
             <div className="grid grid-cols-4 gap-2">
-              {workoutTypes.map((type) => (
+              {WORKOUT_TYPES.map((type) => (
                 <button
                   key={type}
                   type="button"
@@ -364,8 +365,6 @@ function WorkoutEditModal({
   const [notes, setNotes] = useState(workout.notes || '');
   const [steps, setSteps] = useState<WorkoutStep[]>(workout.structure || []);
   const updateWorkout = useUpdateWorkout();
-
-  const workoutTypes = ['easy', 'long', 'tempo', 'interval', 'hills', 'fartlek', 'recovery'];
   const stepTypes = ['warmup', 'main', 'cooldown', 'rest', 'recovery'];
 
   const handleAddStep = () => {
@@ -450,7 +449,7 @@ function WorkoutEditModal({
                 onChange={(e) => setWorkoutType(e.target.value)}
                 className="input w-full"
               >
-                {workoutTypes.map((type) => (
+                {WORKOUT_TYPES.map((type) => (
                   <option key={type} value={type}>
                     {getWorkoutTypeIcon(type)} {getWorkoutTypeLabel(type)}
                   </option>

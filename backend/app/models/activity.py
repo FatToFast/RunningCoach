@@ -3,8 +3,8 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship, deferred
 
 from app.models.base import BaseModel
 
@@ -87,6 +87,16 @@ class Activity(BaseModel):
     fit_file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # fit_file_hash: SHA-256 hash of FIT file. Preserved even after file deletion for verification.
     fit_file_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Database storage for FIT file (cached copy)
+    fit_file_content: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True, deferred=True,
+        comment="Compressed FIT file content (cached copy)"
+    )
+    fit_file_size: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True,
+        comment="Original FIT file size in bytes"
+    )
     # has_fit_file: True if FIT file was successfully parsed (data is in ActivitySample/Lap/Metric).
     #   Note: This does NOT mean the file exists on disk. Check fit_file_path for file existence.
     #   Semantic: "FIT data was successfully ingested" not "FIT file exists".

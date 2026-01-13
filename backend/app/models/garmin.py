@@ -3,9 +3,9 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, deferred
 
 from app.models.base import BaseModel
 
@@ -131,6 +131,21 @@ class GarminRawFile(BaseModel):
     file_type: Mapped[str] = mapped_column(String(20), default="fit")
     file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # None when file deleted after parse
     file_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Database storage columns
+    file_content: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True, deferred=True,
+        comment="Compressed FIT file content (gzip)"
+    )
+    file_size: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True,
+        comment="Original file size in bytes"
+    )
+    compression_type: Mapped[Optional[str]] = mapped_column(
+        String(10), nullable=True, default="gzip",
+        comment="Compression type: gzip, zstd, or none"
+    )
+
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default="now()",

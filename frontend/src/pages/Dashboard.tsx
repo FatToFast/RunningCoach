@@ -1,11 +1,11 @@
 import { useState, useMemo } from 'react';
-import { CompactStats } from '../components/Dashboard/CompactStats';
-import { CompactFitness } from '../components/Dashboard/CompactFitness';
-import { CompactMileage } from '../components/Dashboard/CompactMileage';
-import { CompactActivities } from '../components/Dashboard/CompactActivities';
-import { TrainingPacesCard } from '../components/Dashboard/TrainingPacesCard';
-import { CompactComparison } from '../components/Dashboard/CompactComparison';
-import { InjuryRiskWidget } from '../components/Dashboard/InjuryRiskWidget';
+import { CompactStats } from '../components/dashboard/CompactStats';
+import { CompactFitness } from '../components/dashboard/CompactFitness';
+import { CompactMileage } from '../components/dashboard/CompactMileage';
+import { CompactActivities } from '../components/dashboard/CompactActivities';
+import { TrainingPacesCard } from '../components/dashboard/TrainingPacesCard';
+import { CompactComparison } from '../components/dashboard/CompactComparison';
+import { InjuryRiskWidget } from '../components/dashboard/InjuryRiskWidget';
 import { useDashboardSummary, useTrends, useCompare } from '../hooks/useDashboard';
 
 export function Dashboard() {
