@@ -8,7 +8,10 @@
 
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+// Support both VITE_API_URL and VITE_API_BASE_URL for backwards compatibility
+const API_BASE_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+
+console.log('[API] Base URL:', API_BASE_URL);
 const USE_MOCK_DATA = import.meta.env.VITE_USE_MOCK_DATA === 'true';
 const AUTH_MODE = import.meta.env.VITE_AUTH_MODE || 'session';
 
