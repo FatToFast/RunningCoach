@@ -1068,10 +1068,9 @@ class GarminSyncService:
             if not fit_data:
                 return
 
-            # Update activity
+            # Update activity with file info (has_fit_file set after successful parse)
             activity.fit_file_path = file_path
             activity.fit_file_hash = file_hash
-            activity.has_fit_file = True
 
             # Upsert raw file record (avoid unique constraint violation on re-download)
             existing_raw_file_result = await self.session.execute(
@@ -1106,10 +1105,12 @@ class GarminSyncService:
                 await self._store_fit_data(activity, parsed_data)
                 sample_count = len(parsed_data.get("records", []))
                 parse_success = True
+                # Only set has_fit_file=True after successful parse
+                activity.has_fit_file = True
+                logger.info(f"Downloaded and parsed FIT file for activity {garmin_id}")
             except Exception as parse_error:
+                # Parse failed - keep has_fit_file=False so we can retry later
                 logger.warning(f"Failed to parse FIT file for activity {garmin_id}: {parse_error}")
-
-            logger.info(f"Downloaded and parsed FIT file for activity {garmin_id}")
 
             # Delete FIT file after successful parse if enabled
             if (
