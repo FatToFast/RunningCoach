@@ -158,7 +158,8 @@ export function ClerkAuthProvider({ children, AuthContext }: ClerkAuthProviderPr
     };
 
     syncClerkUser();
-  }, [clerkAuth.isLoaded, clerkAuth.isSignedIn, clerkUser.isLoaded, clerkUser.user, clerkAuth]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clerkAuth.isLoaded, clerkAuth.isSignedIn, clerkUser.isLoaded, clerkUser.user?.id]);
 
   // Memoized context value
   const contextValue = useMemo<AuthContextType>(() => ({
