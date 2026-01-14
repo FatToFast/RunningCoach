@@ -1,4 +1,9 @@
-"""Session management with Redis."""
+"""Session management with Redis.
+
+Provides graceful fallback when Redis is unavailable:
+- Lock functions return safe defaults (no lock held)
+- Session functions return None (use JWT auth instead)
+"""
 
 import json
 import logging
@@ -7,6 +12,7 @@ from datetime import datetime, UTC
 from typing import Any, Optional
 
 import redis.asyncio as redis
+from redis.exceptions import ConnectionError, RedisError
 
 from app.core.config import get_settings
 
@@ -15,17 +21,39 @@ settings = get_settings()
 
 # Redis client (initialized lazily)
 _redis_client: Optional[redis.Redis] = None
+_redis_available: Optional[bool] = None  # Cache availability check
 
 
-async def get_redis() -> redis.Redis:
-    """Get Redis client instance."""
-    global _redis_client
+async def get_redis() -> Optional[redis.Redis]:
+    """Get Redis client instance.
+
+    Returns:
+        Redis client or None if unavailable.
+    """
+    global _redis_client, _redis_available
+
+    # If we already know Redis is unavailable, return None immediately
+    if _redis_available is False:
+        return None
+
     if _redis_client is None:
         _redis_client = redis.from_url(
             settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
         )
+
+    # Test connection on first call
+    if _redis_available is None:
+        try:
+            await _redis_client.ping()
+            _redis_available = True
+            logger.info("Redis connection established")
+        except (ConnectionError, RedisError, OSError) as e:
+            logger.warning(f"Redis unavailable: {e}. Session/lock features disabled.")
+            _redis_available = False
+            return None
+
     return _redis_client
 
 
@@ -34,7 +62,7 @@ async def close_redis() -> None:
 
     Call this during application shutdown to properly cleanup connections.
     """
-    global _redis_client
+    global _redis_client, _redis_available
     if _redis_client is not None:
         try:
             await _redis_client.close()
@@ -43,6 +71,7 @@ async def close_redis() -> None:
             logger.warning(f"Error closing Redis connection: {e}")
         finally:
             _redis_client = None
+            _redis_available = None
 
 
 def generate_session_id() -> str:
@@ -50,7 +79,7 @@ def generate_session_id() -> str:
     return secrets.token_urlsafe(32)
 
 
-async def create_session(user_id: int, user_data: dict[str, Any]) -> str:
+async def create_session(user_id: int, user_data: dict[str, Any]) -> Optional[str]:
     """Create a new session in Redis.
 
     Args:
@@ -58,9 +87,13 @@ async def create_session(user_id: int, user_data: dict[str, Any]) -> str:
         user_data: Additional user data to store.
 
     Returns:
-        Session ID.
+        Session ID, or None if Redis unavailable.
     """
     redis_client = await get_redis()
+    if redis_client is None:
+        logger.warning("Cannot create session: Redis unavailable")
+        return None
+
     session_id = generate_session_id()
 
     session_data = {
@@ -86,15 +119,38 @@ async def get_session(session_id: str) -> Optional[dict[str, Any]]:
         session_id: Session ID.
 
     Returns:
-        Session data or None if not found/expired.
+        Session data or None if not found/expired/Redis unavailable.
     """
     redis_client = await get_redis()
+    if redis_client is None:
+        return None
+
     data = await redis_client.get(f"session:{session_id}")
 
     if data is None:
         return None
 
     return json.loads(data)
+
+
+async def get_session_user_id(request: Any) -> Optional[int]:
+    """Get user ID from session cookie.
+
+    Args:
+        request: FastAPI request object.
+
+    Returns:
+        User ID if valid session exists, None otherwise.
+    """
+    session_id = request.cookies.get(settings.session_cookie_name)
+    if not session_id:
+        return None
+
+    session_data = await get_session(session_id)
+    if not session_data:
+        return None
+
+    return session_data.get("user_id")
 
 
 async def delete_session(session_id: str) -> bool:
@@ -104,9 +160,12 @@ async def delete_session(session_id: str) -> bool:
         session_id: Session ID to delete.
 
     Returns:
-        True if session was deleted, False otherwise.
+        True if session was deleted, False if Redis unavailable.
     """
     redis_client = await get_redis()
+    if redis_client is None:
+        return False
+
     result = await redis_client.delete(f"session:{session_id}")
     return result > 0
 
@@ -118,9 +177,12 @@ async def refresh_session(session_id: str) -> bool:
         session_id: Session ID to refresh.
 
     Returns:
-        True if session was refreshed, False if not found.
+        True if session was refreshed, False if not found/Redis unavailable.
     """
     redis_client = await get_redis()
+    if redis_client is None:
+        return False
+
     ttl = settings.session_ttl_seconds
     result = await redis_client.expire(f"session:{session_id}", ttl)
     return result
@@ -128,6 +190,8 @@ async def refresh_session(session_id: str) -> bool:
 
 # =============================================================================
 # Distributed Lock (for multi-worker/multi-instance deployments)
+# Note: When Redis is unavailable, locks are effectively disabled.
+# This allows the app to function but without distributed lock protection.
 # =============================================================================
 
 
@@ -144,9 +208,14 @@ async def acquire_lock(
         owner: Optional owner identifier. If None, generates a random one.
 
     Returns:
-        Lock owner token if acquired, None if lock already held.
+        Lock owner token if acquired, None if lock already held or Redis unavailable.
     """
     redis_client = await get_redis()
+    if redis_client is None:
+        # Redis unavailable - allow operation but log warning
+        logger.warning(f"Lock disabled (no Redis): {lock_name}")
+        return secrets.token_urlsafe(16)  # Return fake owner to allow operation
+
     lock_key = f"lock:{lock_name}"
     owner = owner or secrets.token_urlsafe(16)
 
@@ -174,6 +243,9 @@ async def release_lock(lock_name: str, owner: str) -> bool:
         True if lock was released, False if not found or owned by another.
     """
     redis_client = await get_redis()
+    if redis_client is None:
+        return True  # No-op when Redis unavailable
+
     lock_key = f"lock:{lock_name}"
 
     # Lua script for atomic compare-and-delete
@@ -202,9 +274,12 @@ async def check_lock(lock_name: str) -> bool:
         lock_name: Name of the lock.
 
     Returns:
-        True if lock is held, False otherwise.
+        True if lock is held, False otherwise (including Redis unavailable).
     """
     redis_client = await get_redis()
+    if redis_client is None:
+        return False  # No lock when Redis unavailable
+
     lock_key = f"lock:{lock_name}"
     return await redis_client.exists(lock_key) > 0
 
@@ -223,6 +298,9 @@ async def extend_lock(lock_name: str, owner: str, ttl_seconds: int) -> bool:
         True if lock was extended, False if not found or owned by another.
     """
     redis_client = await get_redis()
+    if redis_client is None:
+        return True  # No-op when Redis unavailable
+
     lock_key = f"lock:{lock_name}"
 
     # Lua script for atomic compare-and-expire

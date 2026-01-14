@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # OAuth state token TTL (10 minutes)
 OAUTH_STATE_TTL = 600
 
+# In-memory fallback for OAuth state when Redis is unavailable
+# Format: {state_token: (user_id, expires_at_timestamp)}
+_in_memory_oauth_states: dict[str, tuple[int, float]] = {}
+
 
 def _get_cipher() -> Optional[Fernet]:
     """Get Fernet cipher for token encryption/decryption.
@@ -93,6 +97,7 @@ async def _generate_oauth_state(user_id: int) -> str:
     """Generate a secure OAuth state token for CSRF protection.
 
     Stores the state in Redis for multi-worker support.
+    Falls back to in-memory storage if Redis is unavailable.
 
     Args:
         user_id: The user ID to associate with this state.
@@ -102,6 +107,12 @@ async def _generate_oauth_state(user_id: int) -> str:
     """
     redis_client = await get_redis()
     state_token = secrets.token_urlsafe(32)
+
+    if redis_client is None:
+        # Fallback: use in-memory storage (single instance only)
+        logger.warning("Redis unavailable - using in-memory OAuth state storage")
+        _in_memory_oauth_states[state_token] = (user_id, time.time() + OAUTH_STATE_TTL)
+        return state_token
 
     # Store state in Redis with TTL
     await redis_client.setex(
@@ -172,6 +183,7 @@ async def _validate_oauth_state(state: str | None, user_id: int) -> bool:
     """Validate OAuth state token for CSRF protection.
 
     Checks Redis for the state token (multi-worker safe).
+    Falls back to in-memory storage if Redis is unavailable.
 
     Args:
         state: The state token from the callback.
@@ -184,6 +196,17 @@ async def _validate_oauth_state(state: str | None, user_id: int) -> bool:
         return False
 
     redis_client = await get_redis()
+
+    # Fallback to in-memory storage if Redis unavailable
+    if redis_client is None:
+        stored = _in_memory_oauth_states.pop(state, None)
+        if stored is None:
+            return False
+        stored_user_id, expires_at = stored
+        if time.time() > expires_at:
+            return False
+        return stored_user_id == user_id
+
     key = f"oauth:strava:state:{state}"
 
     # Get stored user_id from Redis
