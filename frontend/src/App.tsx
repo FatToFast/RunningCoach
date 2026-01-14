@@ -1,16 +1,14 @@
-import { Suspense, lazy, useEffect } from 'react';
+import { Suspense, lazy, type ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ClerkProvider, SignIn, SignUp, useAuth } from '@clerk/clerk-react';
 import { Layout } from './components/layout/Layout';
 import { Login } from './pages/Login';
-import { AuthProvider } from './contexts/AuthContext';
-import { setTokenGetter } from './api/client';
+import { AuthProvider, CLERK_ENABLED } from './contexts/AuthContext';
 
-// Environment configuration
-const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
-const AUTH_MODE = import.meta.env.VITE_AUTH_MODE || 'session';
-const CLERK_ENABLED = !!CLERK_PUBLISHABLE_KEY && (AUTH_MODE === 'clerk' || AUTH_MODE === 'hybrid');
+// Re-export for use in other components
+export { CLERK_ENABLED };
+
+console.log('[App] Config:', { CLERK_ENABLED });
 
 // Lazy-loaded page components for code splitting
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -26,10 +24,20 @@ const Coach = lazy(() => import('./pages/Coach').then(m => ({ default: m.Coach }
 const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })));
 const Workouts = lazy(() => import('./pages/Workouts').then(m => ({ default: m.Workouts })));
 
+// Lazy load Clerk components only when needed
+const ClerkApp = lazy(() => import('./ClerkApp'));
+
 // Loading fallback for lazy-loaded components
 const PageLoader = () => (
   <div className="flex items-center justify-center min-h-[50vh]">
     <div className="text-cyan animate-pulse">Loading...</div>
+  </div>
+);
+
+// Full page loader for app initialization
+const AppLoader = () => (
+  <div className="min-h-screen flex items-center justify-center bg-[var(--color-bg-primary)]">
+    <div className="text-accent animate-pulse">로딩 중...</div>
   </div>
 );
 
@@ -70,91 +78,17 @@ const PublicNotFound = () => (
 );
 
 /**
- * Component to set up token getter for API client
+ * Core routes used by both session and Clerk modes
  */
-function TokenSetup() {
-  const { getToken } = useAuth();
-
-  useEffect(() => {
-    if (CLERK_ENABLED) {
-      setTokenGetter(getToken);
-    }
-  }, [getToken]);
-
-  return null;
-}
-
-/**
- * Clerk Sign-In page wrapper
- */
-const ClerkSignInPage = () => (
-  <div className="min-h-screen bg-[var(--color-bg-primary)] flex items-center justify-center p-4">
-    <div className="w-full max-w-md">
-      <div className="text-center mb-8">
-        <h1 className="font-display text-2xl font-bold">RunningCoach</h1>
-        <p className="text-muted text-sm mt-2">러닝 데이터 분석 & AI 코칭</p>
-      </div>
-      <SignIn
-        appearance={{
-          elements: {
-            rootBox: 'w-full',
-            card: 'bg-[var(--color-bg-secondary)] border border-[var(--color-border)]',
-          },
-        }}
-        routing="path"
-        path="/sign-in"
-        signUpUrl="/sign-up"
-        fallbackRedirectUrl="/"
-        forceRedirectUrl="/"
-      />
-    </div>
-  </div>
-);
-
-/**
- * Clerk Sign-Up page wrapper
- */
-const ClerkSignUpPage = () => (
-  <div className="min-h-screen bg-[var(--color-bg-primary)] flex items-center justify-center p-4">
-    <div className="w-full max-w-md">
-      <div className="text-center mb-8">
-        <h1 className="font-display text-2xl font-bold">RunningCoach</h1>
-        <p className="text-muted text-sm mt-2">러닝 데이터 분석 & AI 코칭</p>
-      </div>
-      <SignUp
-        appearance={{
-          elements: {
-            rootBox: 'w-full',
-            card: 'bg-[var(--color-bg-secondary)] border border-[var(--color-border)]',
-          },
-        }}
-        routing="path"
-        path="/sign-up"
-        signInUrl="/sign-in"
-        fallbackRedirectUrl="/"
-        forceRedirectUrl="/"
-      />
-    </div>
-  </div>
-);
-
-/**
- * Main App Routes
- */
-function AppRoutes() {
+export function CoreRoutes({ clerkRoutes }: { clerkRoutes?: ReactNode }) {
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
         {/* Public routes */}
         <Route path="/login" element={<Login />} />
 
-        {/* Clerk auth routes (only if Clerk enabled) */}
-        {CLERK_ENABLED && (
-          <>
-            <Route path="/sign-in/*" element={<ClerkSignInPage />} />
-            <Route path="/sign-up/*" element={<ClerkSignUpPage />} />
-          </>
-        )}
+        {/* Clerk auth routes (injected when Clerk is enabled) */}
+        {clerkRoutes}
 
         {/* Protected routes - Layout handles auth guard */}
         <Route element={<Layout />}>
@@ -182,15 +116,14 @@ function AppRoutes() {
 }
 
 /**
- * App with providers
+ * Session-only App (no Clerk dependencies)
  */
-function AppWithProviders() {
+function SessionApp() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        {CLERK_ENABLED && <TokenSetup />}
         <BrowserRouter>
-          <AppRoutes />
+          <CoreRoutes />
         </BrowserRouter>
       </AuthProvider>
     </QueryClientProvider>
@@ -201,28 +134,19 @@ function AppWithProviders() {
  * Main App component
  */
 function App() {
-  // If Clerk is enabled, wrap with ClerkProvider
+  console.log('[App] Rendering, CLERK_ENABLED:', CLERK_ENABLED);
+
+  // If Clerk is enabled, lazy load the entire Clerk app
   if (CLERK_ENABLED) {
     return (
-      <ClerkProvider
-        publishableKey={CLERK_PUBLISHABLE_KEY}
-        appearance={{
-          variables: {
-            colorPrimary: '#00D4FF',
-            colorBackground: '#1a1a2e',
-            colorText: '#ffffff',
-            colorInputBackground: '#2a2a4e',
-            colorInputText: '#ffffff',
-          },
-        }}
-      >
-        <AppWithProviders />
-      </ClerkProvider>
+      <Suspense fallback={<AppLoader />}>
+        <ClerkApp queryClient={queryClient} />
+      </Suspense>
     );
   }
 
-  // Session-only mode - no Clerk wrapper needed
-  return <AppWithProviders />;
+  // Session-only mode - no Clerk dependencies loaded
+  return <SessionApp />;
 }
 
 export default App;

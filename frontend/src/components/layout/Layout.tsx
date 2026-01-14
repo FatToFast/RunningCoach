@@ -35,7 +35,7 @@ export function Layout() {
     <div className="min-h-screen">
       <Header
         onMenuToggle={() => setSidebarOpen(true)}
-        user={user}
+        user={user ?? undefined}
       />
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 

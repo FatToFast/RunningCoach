@@ -5,7 +5,7 @@
  * which means ClerkProvider is available in the component tree.
  */
 
-import { createContext, useEffect, useState, useCallback, useMemo, type ReactNode } from 'react';
+import { useEffect, useState, useCallback, useMemo, type ReactNode } from 'react';
 import { useAuth as useClerkAuth, useUser as useClerkUser } from '@clerk/clerk-react';
 import { apiClient } from '../api/client';
 
