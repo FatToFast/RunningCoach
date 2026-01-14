@@ -149,7 +149,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
               <UserIcon className="w-5 h-5" />
               {user && (
                 <span className="hidden sm:inline text-sm max-w-[100px] truncate">
-                  {user.display_name || user.email.split('@')[0]}
+                  {user.display_name || user.email?.split('@')[0] || 'User'}
                 </span>
               )}
             </button>
@@ -162,7 +162,7 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
                     <p className="text-sm font-medium truncate">
                       {user.display_name || 'User'}
                     </p>
-                    <p className="text-xs text-muted truncate">{user.email}</p>
+                    <p className="text-xs text-muted truncate">{user.email || ''}</p>
                   </div>
                 )}
                 <button

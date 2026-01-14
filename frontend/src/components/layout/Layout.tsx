@@ -1,13 +1,15 @@
 import { useState } from 'react';
-import { Outlet, Navigate } from 'react-router-dom';
+import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
-import { useUser } from '../../hooks/useAuth';
-import { AxiosError } from 'axios';
+import { useAuthContext, CLERK_ENABLED } from '../../contexts/AuthContext';
 
 export function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { data: user, isLoading, error } = useUser();
+  const { user, isLoading, isAuthenticated, clerkEnabled } = useAuthContext();
+  const location = useLocation();
+
+  console.log('[Layout] Auth state:', { user: !!user, isLoading, isAuthenticated, clerkEnabled });
 
   // Show loading state
   if (isLoading) {
@@ -18,30 +20,15 @@ export function Layout() {
     );
   }
 
-  // Only redirect to login on auth errors (401/403), not network errors
-  const isAuthError =
-    error instanceof AxiosError &&
-    (error.response?.status === 401 || error.response?.status === 403);
-
-  if (isAuthError || !user) {
-    return <Navigate to="/login" replace />;
-  }
-
-  // Show error state for network/server errors (not auth-related)
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center p-6">
-          <p className="text-danger mb-2">연결 오류가 발생했습니다</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="btn btn-primary text-sm"
-          >
-            다시 시도
-          </button>
-        </div>
-      </div>
-    );
+  // Not authenticated - redirect to appropriate login page
+  if (!isAuthenticated) {
+    console.log('[Layout] Not authenticated, redirecting');
+    // In Clerk mode, redirect to Clerk sign-in
+    if (CLERK_ENABLED) {
+      return <Navigate to="/sign-in" state={{ from: location }} replace />;
+    }
+    // In session mode, redirect to login
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   return (
