@@ -139,6 +139,15 @@ class SyncStateResponse(BaseModel):
     cursor: str | None
 
 
+class SyncProgress(BaseModel):
+    """Sync progress information."""
+
+    current_endpoint: str  # 현재 동기화 중인 엔드포인트
+    current_index: int  # 현재 엔드포인트 인덱스 (0-based)
+    total_endpoints: int  # 총 엔드포인트 수
+    items_synced: int  # 현재 엔드포인트에서 동기화된 항목 수
+
+
 class IngestStatusResponse(BaseModel):
     """Overall ingestion status."""
 
@@ -147,6 +156,7 @@ class IngestStatusResponse(BaseModel):
     sync_states: list[SyncStateResponse]
     last_error: str | None = None
     last_sync_started_at: datetime | None = None
+    progress: SyncProgress | None = None  # 동기화 진행률
 
 
 class SyncHistoryItem(BaseModel):
@@ -194,10 +204,16 @@ async def run_sync_background(
     """
     lock_name = _sync_lock_name(user_id)
 
-    # Initialize sync status
+    # Initialize sync status with progress tracking
     _sync_status[user_id] = {
         "error": None,
         "started_at": datetime.now(timezone.utc),
+        "progress": {
+            "current_endpoint": endpoints[0] if endpoints else "",
+            "current_index": 0,
+            "total_endpoints": len(endpoints),
+            "items_synced": 0,
+        },
     }
 
     # Background task to periodically extend lock during long syncs
@@ -244,7 +260,15 @@ async def run_sync_background(
 
             # Run sync for each endpoint
             errors = []
-            for endpoint in endpoints:
+            for idx, endpoint in enumerate(endpoints):
+                # Update progress before starting each endpoint
+                _sync_status[user_id]["progress"] = {
+                    "current_endpoint": endpoint,
+                    "current_index": idx,
+                    "total_endpoints": len(endpoints),
+                    "items_synced": 0,
+                }
+
                 try:
                     result = await sync_service.sync_endpoint(
                         endpoint,
@@ -252,6 +276,12 @@ async def run_sync_background(
                         end_date=end_date,
                         full_backfill=full_backfill,
                     )
+
+                    # Update items_synced after completion
+                    _sync_status[user_id]["progress"]["items_synced"] = (
+                        result.items_created + result.items_updated
+                    )
+
                     logger.info(
                         f"Sync {endpoint} for user {user_id}: "
                         f"fetched={result.items_fetched}, "
@@ -567,6 +597,18 @@ async def get_ingest_status(
     # Only show error after sync completes
     last_error = user_status.get("error") if not is_running else None
 
+    # Get progress if running
+    progress = None
+    if is_running:
+        progress_data = user_status.get("progress")
+        if progress_data:
+            progress = SyncProgress(
+                current_endpoint=progress_data.get("current_endpoint", ""),
+                current_index=progress_data.get("current_index", 0),
+                total_endpoints=progress_data.get("total_endpoints", 0),
+                items_synced=progress_data.get("items_synced", 0),
+            )
+
     return IngestStatusResponse(
         connected=is_connected,
         running=is_running,
@@ -581,6 +623,7 @@ async def get_ingest_status(
         ],
         last_error=last_error,
         last_sync_started_at=last_sync_started_at,
+        progress=progress,
     )
 
 

@@ -32,6 +32,13 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
 
   const isConnected = garminStatus?.connected ?? false;
   const isSyncing = garminStatus?.running || syncMutation.isPending;
+  const progress = garminStatus?.progress;
+
+  // 진행률 텍스트 생성
+  const progressText = progress && progress.total_endpoints > 1
+    ? `${progress.current_index + 1}/${progress.total_endpoints}`
+    : null;
+
   // Sort by timestamp (ISO format sorts correctly as strings, but use Date for safety)
   const lastSync = garminStatus?.sync_states
     ?.map((s) => s.last_success_at)
@@ -110,7 +117,13 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
                     isSyncing && 'opacity-70 cursor-not-allowed'
                   )}
                   aria-label={isSyncing ? '동기화 중' : '최근 활동 동기화'}
-                  title={isSyncing ? '동기화 중...' : '최근 7일 활동 동기화 (전체 동기화는 설정에서)'}
+                  title={
+                    isSyncing
+                      ? progress
+                        ? `동기화 중: ${progress.current_endpoint} (${progress.current_index + 1}/${progress.total_endpoints})`
+                        : '동기화 중...'
+                      : '최근 7일 활동 동기화 (전체 동기화는 설정에서)'
+                  }
                 >
                   {isSyncing ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -118,7 +131,11 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
                     <RefreshCw className="w-4 h-4" />
                   )}
                   <span className="hidden md:inline">
-                    {isSyncing ? '동기화 중' : '새 활동'}
+                    {isSyncing
+                      ? progressText
+                        ? `동기화 ${progressText}`
+                        : '동기화 중'
+                      : '새 활동'}
                   </span>
                 </button>
               </>

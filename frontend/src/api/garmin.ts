@@ -25,12 +25,20 @@ export interface SyncStateResponse {
   cursor: string | null;
 }
 
+export interface SyncProgress {
+  current_endpoint: string;
+  current_index: number;
+  total_endpoints: number;
+  items_synced: number;
+}
+
 export interface IngestStatusResponse {
   connected: boolean;
   running: boolean;
   sync_states: SyncStateResponse[];
   last_error?: string | null;
   last_sync_started_at?: string | null;
+  progress?: SyncProgress | null;
 }
 
 export interface SyncHistoryItem {
