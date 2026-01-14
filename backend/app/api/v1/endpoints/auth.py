@@ -14,7 +14,8 @@ from typing import Annotated, Any
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -170,61 +171,8 @@ async def _get_garmin_sync_info(db: AsyncSession, user_id: int) -> GarminSyncInf
 # Dependencies
 # -------------------------------------------------------------------------
 
-
-async def get_current_user(
-    session_id: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """Get current authenticated user from session.
-
-    Args:
-        session_id: Session ID from cookie.
-        db: Database session.
-
-    Returns:
-        Current user.
-
-    Raises:
-        HTTPException: If not authenticated.
-    """
-    if not session_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
-
-    session_data = await get_session(session_id)
-    if not session_data:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired or invalid",
-        )
-
-    # Validate session data before refreshing TTL
-    user_id = session_data.get("user_id")
-    if not user_id:
-        # Invalid session data - delete it and reject
-        await delete_session(session_id)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid session data",
-        )
-
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        # User no longer exists - delete session and reject
-        await delete_session(session_id)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
-
-    # Sliding expiry: refresh TTL only after full validation
-    await refresh_session(session_id)
-
-    return user
+# Re-export hybrid auth for backward compatibility with existing endpoints
+from app.core.hybrid_auth import get_current_user_hybrid as get_current_user
 
 
 # -------------------------------------------------------------------------
@@ -254,7 +202,15 @@ async def login(
     result = await db.execute(select(User).where(User.email == request.email))
     user = result.scalar_one_or_none()
 
-    if not user or not await verify_password_async(request.password, user.password_hash):
+    # Check user exists and has a password (Clerk-only users have no password)
+    if not user or not user.password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+        )
+
+    # Verify password
+    if not await verify_password_async(request.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -317,15 +273,104 @@ async def logout(
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(
-    current_user: Annotated[User, Depends(get_current_user)],
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))] = None,
+    session_id: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
+    db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
-    """Get current authenticated user."""
+    """Get current authenticated user.
+
+    Supports both Clerk JWT (Bearer token) and session cookie authentication.
+    This is critical for frontend AuthContext to sync auth state.
+    """
+    user: User | None = None
+
+    # 1. Try Clerk JWT if Bearer token present and Clerk is enabled
+    if credentials and credentials.credentials and settings.clerk_enabled:
+        try:
+            from app.core.clerk_auth import ClerkAuth
+
+            token = credentials.credentials
+            payload = await ClerkAuth.verify_token(token)
+            clerk_user_id = payload.get("sub")
+
+            if clerk_user_id:
+                result = await db.execute(
+                    select(User).where(User.clerk_user_id == clerk_user_id)
+                )
+                user = result.scalar_one_or_none()
+
+                if not user:
+                    # Auto-create user on first login via /me
+                    clerk_data = await ClerkAuth.get_clerk_user_data(clerk_user_id)
+                    email_addresses = clerk_data.get("email_addresses", [])
+                    primary_email = None
+                    for email_obj in email_addresses:
+                        if email_obj.get("id") == clerk_data.get("primary_email_address_id"):
+                            primary_email = email_obj.get("email_address")
+                            break
+                    if not primary_email and email_addresses:
+                        primary_email = email_addresses[0].get("email_address")
+
+                    if primary_email:
+                        # Check if email already exists (link accounts)
+                        result = await db.execute(
+                            select(User).where(User.email == primary_email)
+                        )
+                        existing_user = result.scalar_one_or_none()
+
+                        if existing_user:
+                            # Link Clerk ID to existing account
+                            existing_user.clerk_user_id = clerk_user_id
+                            await db.commit()
+                            user = existing_user
+                            logger.info(f"Linked Clerk ID to existing user: {user.id}")
+                        else:
+                            # Create new user
+                            first_name = clerk_data.get("first_name", "") or ""
+                            last_name = clerk_data.get("last_name", "") or ""
+                            display_name = f"{first_name} {last_name}".strip() or primary_email.split("@")[0]
+
+                            user = User(
+                                clerk_user_id=clerk_user_id,
+                                email=primary_email,
+                                display_name=display_name,
+                                password_hash=None,
+                            )
+                            db.add(user)
+                            await db.commit()
+                            await db.refresh(user)
+                            logger.info(f"Created user from /me endpoint: {user.id}")
+        except HTTPException:
+            logger.debug("Clerk JWT auth failed, trying session")
+        except Exception as e:
+            logger.warning(f"Error during Clerk JWT auth in /me: {e}")
+
+    # 2. Fall back to session auth if no user yet
+    if not user and session_id:
+        session_data = await get_session(session_id)
+        if session_data:
+            user_id = session_data.get("user_id")
+            if user_id:
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+                if user:
+                    await refresh_session(session_id)
+
+    # 3. No valid auth found
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return UserResponse(
-        id=current_user.id,
-        email=current_user.email,
-        display_name=current_user.display_name,
-        timezone=current_user.timezone,
-        last_login_at=current_user.last_login_at.isoformat() if current_user.last_login_at else None,
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        timezone=user.timezone,
+        last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
     )
 
 

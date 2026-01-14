@@ -104,6 +104,8 @@ const ClerkSignInPage = () => (
         routing="path"
         path="/sign-in"
         signUpUrl="/sign-up"
+        fallbackRedirectUrl="/"
+        forceRedirectUrl="/"
       />
     </div>
   </div>
@@ -129,6 +131,8 @@ const ClerkSignUpPage = () => (
         routing="path"
         path="/sign-up"
         signInUrl="/sign-in"
+        fallbackRedirectUrl="/"
+        forceRedirectUrl="/"
       />
     </div>
   </div>

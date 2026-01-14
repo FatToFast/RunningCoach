@@ -70,14 +70,21 @@ class ClerkAuth:
         try:
             # Get signing key from JWKS
             signing_key = jwks_client.get_signing_key_from_jwt(token)
-            logger.debug(f"Retrieved signing key for JWT verification")
+            logger.debug("Retrieved signing key for JWT verification")
 
-            # Verify and decode token
+            # Build decode options with issuer validation
+            decode_options = {
+                "verify_aud": False,  # Clerk doesn't always set audience
+                "verify_iss": bool(settings.clerk_issuer),  # Validate issuer if configured
+            }
+
+            # Verify and decode token with issuer check
             payload = jwt.decode(
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
-                options={"verify_aud": False}  # Clerk doesn't always set audience
+                issuer=settings.clerk_issuer,  # Validate token comes from our Clerk instance
+                options=decode_options,
             )
 
             clerk_user_id = payload.get("sub")
@@ -214,8 +221,8 @@ async def get_current_user_clerk(
         logger.debug(f"Found existing user for Clerk ID: {clerk_user_id}")
         return user
 
-    # Auto-create user on first login
-    logger.info(f"Creating new user for Clerk ID: {clerk_user_id}")
+    # Auto-create user on first login or link to existing account
+    logger.info(f"Processing first login for Clerk ID: {clerk_user_id}")
     try:
         clerk_data = await ClerkAuth.get_clerk_user_data(clerk_user_id)
 
@@ -236,7 +243,19 @@ async def get_current_user_clerk(
                 detail="User email not available"
             )
 
-        # Create display name
+        # Check if user with same email already exists (account linking)
+        stmt = select(User).where(User.email == primary_email)
+        result = await db.execute(stmt)
+        existing_user = result.scalar_one_or_none()
+
+        if existing_user:
+            # Link Clerk ID to existing account
+            existing_user.clerk_user_id = clerk_user_id
+            await db.commit()
+            logger.info(f"Linked Clerk ID to existing user: id={existing_user.id}, email={primary_email}")
+            return existing_user
+
+        # Create new user
         first_name = clerk_data.get("first_name", "") or ""
         last_name = clerk_data.get("last_name", "") or ""
         display_name = f"{first_name} {last_name}".strip() or primary_email.split("@")[0]

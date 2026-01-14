@@ -18,7 +18,10 @@ import { apiClient } from '../api/client';
 // Auth mode from environment
 const AUTH_MODE = import.meta.env.VITE_AUTH_MODE || 'session';
 const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
-export const CLERK_ENABLED = !!CLERK_PUBLISHABLE_KEY && (AUTH_MODE === 'clerk' || AUTH_MODE === 'hybrid');
+// Only enable Clerk if both key is present AND mode requires it
+const CLERK_ENABLED = !!CLERK_PUBLISHABLE_KEY && (AUTH_MODE === 'clerk' || AUTH_MODE === 'hybrid');
+
+console.log('[Auth] Config:', { AUTH_MODE, CLERK_ENABLED, hasKey: !!CLERK_PUBLISHABLE_KEY });
 
 // User type matching backend
 interface User {
@@ -49,111 +52,25 @@ interface AuthProviderProps {
   children: ReactNode;
 }
 
-/**
- * Session-only Auth Provider (no Clerk dependency)
- */
-function SessionAuthProvider({ children }: AuthProviderProps) {
+export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [sessionChecked, setSessionChecked] = useState(false);
 
-  // Fetch user from backend
-  const fetchBackendUser = useCallback(async (): Promise<User | null> => {
-    try {
-      const response = await apiClient.get<User>('/auth/me');
-      return response.data;
-    } catch {
-      console.debug('[Auth] Failed to fetch user from backend');
-      return null;
-    }
-  }, []);
-
-  // Refresh user data
-  const refreshUser = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const backendUser = await fetchBackendUser();
-      setUser(backendUser);
-    } catch (error) {
-      console.error('[Auth] Error refreshing user:', error);
-      setUser(null);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [fetchBackendUser]);
-
-  // Traditional login (session-based)
-  const login = useCallback(async (email: string, password: string) => {
-    const response = await apiClient.post<User>('/auth/login', { email, password });
-    setUser(response.data);
-  }, []);
-
-  // Logout
-  const logout = useCallback(async () => {
-    try {
-      await apiClient.post('/auth/logout');
-    } catch (error) {
-      console.error('[Auth] Logout error:', error);
-    } finally {
-      setUser(null);
-    }
-  }, []);
-
-  // No-op getToken for session mode
-  const getToken = useCallback(async (): Promise<string | null> => {
-    return null;
-  }, []);
-
-  // Effect: Check session on mount
-  useEffect(() => {
-    const checkSession = async () => {
-      try {
-        const backendUser = await fetchBackendUser();
-        setUser(backendUser);
-      } catch {
-        // Session not valid
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    checkSession();
-  }, [fetchBackendUser]);
-
-  // Memoized context value
-  const contextValue = useMemo<AuthContextType>(() => ({
-    user,
-    isLoading,
-    isAuthenticated: !!user,
-    authMode: 'session',
-    clerkEnabled: false,
-    login,
-    logout,
-    refreshUser,
-    getToken,
-  }), [user, isLoading, login, logout, refreshUser, getToken]);
-
-  return (
-    <AuthContext.Provider value={contextValue}>
-      {children}
-    </AuthContext.Provider>
-  );
-}
-
-/**
- * Clerk-enabled Auth Provider (requires ClerkProvider wrapper)
- * This component is only rendered when CLERK_ENABLED is true
- */
-function ClerkAuthProvider({ children }: AuthProviderProps) {
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  // Clerk hooks - only called when this component is mounted (CLERK_ENABLED=true)
+  // Clerk hooks - always called (App.tsx wraps with ClerkProvider when enabled)
   const clerkAuth = useClerkAuth();
   const clerkUser = useClerkUser();
 
+  console.log('[Auth] Clerk state:', {
+    isLoaded: clerkAuth.isLoaded,
+    isSignedIn: clerkAuth.isSignedIn,
+    userLoaded: clerkUser.isLoaded,
+    hasUser: !!clerkUser.user
+  });
+
   // Get JWT token for API calls
   const getToken = useCallback(async (): Promise<string | null> => {
-    if (clerkAuth.isSignedIn) {
+    if (CLERK_ENABLED && clerkAuth.isSignedIn) {
       try {
         const token = await clerkAuth.getToken();
         return token;
@@ -162,7 +79,7 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
       }
     }
     return null;
-  }, [clerkAuth]);
+  }, [clerkAuth.isSignedIn, clerkAuth.getToken]);
 
   // Fetch user from backend (works with both auth methods)
   const fetchBackendUser = useCallback(async (token?: string | null): Promise<User | null> => {
@@ -174,7 +91,7 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
 
       const response = await apiClient.get<User>('/auth/me', { headers });
       return response.data;
-    } catch {
+    } catch (error) {
       console.debug('[Auth] Failed to fetch user from backend');
       return null;
     }
@@ -184,8 +101,8 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
   const refreshUser = useCallback(async () => {
     setIsLoading(true);
     try {
-      // Try Clerk auth first
-      if (clerkAuth.isSignedIn) {
+      // Try Clerk auth first if enabled
+      if (CLERK_ENABLED && clerkAuth.isSignedIn) {
         const token = await getToken();
         const backendUser = await fetchBackendUser(token);
         if (backendUser) {
@@ -195,8 +112,8 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
         }
       }
 
-      // Fall back to session auth (hybrid mode)
-      if (AUTH_MODE === 'hybrid') {
+      // Fall back to session auth
+      if (AUTH_MODE !== 'clerk') {
         const backendUser = await fetchBackendUser();
         setUser(backendUser);
       } else {
@@ -210,7 +127,7 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
     }
   }, [clerkAuth.isSignedIn, getToken, fetchBackendUser]);
 
-  // Traditional login (session-based) - only for hybrid mode
+  // Traditional login (session-based)
   const login = useCallback(async (email: string, password: string) => {
     if (AUTH_MODE === 'clerk') {
       throw new Error('Session login not available in Clerk-only mode');
@@ -224,12 +141,12 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
   const logout = useCallback(async () => {
     try {
       // Logout from Clerk if signed in
-      if (clerkAuth.isSignedIn) {
+      if (CLERK_ENABLED && clerkAuth.isSignedIn) {
         await clerkAuth.signOut();
       }
 
-      // Logout from session (hybrid mode)
-      if (AUTH_MODE === 'hybrid') {
+      // Logout from session
+      if (AUTH_MODE !== 'clerk') {
         await apiClient.post('/auth/logout');
       }
     } catch (error) {
@@ -241,29 +158,44 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
 
   // Effect: Handle Clerk auth state changes
   useEffect(() => {
+    if (!CLERK_ENABLED) {
+      return;
+    }
+
     // Wait for Clerk to be ready
     if (clerkAuth.isLoaded === false) {
       return;
     }
 
     const syncClerkUser = async () => {
+      console.log('[Auth] syncClerkUser called:', {
+        isSignedIn: clerkAuth.isSignedIn,
+        userLoaded: clerkUser.isLoaded,
+        hasUser: !!clerkUser.user
+      });
+
       if (clerkAuth.isSignedIn && clerkUser.isLoaded && clerkUser.user) {
-        console.debug('[Auth] Clerk user signed in, syncing with backend');
+        console.log('[Auth] Clerk user signed in, syncing with backend');
         const token = await getToken();
+        console.log('[Auth] Got token:', !!token);
         const backendUser = await fetchBackendUser(token);
+        console.log('[Auth] Backend user:', backendUser);
         if (backendUser) {
           setUser(backendUser);
         }
+      } else if (!clerkAuth.isSignedIn && sessionChecked) {
+        console.log('[Auth] Clerk not signed in');
       }
       setIsLoading(false);
     };
 
     syncClerkUser();
-  }, [clerkAuth.isLoaded, clerkAuth.isSignedIn, clerkUser.isLoaded, clerkUser.user, getToken, fetchBackendUser]);
+  }, [clerkAuth.isLoaded, clerkAuth.isSignedIn, clerkUser.isLoaded, clerkUser.user, getToken, fetchBackendUser, sessionChecked]);
 
-  // Effect: Check session on mount (for hybrid mode)
+  // Effect: Check session on mount (for hybrid/session mode)
   useEffect(() => {
-    if (AUTH_MODE !== 'hybrid') {
+    if (AUTH_MODE === 'clerk') {
+      setSessionChecked(true);
       return;
     }
 
@@ -275,6 +207,11 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
         }
       } catch {
         // Session not valid
+      } finally {
+        setSessionChecked(true);
+        if (!CLERK_ENABLED) {
+          setIsLoading(false);
+        }
       }
     };
 
@@ -284,10 +221,10 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
   // Memoized context value
   const contextValue = useMemo<AuthContextType>(() => ({
     user,
-    isLoading: isLoading || !clerkAuth.isLoaded,
+    isLoading: isLoading || (CLERK_ENABLED && !clerkAuth.isLoaded),
     isAuthenticated: !!user,
-    authMode: AUTH_MODE as 'clerk' | 'hybrid',
-    clerkEnabled: true,
+    authMode: AUTH_MODE as 'clerk' | 'session' | 'hybrid',
+    clerkEnabled: CLERK_ENABLED,
     login,
     logout,
     refreshUser,
@@ -299,18 +236,6 @@ function ClerkAuthProvider({ children }: AuthProviderProps) {
       {children}
     </AuthContext.Provider>
   );
-}
-
-/**
- * Unified AuthProvider - automatically selects the right provider based on environment
- */
-export function AuthProvider({ children }: AuthProviderProps) {
-  // Only mount ClerkAuthProvider when Clerk is configured
-  // This prevents Clerk hooks from being called when Clerk is not set up
-  if (CLERK_ENABLED) {
-    return <ClerkAuthProvider>{children}</ClerkAuthProvider>;
-  }
-  return <SessionAuthProvider>{children}</SessionAuthProvider>;
 }
 
 /**

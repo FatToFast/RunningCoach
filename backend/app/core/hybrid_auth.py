@@ -74,7 +74,7 @@ async def get_current_user_hybrid(
                     )
                     return user
 
-                # Auto-create user on first Clerk login
+                # Auto-create user on first Clerk login or link to existing account
                 clerk_data = await ClerkAuth.get_clerk_user_data(clerk_user_id)
                 email_addresses = clerk_data.get("email_addresses", [])
                 primary_email = None
@@ -86,6 +86,24 @@ async def get_current_user_hybrid(
                     primary_email = email_addresses[0].get("email_address")
 
                 if primary_email:
+                    # Check if user with same email already exists (account linking)
+                    stmt = select(User).where(User.email == primary_email)
+                    result = await db.execute(stmt)
+                    existing_user = result.scalar_one_or_none()
+
+                    if existing_user:
+                        # Link Clerk ID to existing account
+                        existing_user.clerk_user_id = clerk_user_id
+                        await db.commit()
+                        logger.info(f"Linked Clerk ID to existing user: user_id={existing_user.id}")
+                        CloudMigrationDebug.log_hybrid_auth_flow(
+                            auth_method="clerk",
+                            user_id=existing_user.id,
+                            clerk_user_id=clerk_user_id,
+                        )
+                        return existing_user
+
+                    # Create new user
                     first_name = clerk_data.get("first_name", "") or ""
                     last_name = clerk_data.get("last_name", "") or ""
                     display_name = f"{first_name} {last_name}".strip() or primary_email.split("@")[0]

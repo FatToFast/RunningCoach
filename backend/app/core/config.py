@@ -189,30 +189,45 @@ class Settings(BaseSettings):
     clerk_webhook_secret: Optional[str] = None
 
     @property
-    def clerk_jwks_url(self) -> Optional[str]:
-        """Get Clerk JWKS URL from publishable key."""
+    def clerk_frontend_api(self) -> Optional[str]:
+        """Extract Clerk frontend API domain from publishable key.
+
+        Clerk publishable key format: pk_test_XXX or pk_live_XXX
+        where XXX is base64-encoded "domain$" (domain with trailing $).
+        Example: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k -> clerk.example.com
+        """
         if not self.clerk_publishable_key:
             return None
         try:
-            # Format: pk_test_xxx or pk_live_xxx
-            # The part after pk_test_ or pk_live_ is base64-encoded domain
+            import base64
             parts = self.clerk_publishable_key.split('_')
             if len(parts) >= 3:
-                # Decode the base64-encoded domain (with optional $ suffix)
-                import base64
                 encoded_domain = parts[2]
-                # Add padding if needed
+                # Add padding if needed for base64
                 padding = 4 - len(encoded_domain) % 4
                 if padding != 4:
                     encoded_domain += '=' * padding
                 decoded = base64.b64decode(encoded_domain).decode('utf-8')
-                # Remove trailing $ if present and ensure .dev suffix
-                domain = decoded.rstrip('$')
-                if not domain.endswith('.dev'):
-                    domain += 'v'  # Complete truncated '.dev'
-                return f"https://{domain}/.well-known/jwks.json"
+                # Remove trailing $ marker
+                return decoded.rstrip('$')
         except Exception:
             pass
+        return None
+
+    @property
+    def clerk_jwks_url(self) -> Optional[str]:
+        """Get Clerk JWKS URL from publishable key."""
+        domain = self.clerk_frontend_api
+        if domain:
+            return f"https://{domain}/.well-known/jwks.json"
+        return None
+
+    @property
+    def clerk_issuer(self) -> Optional[str]:
+        """Get Clerk JWT issuer URL for token validation."""
+        domain = self.clerk_frontend_api
+        if domain:
+            return f"https://{domain}"
         return None
 
     @property

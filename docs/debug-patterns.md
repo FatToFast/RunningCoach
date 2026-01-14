@@ -2814,44 +2814,144 @@ export interface WorkoutStep {
 
 ---
 
-### 71. Railway startCommand 포트 확장 실패
+### 71. Clerk 모드에서 /auth/me 401 에러
 
-**문제**: `startCommand`에 `${PORT:-8000}`를 사용했지만 셸 확장이 적용되지 않아 uvicorn이 문자열을 포트로 파싱하면서 실패
+**문제**: Clerk 모드(VITE_AUTH_MODE=clerk|hybrid)에서 프론트엔드가 Bearer 토큰으로 /auth/me를 호출하지만, 백엔드가 세션 쿠키만 검사해서 401 반환
 
-**원인**: Nixpacks/Railway가 `startCommand`를 셸 없이 exec 형태로 실행해 parameter expansion이 동작하지 않음
+```python
+# ❌ 잘못된 패턴 - 세션만 검사
+@router.get("/me")
+async def get_me(
+    current_user: Annotated[User, Depends(get_current_user)],  # 세션 기반 dependency
+):
+    ...
 
-**해결**: `sh -c`로 감싸 셸 확장을 보장
-
-```json
-// ❌ 잘못된 패턴
-"startCommand": "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
-
-// ✅ 올바른 패턴
-"startCommand": "sh -c \"uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}\""
+# ✅ 올바른 패턴 - Bearer + Session 모두 지원
+@router.get("/me")
+async def get_me(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))] = None,
+    session_id: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    # 1. Try Clerk JWT if Bearer token present
+    if credentials and credentials.credentials and settings.clerk_enabled:
+        # verify JWT and get user
+    # 2. Fall back to session auth
+    if not user and session_id:
+        # check session
 ```
 
-**적용 위치**: `backend/railway.json:deploy.startCommand`
+**적용 위치**: `backend/app/api/v1/endpoints/auth.py`
 **날짜**: 2026-01-14
 
 ---
 
-### 72. Nixpacks 빌드에서 README 누락으로 메타데이터 생성 실패
+### 72. AuthContext가 ClerkProvider 없이 Clerk hooks 호출
 
-**문제**: Nixpacks가 `pyproject.toml`만 복사한 상태에서 `pip install .`을 실행해 `README.md`가 없다는 오류로 메타데이터 생성이 실패
+**문제**: AuthProvider가 항상 useClerkAuth/useClerkUser를 호출하는데, App은 publishable key가 있을 때만 ClerkProvider를 감싸서 session 모드나 키 누락 시 런타임 에러 발생
 
-**원인**: `readme = "README.md"`가 파일 경로를 요구하지만 빌드 단계에 README가 포함되지 않음
+```typescript
+// ❌ 잘못된 패턴 - 항상 hook 호출
+import { useAuth as useClerkAuth } from '@clerk/clerk-react';
+const clerkAuth = useClerkAuth();  // ClerkProvider 없으면 에러!
 
-**해결**: `readme`를 인라인 텍스트로 정의해 파일 의존성을 제거
+// ✅ 올바른 패턴 - 조건부 hook wrapper
+const CLERK_ENABLED = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY &&
+  (AUTH_MODE === 'clerk' || AUTH_MODE === 'hybrid');
 
-```toml
-# ❌ 잘못된 패턴
-readme = "README.md"
-
-# ✅ 올바른 패턴
-readme = { text = "# RunningCoach Backend\n\nFastAPI backend for the RunningCoach application.", content-type = "text/markdown" }
+function useClerkAuthSafe() {
+  if (!CLERK_ENABLED) {
+    return { isLoaded: true, isSignedIn: false, getToken: async () => null, signOut: async () => {} };
+  }
+  const { useAuth } = require('@clerk/clerk-react');
+  return useAuth();
+}
 ```
 
-**적용 위치**: `backend/pyproject.toml`
+**적용 위치**: `frontend/src/contexts/AuthContext.tsx`
+**날짜**: 2026-01-14
+
+---
+
+### 73. JWT issuer 미검증으로 다른 앱 토큰 통과 위험
+
+**문제**: JWT 검증에서 issuer/audience 검증이 없어서(verify_aud=false) 다른 Clerk 앱의 토큰이 통과할 수 있음
+
+```python
+# ❌ 잘못된 패턴 - issuer 검증 없음
+payload = jwt.decode(
+    token,
+    signing_key.key,
+    algorithms=["RS256"],
+    options={"verify_aud": False}  # 출처 제한 없음
+)
+
+# ✅ 올바른 패턴 - issuer 검증 추가
+payload = jwt.decode(
+    token,
+    signing_key.key,
+    algorithms=["RS256"],
+    issuer=settings.clerk_issuer,  # 우리 Clerk 인스턴스에서만 발급된 토큰 허용
+    options={"verify_aud": False, "verify_iss": bool(settings.clerk_issuer)}
+)
+```
+
+**적용 위치**: `backend/app/core/clerk_auth.py`, `backend/app/core/config.py`
+**날짜**: 2026-01-14
+
+---
+
+### 74. Clerk 사용자 생성 시 이메일 unique 충돌
+
+**문제**: Clerk 사용자 자동 생성이 clerk_user_id만 확인하고 이메일 중복을 처리하지 않아, 기존 계정/삭제 후 재가입 시 unique constraint 충돌로 500 에러
+
+```python
+# ❌ 잘못된 패턴 - clerk_user_id만 확인
+stmt = select(User).where(User.clerk_user_id == clerk_user_id)
+user = result.scalar_one_or_none()
+if not user:
+    user = User(email=primary_email, ...)  # 이메일 중복 시 500!
+
+# ✅ 올바른 패턴 - 이메일로 기존 계정 연결
+stmt = select(User).where(User.clerk_user_id == clerk_user_id)
+user = result.scalar_one_or_none()
+if not user:
+    # Check if email already exists (account linking)
+    stmt = select(User).where(User.email == primary_email)
+    existing_user = result.scalar_one_or_none()
+    if existing_user:
+        existing_user.clerk_user_id = clerk_user_id  # 기존 계정에 연결
+        return existing_user
+    user = User(email=primary_email, ...)  # 새 계정 생성
+```
+
+**적용 위치**:
+- `backend/app/core/clerk_auth.py`
+- `backend/app/core/hybrid_auth.py`
+- `backend/app/api/v1/endpoints/webhooks.py`
+- `backend/app/api/v1/endpoints/auth.py`
+**날짜**: 2026-01-14
+
+---
+
+### 75. Clerk 사용자의 password 로그인 시 500 에러
+
+**문제**: Clerk 전용 사용자(password_hash=None)가 /auth/login 시도 시 bcrypt.checkpw에 None 전달되어 예외 발생
+
+```python
+# ❌ 잘못된 패턴 - password_hash null 체크 없음
+if not user or not await verify_password_async(request.password, user.password_hash):
+    # user.password_hash가 None이면 bcrypt에서 예외!
+
+# ✅ 올바른 패턴 - null 체크 먼저
+if not user or not user.password_hash:
+    raise HTTPException(status_code=401, detail="Incorrect email or password")
+if not await verify_password_async(request.password, user.password_hash):
+    raise HTTPException(status_code=401, detail="Incorrect email or password")
+```
+
+**적용 위치**: `backend/app/api/v1/endpoints/auth.py`
 **날짜**: 2026-01-14
 
 ---

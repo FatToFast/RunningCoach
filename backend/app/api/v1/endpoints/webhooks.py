@@ -127,8 +127,8 @@ async def handle_clerk_webhook(
 async def _handle_user_created(db: AsyncSession, event_data: Dict[str, Any]) -> None:
     """Handle user.created webhook event.
 
-    Creates a new user in the database if they don't exist.
-    This is a fallback - users are typically created on first login.
+    Creates a new user in the database if they don't exist,
+    or links Clerk ID to existing account with same email.
 
     Args:
         db: Database session
@@ -139,7 +139,7 @@ async def _handle_user_created(db: AsyncSession, event_data: Dict[str, Any]) -> 
         logger.error("user.created event missing user ID")
         return
 
-    # Check if user already exists
+    # Check if user already exists by Clerk ID
     stmt = select(User).where(User.clerk_user_id == clerk_user_id)
     result = await db.execute(stmt)
     existing_user = result.scalar_one_or_none()
@@ -165,12 +165,24 @@ async def _handle_user_created(db: AsyncSession, event_data: Dict[str, Any]) -> 
         logger.error(f"user.created event missing email for Clerk ID: {clerk_user_id}")
         return
 
+    # Check if user with same email already exists (account linking)
+    stmt = select(User).where(User.email == primary_email)
+    result = await db.execute(stmt)
+    email_user = result.scalar_one_or_none()
+
+    if email_user:
+        # Link Clerk ID to existing account
+        email_user.clerk_user_id = clerk_user_id
+        await db.commit()
+        logger.info(f"Linked Clerk ID to existing user from webhook: id={email_user.id}, email={primary_email}")
+        return
+
     # Create display name
     first_name = event_data.get("first_name", "") or ""
     last_name = event_data.get("last_name", "") or ""
     display_name = f"{first_name} {last_name}".strip() or primary_email.split("@")[0]
 
-    # Create user
+    # Create new user
     user = User(
         clerk_user_id=clerk_user_id,
         email=primary_email,

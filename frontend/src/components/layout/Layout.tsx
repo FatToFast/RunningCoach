@@ -3,7 +3,6 @@ import { Outlet, Navigate } from 'react-router-dom';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import { useUser } from '../../hooks/useAuth';
-import { CLERK_ENABLED } from '../../contexts/AuthContext';
 import { AxiosError } from 'axios';
 
 export function Layout() {
@@ -25,8 +24,7 @@ export function Layout() {
     (error.response?.status === 401 || error.response?.status === 403);
 
   if (isAuthError || !user) {
-    const loginPath = CLERK_ENABLED ? '/sign-in' : '/login';
-    return <Navigate to={loginPath} replace />;
+    return <Navigate to="/login" replace />;
   }
 
   // Show error state for network/server errors (not auth-related)
