@@ -621,6 +621,51 @@ async def get_dashboard_summary(
         for schedule, workout in upcoming_result.all()
     ]
 
+    # Save to AnalyticsSummary for trends (only for completed periods)
+    # This ensures /trends endpoint has data to display
+    if period_end < today:
+        # Check if summary already exists
+        existing_summary_result = await db.execute(
+            select(AnalyticsSummary).where(
+                AnalyticsSummary.user_id == current_user.id,
+                AnalyticsSummary.period_type == period,
+                AnalyticsSummary.period_start == period_start,
+            )
+        )
+        existing_summary = existing_summary_result.scalar_one_or_none()
+
+        if existing_summary:
+            # Update existing
+            existing_summary.total_activities = stats.count or 0
+            existing_summary.total_distance_meters = stats.distance or 0
+            existing_summary.total_duration_seconds = int(stats.duration or 0)
+            existing_summary.total_calories = int(stats.calories) if stats.calories else None
+            existing_summary.avg_pace_seconds = avg_pace_seconds
+            existing_summary.avg_hr = int(stats.avg_hr) if stats.avg_hr else None
+            existing_summary.summary_data = {
+                "total_elevation_m": round(stats.elevation, 1) if stats.elevation else None,
+            }
+        else:
+            # Create new
+            new_summary = AnalyticsSummary(
+                user_id=current_user.id,
+                period_type=period,
+                period_start=period_start,
+                period_end=period_end,
+                total_activities=stats.count or 0,
+                total_distance_meters=stats.distance or 0,
+                total_duration_seconds=int(stats.duration or 0),
+                total_calories=int(stats.calories) if stats.calories else None,
+                avg_pace_seconds=avg_pace_seconds,
+                avg_hr=int(stats.avg_hr) if stats.avg_hr else None,
+                summary_data={
+                    "total_elevation_m": round(stats.elevation, 1) if stats.elevation else None,
+                },
+            )
+            db.add(new_summary)
+
+        await db.commit()
+
     return DashboardSummaryResponse(
         period_type=period,
         period_start=period_start,
@@ -726,11 +771,13 @@ async def get_trends(
 
     # Get resting HR trend from HRRecord (daily values)
     start_datetime = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    end_datetime = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
     hr_trend_result = await db.execute(
         select(HRRecord.start_time, HRRecord.resting_hr)
         .where(
             HRRecord.user_id == current_user.id,
             HRRecord.start_time >= start_datetime,
+            HRRecord.start_time <= end_datetime,  # Add upper bound
             HRRecord.resting_hr.isnot(None),
         )
         .order_by(HRRecord.start_time.asc())

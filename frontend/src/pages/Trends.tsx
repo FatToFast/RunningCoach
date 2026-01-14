@@ -333,10 +333,12 @@ export function Trends() {
             <span className="stat-label">Avg Distance</span>
           </div>
           <div className="stat-value text-xl">
-            {(
-              trends.weekly_distance.reduce((sum, d) => sum + d.value, 0) /
-              trends.weekly_distance.length
-            ).toFixed(1)}
+            {trends.weekly_distance.length > 0
+              ? (
+                  trends.weekly_distance.reduce((sum, d) => sum + d.value, 0) /
+                  trends.weekly_distance.length
+                ).toFixed(1)
+              : '--'}
           </div>
           <div className="text-muted text-sm">km/week</div>
         </div>
@@ -347,10 +349,12 @@ export function Trends() {
             <span className="stat-label">Avg Duration</span>
           </div>
           <div className="stat-value text-xl !text-green">
-            {(
-              trends.weekly_duration.reduce((sum, d) => sum + d.value, 0) /
-              trends.weekly_duration.length
-            ).toFixed(1)}
+            {trends.weekly_duration.length > 0
+              ? (
+                  trends.weekly_duration.reduce((sum, d) => sum + d.value, 0) /
+                  trends.weekly_duration.length
+                ).toFixed(1)
+              : '--'}
           </div>
           <div className="text-muted text-sm">hours/week</div>
         </div>
@@ -361,7 +365,9 @@ export function Trends() {
             <span className="stat-label">Best Pace</span>
           </div>
           <div className="stat-value text-xl !text-amber">
-            {formatPace(Math.min(...trends.avg_pace.map((d) => d.value)))}
+            {trends.avg_pace.length > 0
+              ? formatPace(Math.min(...trends.avg_pace.map((d) => d.value)))
+              : '--'}
           </div>
           <div className="text-muted text-sm">/km</div>
         </div>

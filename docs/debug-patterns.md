@@ -3255,4 +3255,97 @@ async def get_ingest_status(...):
 
 ---
 
+### 84. /dashboard/summary가 AnalyticsSummary에 저장하지 않아 트렌드 비어있음
+
+**문제**: `/dashboard/summary` API가 직접 통계를 계산하지만 `AnalyticsSummary` 테이블에 저장하지 않음. `/trends` API는 `AnalyticsSummary`를 조회하므로 빈 배열 반환.
+
+```python
+# ❌ 잘못된 패턴 - 계산만 하고 저장 안함
+stats = await db.execute(select(...))  # 통계 계산
+return DashboardSummaryResponse(...)   # 바로 반환
+
+# ✅ 올바른 패턴 - 완료된 기간은 저장
+stats = await db.execute(select(...))
+
+# 완료된 기간만 저장 (현재 진행 중인 주/월은 제외)
+if period_end < today:
+    existing = await db.execute(select(AnalyticsSummary).where(...))
+    if existing:
+        existing.total_distance_meters = stats.distance
+        ...
+    else:
+        db.add(AnalyticsSummary(...))
+    await db.commit()
+
+return DashboardSummaryResponse(...)
+```
+
+**적용 위치**: `backend/app/api/v1/endpoints/dashboard.py` (get_dashboard_summary)
+**날짜**: 2026-01-14
+
+---
+
+### 85. 트렌드 휴식 HR 쿼리에 end_date 상한 없음
+
+**문제**: 지정된 기간 이후의 데이터가 결과에 포함될 수 있음.
+
+```python
+# ❌ 잘못된 패턴 - start만 있고 end 없음
+hr_trend_result = await db.execute(
+    select(HRRecord.start_time, HRRecord.resting_hr)
+    .where(
+        HRRecord.user_id == user_id,
+        HRRecord.start_time >= start_datetime,  # 시작만
+        HRRecord.resting_hr.isnot(None),
+    )
+)
+
+# ✅ 올바른 패턴 - start와 end 모두 지정
+hr_trend_result = await db.execute(
+    select(HRRecord.start_time, HRRecord.resting_hr)
+    .where(
+        HRRecord.user_id == user_id,
+        HRRecord.start_time >= start_datetime,
+        HRRecord.start_time <= end_datetime,  # 종료도 필수
+        HRRecord.resting_hr.isnot(None),
+    )
+)
+```
+
+**적용 위치**: `backend/app/api/v1/endpoints/dashboard.py` (get_trends)
+**날짜**: 2026-01-14
+
+---
+
+### 86. 빈 배열에서 통계 계산 시 NaN/Infinity
+
+**문제**: 빈 배열에서 평균(0으로 나누기) 또는 `Math.min(...[])` (Infinity) 계산 시 NaN/Infinity 표시.
+
+```typescript
+// ❌ 잘못된 패턴 - 빈 배열 미처리
+<div>
+  {(data.reduce((sum, d) => sum + d.value, 0) / data.length).toFixed(1)}
+</div>  // NaN
+
+<div>
+  {Math.min(...data.map(d => d.value))}
+</div>  // Infinity
+
+// ✅ 올바른 패턴 - 빈 배열 처리
+<div>
+  {data.length > 0
+    ? (data.reduce((sum, d) => sum + d.value, 0) / data.length).toFixed(1)
+    : '--'}
+</div>
+
+<div>
+  {data.length > 0 ? Math.min(...data.map(d => d.value)) : '--'}
+</div>
+```
+
+**적용 위치**: `frontend/src/pages/Trends.tsx` (Quick Stats Grid)
+**날짜**: 2026-01-14
+
+---
+
 *마지막 업데이트: 2026-01-14*
