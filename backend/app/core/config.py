@@ -165,8 +165,9 @@ class Settings(BaseSettings):
 
     # Sync
     sync_cron: Optional[str] = None  # e.g., "0 */6 * * *" for every 6 hours
-    sync_lock_ttl_seconds: int = 10800  # 3 hours (for large backfills)
-    sync_lock_extension_interval: int = 600  # Extend lock every 10 minutes during sync
+    sync_lock_ttl_seconds: int = 300  # 5 minutes (short TTL, extended during active sync)
+    sync_lock_extension_interval: int = 60  # Extend lock every 1 minute during sync
+    sync_stale_threshold_seconds: int = 600  # 10 minutes - consider sync stale after this
 
     # Observability
     metrics_backend: str = "inmemory"  # "inmemory" | "prometheus"

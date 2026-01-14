@@ -3203,4 +3203,56 @@ else:
 
 ---
 
+### 83. Stale/Orphan 락으로 동기화 스피너 무한 회전
+
+**문제**: 동기화가 크래시/타임아웃되면 분산 락이 해제되지 않음. 긴 TTL(3시간) 동안 락이 유지되어 프론트엔드가 `running: true`를 계속 받음.
+
+```python
+# ❌ 잘못된 패턴 - 긴 TTL, stale 감지 없음
+sync_lock_ttl_seconds: int = 10800  # 3시간 - 크래시 시 3시간 대기
+
+@router.get("/status")
+async def get_ingest_status(...):
+    is_running = await check_lock(lock_name)  # 락만 확인
+    return IngestStatusResponse(running=is_running)  # stale도 running=true
+
+# ✅ 올바른 패턴 - 짧은 TTL + 자주 연장 + stale 감지
+sync_lock_ttl_seconds: int = 300  # 5분
+sync_lock_extension_interval: int = 60  # 1분마다 연장
+sync_stale_threshold_seconds: int = 600  # 10분 후 stale 판정
+
+@router.get("/status")
+async def get_ingest_status(...):
+    is_running = await check_lock(lock_name)
+    last_sync_started_at = _sync_status.get(user_id, {}).get("started_at")
+
+    if is_running:
+        if last_sync_started_at:
+            elapsed = (datetime.now(timezone.utc) - last_sync_started_at).total_seconds()
+            if elapsed > settings.sync_stale_threshold_seconds:
+                is_running = False  # Stale - UI에 완료 표시
+                _sync_status[user_id]["error"] = "동기화 시간 초과"
+        else:
+            # 시작 시간 없음 = 이전 배포에서 남은 락
+            is_running = False
+
+    return IngestStatusResponse(running=is_running)
+```
+
+**근본 원인**:
+1. 긴 TTL(3시간)은 대용량 백필 대비지만, 크래시 시 복구 불가
+2. 동기화 시작 시간을 in-memory에 저장하므로 배포 후 orphan 락 감지 불가
+
+**해결책**:
+- TTL을 짧게(5분) 설정하고 동기화 중 자주 연장(1분마다)
+- `/status`에서 stale 임계값(10분) 초과 시 `running=false` 반환
+- 시작 시간 없는 orphan 락도 stale로 처리
+
+**적용 위치**:
+- `backend/app/core/config.py` (sync_lock_ttl_seconds, sync_lock_extension_interval, sync_stale_threshold_seconds)
+- `backend/app/api/v1/endpoints/ingest.py` (get_ingest_status)
+**날짜**: 2026-01-14
+
+---
+
 *마지막 업데이트: 2026-01-14*

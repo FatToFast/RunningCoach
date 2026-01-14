@@ -527,12 +527,45 @@ async def get_ingest_status(
     states = result.scalars().all()
 
     # Check if running (via distributed lock)
-    is_running = await check_lock(_sync_lock_name(current_user.id))
+    lock_name = _sync_lock_name(current_user.id)
+    is_running = await check_lock(lock_name)
 
     # Get last error and started_at from in-memory status
     user_status = _sync_status.get(current_user.id, {})
-    last_error = user_status.get("error") if not is_running else None  # Only show error after sync completes
     last_sync_started_at = user_status.get("started_at")
+
+    # Detect and handle stale locks
+    # If lock exists but sync started too long ago (or no record of start), it's stale
+    if is_running:
+        is_stale = False
+        if last_sync_started_at:
+            elapsed = (datetime.now(timezone.utc) - last_sync_started_at).total_seconds()
+            if elapsed > settings.sync_stale_threshold_seconds:
+                is_stale = True
+                logger.warning(
+                    f"Stale sync lock detected for user {current_user.id} "
+                    f"(started {elapsed:.0f}s ago, threshold={settings.sync_stale_threshold_seconds}s). "
+                    f"Lock will expire soon."
+                )
+        else:
+            # No start time recorded - likely from previous deployment/crash
+            # Treat as stale since we can't track it
+            is_stale = True
+            logger.warning(
+                f"Orphaned sync lock detected for user {current_user.id} "
+                f"(no start time recorded). Lock will expire soon."
+            )
+
+        if is_stale:
+            # Mark as not running for UI - the lock TTL will handle cleanup
+            is_running = False
+            # Set error message
+            if current_user.id not in _sync_status:
+                _sync_status[current_user.id] = {}
+            _sync_status[current_user.id]["error"] = "동기화 시간 초과 - 다시 시도해주세요"
+
+    # Only show error after sync completes
+    last_error = user_status.get("error") if not is_running else None
 
     return IngestStatusResponse(
         connected=is_connected,
