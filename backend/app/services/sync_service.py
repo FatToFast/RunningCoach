@@ -37,6 +37,9 @@ settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
+# Garmin API timeout in seconds (prevents infinite hangs)
+GARMIN_API_TIMEOUT = 60
+
 
 class SyncResult:
     """Result of a sync operation."""
@@ -98,19 +101,47 @@ class GarminSyncService:
         self.fit_storage_path.mkdir(parents=True, exist_ok=True)
         self.metrics = get_metrics_backend()
 
+    async def _run_with_timeout(
+        self,
+        func: Callable,
+        timeout: float = GARMIN_API_TIMEOUT,
+        operation_name: str = "Garmin API",
+    ) -> Any:
+        """Run a synchronous function in executor with timeout.
+
+        Args:
+            func: Synchronous callable to execute.
+            timeout: Timeout in seconds (default: 60s).
+            operation_name: Name for logging.
+
+        Returns:
+            Result of the function.
+
+        Raises:
+            asyncio.TimeoutError: If operation exceeds timeout.
+        """
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, func),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"{operation_name} timed out after {timeout}s for user {self.user.id}")
+            raise
+
     async def sync_user_profile(self) -> bool:
         """Sync user profile data including max HR settings from Garmin.
 
         Returns:
             True if max HR was updated, False otherwise.
         """
-        import asyncio
-
         try:
-            loop = asyncio.get_event_loop()
-            profile_data = await loop.run_in_executor(
-                None,
+            profile_data = await self._run_with_timeout(
                 self.adapter.get_user_profile,
+                operation_name="get_user_profile",
             )
 
             if profile_data:
@@ -299,13 +330,10 @@ class GarminSyncService:
         end_date: date,
     ) -> None:
         """Sync activities from Garmin."""
-        import asyncio
-        loop = asyncio.get_event_loop()
-
-        # Run synchronous adapter method in thread pool
-        activities_data = await loop.run_in_executor(
-            None,
+        # Get activities list with timeout
+        activities_data = await self._run_with_timeout(
             lambda: self.adapter.get_activities(start_date, end_date),
+            operation_name="get_activities",
         )
 
         if not activities_data:
@@ -324,9 +352,9 @@ class GarminSyncService:
             # Fetch activity details and store as raw event for data preservation
             details = None
             try:
-                details = await loop.run_in_executor(
-                    None,
+                details = await self._run_with_timeout(
                     lambda act_id=garmin_id: self.adapter.get_activity_details(act_id),
+                    operation_name=f"get_activity_details({garmin_id})",
                 )
                 # Store activity details as raw event (for data recovery/reprocessing)
                 if details:
@@ -1048,21 +1076,19 @@ class GarminSyncService:
         if settings.delete_fit_after_parse is True. The parsed data (ActivitySample,
         ActivityLap, ActivityMetric) remains in the database.
         """
-        import asyncio
         import os
 
         try:
-            loop = asyncio.get_event_loop()
-
             # Create user directory
             user_dir = self.fit_storage_path / str(self.user.id)
             user_dir.mkdir(exist_ok=True)
 
-            # Run synchronous download in thread pool
+            # Download FIT file with timeout (may be large, use longer timeout)
             # download_fit_file returns (bytes, file_path, file_hash)
-            fit_data, file_path, file_hash = await loop.run_in_executor(
-                None,
+            fit_data, file_path, file_hash = await self._run_with_timeout(
                 lambda: self.adapter.download_fit_file(garmin_id, str(user_dir)),
+                timeout=120,  # 2 minutes for large FIT files
+                operation_name=f"download_fit_file({garmin_id})",
             )
 
             if not fit_data:
@@ -1098,9 +1124,10 @@ class GarminSyncService:
             parse_success = False
             sample_count = 0
             try:
-                parsed_data = await loop.run_in_executor(
-                    None,
+                parsed_data = await self._run_with_timeout(
                     lambda: self.adapter.parse_fit_file(fit_data),
+                    timeout=90,  # 90 seconds for parsing large files
+                    operation_name=f"parse_fit_file({garmin_id})",
                 )
                 await self._store_fit_data(activity, parsed_data)
                 sample_count = len(parsed_data.get("records", []))

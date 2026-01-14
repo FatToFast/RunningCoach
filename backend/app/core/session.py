@@ -8,6 +8,7 @@ Provides graceful fallback when Redis is unavailable:
 import json
 import logging
 import secrets
+import time
 from datetime import datetime, UTC
 from typing import Any, Optional
 
@@ -22,6 +23,10 @@ settings = get_settings()
 # Redis client (initialized lazily)
 _redis_client: Optional[redis.Redis] = None
 _redis_available: Optional[bool] = None  # Cache availability check
+
+# In-memory lock fallback (for single-worker deployments without Redis)
+# Format: {lock_name: (owner, expiry_time)}
+_in_memory_locks: dict[str, tuple[str, float]] = {}
 
 
 async def get_redis() -> Optional[redis.Redis]:
@@ -202,22 +207,39 @@ async def acquire_lock(
 ) -> Optional[str]:
     """Acquire a distributed lock using Redis SETNX.
 
+    Falls back to in-memory lock when Redis is unavailable (single-worker only).
+
     Args:
         lock_name: Name of the lock (e.g., "sync:user:123").
         ttl_seconds: Lock expiration time in seconds (default: 1 hour).
         owner: Optional owner identifier. If None, generates a random one.
 
     Returns:
-        Lock owner token if acquired, None if lock already held or Redis unavailable.
+        Lock owner token if acquired, None if lock already held.
     """
+    owner = owner or secrets.token_urlsafe(16)
     redis_client = await get_redis()
+
     if redis_client is None:
-        # Redis unavailable - allow operation but log warning
-        logger.warning(f"Lock disabled (no Redis): {lock_name}")
-        return secrets.token_urlsafe(16)  # Return fake owner to allow operation
+        # Fallback to in-memory lock (single-worker only)
+        now = time.time()
+        existing = _in_memory_locks.get(lock_name)
+
+        if existing:
+            existing_owner, expiry = existing
+            if now < expiry:
+                # Lock still held
+                logger.debug(f"In-memory lock already held: {lock_name}")
+                return None
+            # Lock expired, remove it
+            del _in_memory_locks[lock_name]
+
+        # Acquire in-memory lock
+        _in_memory_locks[lock_name] = (owner, now + ttl_seconds)
+        logger.info(f"In-memory lock acquired: {lock_name} (owner={owner[:8]}...)")
+        return owner
 
     lock_key = f"lock:{lock_name}"
-    owner = owner or secrets.token_urlsafe(16)
 
     # SETNX with expiration
     acquired = await redis_client.set(lock_key, owner, nx=True, ex=ttl_seconds)
@@ -243,8 +265,15 @@ async def release_lock(lock_name: str, owner: str) -> bool:
         True if lock was released, False if not found or owned by another.
     """
     redis_client = await get_redis()
+
     if redis_client is None:
-        return True  # No-op when Redis unavailable
+        # Release in-memory lock
+        existing = _in_memory_locks.get(lock_name)
+        if existing and existing[0] == owner:
+            del _in_memory_locks[lock_name]
+            logger.info(f"In-memory lock released: {lock_name}")
+            return True
+        return False
 
     lock_key = f"lock:{lock_name}"
 
@@ -274,11 +303,20 @@ async def check_lock(lock_name: str) -> bool:
         lock_name: Name of the lock.
 
     Returns:
-        True if lock is held, False otherwise (including Redis unavailable).
+        True if lock is held, False otherwise.
     """
     redis_client = await get_redis()
+
     if redis_client is None:
-        return False  # No lock when Redis unavailable
+        # Check in-memory lock
+        existing = _in_memory_locks.get(lock_name)
+        if existing:
+            _, expiry = existing
+            if time.time() < expiry:
+                return True
+            # Expired, clean up
+            del _in_memory_locks[lock_name]
+        return False
 
     lock_key = f"lock:{lock_name}"
     return await redis_client.exists(lock_key) > 0
@@ -298,8 +336,15 @@ async def extend_lock(lock_name: str, owner: str, ttl_seconds: int) -> bool:
         True if lock was extended, False if not found or owned by another.
     """
     redis_client = await get_redis()
+
     if redis_client is None:
-        return True  # No-op when Redis unavailable
+        # Extend in-memory lock
+        existing = _in_memory_locks.get(lock_name)
+        if existing and existing[0] == owner:
+            _in_memory_locks[lock_name] = (owner, time.time() + ttl_seconds)
+            logger.debug(f"In-memory lock extended: {lock_name} (new TTL={ttl_seconds}s)")
+            return True
+        return False
 
     lock_key = f"lock:{lock_name}"
 

@@ -30,6 +30,13 @@ router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# In-memory sync status (per user)
+# Format: {user_id: {"error": str|None, "started_at": datetime|None}}
+_sync_status: dict[int, dict[str, Any]] = {}
+
+# Default endpoints for quick sync (activities only for faster sync)
+DEFAULT_SYNC_ENDPOINTS = ["activities"]
+
 
 def _sync_lock_name(user_id: int) -> str:
     """Get lock name for user sync."""
@@ -138,6 +145,8 @@ class IngestStatusResponse(BaseModel):
     connected: bool
     running: bool
     sync_states: list[SyncStateResponse]
+    last_error: str | None = None
+    last_sync_started_at: datetime | None = None
 
 
 class SyncHistoryItem(BaseModel):
@@ -185,6 +194,12 @@ async def run_sync_background(
     """
     lock_name = _sync_lock_name(user_id)
 
+    # Initialize sync status
+    _sync_status[user_id] = {
+        "error": None,
+        "started_at": datetime.now(timezone.utc),
+    }
+
     # Background task to periodically extend lock during long syncs
     async def extend_lock_periodically():
         """Extend lock every N minutes to prevent expiration during long syncs."""
@@ -214,18 +229,21 @@ async def run_sync_background(
             user = result.scalar_one_or_none()
             if not user:
                 logger.error(f"User {user_id} not found")
+                _sync_status[user_id]["error"] = "User not found"
                 return
 
             # Create sync service
             sync_service = await create_sync_service(session, user)
             if not sync_service:
                 logger.error(f"Could not create sync service for user {user_id}")
+                _sync_status[user_id]["error"] = "Garmin 연결이 필요합니다"
                 return
 
             # Sync user profile once per run (max HR, raw snapshot)
             await sync_service.sync_user_profile()
 
             # Run sync for each endpoint
+            errors = []
             for endpoint in endpoints:
                 try:
                     result = await sync_service.sync_endpoint(
@@ -242,6 +260,11 @@ async def run_sync_background(
                     )
                 except Exception as e:
                     logger.exception(f"Error syncing {endpoint} for user {user_id}")
+                    errors.append(f"{endpoint}: {str(e)[:50]}")
+
+            # Store error summary if any failures
+            if errors:
+                _sync_status[user_id]["error"] = "; ".join(errors[:3])  # Max 3 errors
 
             try:
                 await ensure_ai_training_snapshot(session, user)
@@ -254,6 +277,7 @@ async def run_sync_background(
 
     except Exception as e:
         logger.exception(f"Background sync error for user {user_id}")
+        _sync_status[user_id]["error"] = str(e)[:100]
     finally:
         # Cancel lock extension task
         extension_task.cancel()
@@ -325,7 +349,9 @@ async def run_ingest(
                 )
             endpoints = request.endpoints
         else:
-            endpoints = all_endpoints
+            # Default: sync only activities for faster sync
+            # Use full_backfill=True or explicit endpoints list for full sync
+            endpoints = DEFAULT_SYNC_ENDPOINTS
 
         # Validate endpoints
         invalid = set(endpoints) - set(all_endpoints)
@@ -503,6 +529,11 @@ async def get_ingest_status(
     # Check if running (via distributed lock)
     is_running = await check_lock(_sync_lock_name(current_user.id))
 
+    # Get last error and started_at from in-memory status
+    user_status = _sync_status.get(current_user.id, {})
+    last_error = user_status.get("error") if not is_running else None  # Only show error after sync completes
+    last_sync_started_at = user_status.get("started_at")
+
     return IngestStatusResponse(
         connected=is_connected,
         running=is_running,
@@ -515,6 +546,8 @@ async def get_ingest_status(
             )
             for s in states
         ],
+        last_error=last_error,
+        last_sync_started_at=last_sync_started_at,
     )
 
 

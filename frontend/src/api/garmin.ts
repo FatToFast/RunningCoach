@@ -29,6 +29,8 @@ export interface IngestStatusResponse {
   connected: boolean;
   running: boolean;
   sync_states: SyncStateResponse[];
+  last_error?: string | null;
+  last_sync_started_at?: string | null;
 }
 
 export interface SyncHistoryItem {

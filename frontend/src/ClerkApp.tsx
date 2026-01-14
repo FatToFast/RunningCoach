@@ -10,6 +10,7 @@ import { BrowserRouter, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ClerkProvider, SignIn, SignUp, useAuth } from '@clerk/clerk-react';
 import { AuthProvider } from './contexts/AuthContext';
+import { ToastProvider } from './contexts/ToastContext';
 import { CoreRoutes } from './App';
 import { setTokenGetter } from './api/client';
 
@@ -117,10 +118,12 @@ export default function ClerkApp({ queryClient }: ClerkAppProps) {
     >
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <TokenSetup />
-          <BrowserRouter>
-            <CoreRoutes clerkRoutes={clerkRoutes} />
-          </BrowserRouter>
+          <ToastProvider>
+            <TokenSetup />
+            <BrowserRouter>
+              <CoreRoutes clerkRoutes={clerkRoutes} />
+            </BrowserRouter>
+          </ToastProvider>
         </AuthProvider>
       </QueryClientProvider>
     </ClerkProvider>

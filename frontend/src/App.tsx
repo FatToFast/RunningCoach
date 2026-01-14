@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from './components/layout/Layout';
 import { Login } from './pages/Login';
 import { AuthProvider, CLERK_ENABLED } from './contexts/AuthContext';
+import { ToastProvider } from './contexts/ToastContext';
 
 // Re-export for use in other components
 export { CLERK_ENABLED };
@@ -122,9 +123,11 @@ function SessionApp() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <BrowserRouter>
-          <CoreRoutes />
-        </BrowserRouter>
+        <ToastProvider>
+          <BrowserRouter>
+            <CoreRoutes />
+          </BrowserRouter>
+        </ToastProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

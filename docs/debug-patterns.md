@@ -2956,4 +2956,175 @@ if not await verify_password_async(request.password, user.password_hash):
 
 ---
 
+### 76. Redis 연결 불가 시 500 에러
+
+**문제**: Redis 서버가 없는 환경(Railway 무료 티어 등)에서 세션/락 함수 호출 시 ConnectionError 발생하여 500 에러
+
+```python
+# ❌ 잘못된 패턴 - Redis 연결 실패 미처리
+async def get_redis() -> redis.Redis:
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.from_url(settings.redis_url)
+    return _redis_client  # 연결 실패 시 예외!
+
+async def acquire_lock(lock_name: str) -> Optional[str]:
+    redis_client = await get_redis()  # 연결 실패 시 예외!
+    acquired = await redis_client.set(lock_key, owner, nx=True, ex=ttl)
+
+# ✅ 올바른 패턴 - graceful fallback
+_redis_available: Optional[bool] = None  # 연결 상태 캐시
+
+async def get_redis() -> Optional[redis.Redis]:
+    global _redis_client, _redis_available
+    if _redis_available is False:
+        return None  # 이미 연결 불가 확인됨
+    if _redis_client is None:
+        _redis_client = redis.from_url(settings.redis_url)
+    if _redis_available is None:
+        try:
+            await _redis_client.ping()
+            _redis_available = True
+        except (ConnectionError, RedisError, OSError):
+            _redis_available = False
+            return None
+    return _redis_client
+
+async def acquire_lock(lock_name: str) -> Optional[str]:
+    redis_client = await get_redis()
+    if redis_client is None:
+        logger.warning(f"Lock disabled (no Redis): {lock_name}")
+        return secrets.token_urlsafe(16)  # fake owner로 동작 허용
+    # ... 정상 락 로직
+```
+
+**적용 위치**: `backend/app/core/session.py`
+**날짜**: 2026-01-14
+
+---
+
+### 77. FIT 파일 파싱 실패 시 재시도 불가
+
+**문제**: FIT 파일 다운로드 직후 `has_fit_file=True` 설정하면, 파싱 실패해도 재시도되지 않음
+
+```python
+# ❌ 잘못된 패턴 - 다운로드 직후 플래그 설정
+fit_bytes = await self._download_fit_file(...)
+activity.has_fit_file = True  # 파싱 전에 설정!
+try:
+    parsed_data = await loop.run_in_executor(...)
+    await self._store_fit_data(activity, parsed_data)
+except Exception as parse_error:
+    logger.warning(f"FIT parse error: {parse_error}")
+    # has_fit_file은 여전히 True → 다음 동기화에서 스킵됨!
+
+# ✅ 올바른 패턴 - 파싱 성공 후에만 플래그 설정
+fit_bytes = await self._download_fit_file(...)
+try:
+    parsed_data = await loop.run_in_executor(...)
+    await self._store_fit_data(activity, parsed_data)
+    activity.has_fit_file = True  # 성공 후에만 설정
+except Exception as parse_error:
+    logger.warning(f"FIT parse error: {parse_error}")
+    # has_fit_file=False 유지 → 다음 동기화에서 재시도
+```
+
+**적용 위치**: `backend/app/services/sync_service.py` (1070-1090줄)
+**날짜**: 2026-01-14
+
+---
+
+### 78. 동기화 스피너 무한 회전
+
+**문제**: 동기화 버튼 클릭 후 스피너가 영원히 돌며 멈춤. 원인: (1) Redis 불가 시 in-memory lock fallback 없음, (2) 프론트엔드 폴링 타임아웃 없음, (3) Garmin API 타임아웃 없음.
+
+```typescript
+// ❌ 잘못된 패턴 - 무한 폴링
+refetchInterval: (query) => {
+  const data = query.state.data;
+  if (!data?.running) return false;
+  return 3000;  // running=true인 동안 영원히 폴링
+}
+
+// ✅ 올바른 패턴 - 타임아웃 + 콜백
+const MAX_POLL_TIME_MS = 5 * 60 * 1000;  // 5분
+const pollStartTime = useRef<number | null>(null);
+
+refetchInterval: (query) => {
+  const data = query.state.data;
+  if (!data?.running) {
+    // 동기화 완료 시 콜백 호출
+    if (wasRunning.current) {
+      data?.last_error
+        ? onSyncError(data.last_error)
+        : onSyncComplete();
+    }
+    return false;
+  }
+
+  // 타임아웃 체크
+  const elapsed = Date.now() - (pollStartTime.current || Date.now());
+  if (elapsed > MAX_POLL_TIME_MS) {
+    onSyncTimeout();
+    return false;
+  }
+  return 3000;
+}
+```
+
+```python
+# ❌ 잘못된 패턴 - 타임아웃 없는 API 호출
+loop = asyncio.get_event_loop()
+data = await loop.run_in_executor(None, adapter.get_activities)
+
+# ✅ 올바른 패턴 - 타임아웃 래퍼
+async def _run_with_timeout(self, func, timeout=60, operation_name="API"):
+    return await asyncio.wait_for(
+        asyncio.get_event_loop().run_in_executor(None, func),
+        timeout=timeout,
+    )
+
+# 사용
+data = await self._run_with_timeout(
+    lambda: adapter.get_activities(start, end),
+    operation_name="get_activities",
+)
+```
+
+**적용 위치**:
+- `frontend/src/hooks/useGarminSync.ts`: 폴링 타임아웃 + 콜백
+- `frontend/src/contexts/ToastContext.tsx`: 토스트 알림 시스템
+- `frontend/src/components/layout/Header.tsx`: 동기화 콜백 연결
+- `backend/app/services/sync_service.py`: API 타임아웃 래퍼 (`_run_with_timeout`)
+- `backend/app/api/v1/endpoints/ingest.py`: 에러 상태 반환 (`last_error`, `last_sync_started_at`)
+
+**날짜**: 2026-01-14
+
+---
+
+### 79. 기본 동기화가 15개 엔드포인트 전체 실행
+
+**문제**: 헤더의 동기화 버튼이 15개 전체 엔드포인트(activities, sleep, hr, hrv, stress 등)를 동기화하여 느림.
+
+```python
+# ❌ 잘못된 패턴 - 요청 없으면 전체 동기화
+if request and request.endpoints is not None:
+    endpoints = request.endpoints
+else:
+    endpoints = all_endpoints  # 15개 전부!
+
+# ✅ 올바른 패턴 - 기본값은 빠른 동기화
+DEFAULT_SYNC_ENDPOINTS = ["activities"]
+
+if request and request.endpoints is not None:
+    endpoints = request.endpoints
+else:
+    endpoints = DEFAULT_SYNC_ENDPOINTS  # activities만
+```
+
+**적용 위치**: `backend/app/api/v1/endpoints/ingest.py`
+**날짜**: 2026-01-14
+
+---
+
 *마지막 업데이트: 2026-01-14*

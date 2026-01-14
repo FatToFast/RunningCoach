@@ -1,9 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Settings, User as UserIcon, RefreshCw, Menu, LogOut, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import { useLogout } from '../../hooks/useAuth';
-import { useGarminSyncStatus, useGarminSync } from '../../hooks/useGarminSync';
+import { useGarminSyncStatus, useGarminSync, type SyncStatusCallbacks } from '../../hooks/useGarminSync';
+import { useToast } from '../../contexts/ToastContext';
 import type { User } from '../../api/auth';
 
 export interface HeaderProps {
@@ -16,9 +17,17 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const logout = useLogout();
+  const toast = useToast();
+
+  // Sync status callbacks for toast notifications
+  const syncCallbacks = useMemo<SyncStatusCallbacks>(() => ({
+    onSyncComplete: () => toast.success('동기화 완료'),
+    onSyncError: (error) => toast.error(`동기화 실패: ${error}`),
+    onSyncTimeout: () => toast.warning('동기화 시간 초과 - 설정에서 다시 시도해주세요'),
+  }), [toast]);
 
   // Garmin sync hooks
-  const { data: garminStatus } = useGarminSyncStatus();
+  const { data: garminStatus } = useGarminSyncStatus(undefined, syncCallbacks);
   const syncMutation = useGarminSync();
 
   const isConnected = garminStatus?.connected ?? false;

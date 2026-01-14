@@ -5,6 +5,26 @@
 ### Fixed
 - `backend/railway.json`: `startCommand`를 `sh -c`로 감싸 `${PORT:-8000}`가 확장되도록 수정
 - `backend/pyproject.toml`: `readme`를 인라인 텍스트로 변경해 Nixpacks 메타데이터 생성 실패 해결
+- `backend/app/core/session.py`: Redis 연결 불가 시 graceful fallback 구현
+  - `get_redis()` 함수가 연결 실패 시 None 반환
+  - 모든 세션/락 함수가 Redis 없이도 안전하게 동작
+  - 락 함수는 fake owner 반환하여 동작 허용 (분산 락 비활성화)
+- `backend/app/api/v1/endpoints/strava.py`: Redis 불가 시 in-memory OAuth state 저장 fallback 추가
+- `backend/requirements.txt`: `beautifulsoup4>=4.12.0` 의존성 추가 (누락된 bs4 모듈)
+- `backend/app/services/sync_service.py`: FIT 파싱 `has_fit_file` 플래그 수정
+  - 이전: 다운로드 직후 `True` 설정 (파싱 실패해도 재시도 안됨)
+  - 현재: 파싱 성공 후에만 `True` 설정 (실패 시 다음 동기화에서 재시도)
+
+### Changed
+- `frontend/src/contexts/AuthContext.tsx`: Clerk 미활성화 시 Clerk hooks 호출 방지
+- `frontend/src/contexts/ClerkAuthProvider.tsx`: Clerk 전용 AuthProvider 분리
+- `frontend/src/pages/Login.tsx`: Clerk 모드에서 Clerk sign-in 페이지로 리다이렉트
+- `backend/app/core/hybrid_auth.py`: 세션 기반 인증 fallback 로직 개선
+- `backend/app/core/config.py`: Clerk publishable key 파싱 시 빈 값 처리 추가
+
+### 관련 패턴
+- [debug-patterns.md #76](debug-patterns.md#76-redis-연결-불가-시-500-에러): Redis graceful fallback
+- [debug-patterns.md #77](debug-patterns.md#77-fit-파일-파싱-실패-시-재시도-불가): FIT 파싱 재시도 로직
 
 ---
 
