@@ -18,6 +18,7 @@ fitparse>=1.2.0
 
 # HTTP client
 httpx>=0.26.0
+beautifulsoup4>=4.12.0
 
 # Session & Task queue
 redis>=5.0.1
