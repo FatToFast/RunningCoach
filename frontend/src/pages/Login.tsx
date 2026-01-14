@@ -1,11 +1,19 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Lock, Mail, AlertCircle } from 'lucide-react';
 import { useLogin } from '../hooks/useAuth';
+import { CLERK_ENABLED } from '../contexts/AuthContext';
 
 export function Login() {
   const navigate = useNavigate();
   const login = useLogin();
+
+  // Redirect to Clerk sign-in if Clerk is enabled
+  useEffect(() => {
+    if (CLERK_ENABLED) {
+      navigate('/sign-in', { replace: true });
+    }
+  }, [navigate]);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

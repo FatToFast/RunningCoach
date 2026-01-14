@@ -4,6 +4,7 @@ import { Settings, User as UserIcon, RefreshCw, Menu, LogOut, Loader2 } from 'lu
 import clsx from 'clsx';
 import { useLogout } from '../../hooks/useAuth';
 import { useGarminSyncStatus, useGarminSync } from '../../hooks/useGarminSync';
+import { CLERK_ENABLED } from '../../contexts/AuthContext';
 import type { User } from '../../api/auth';
 
 export interface HeaderProps {
@@ -58,7 +59,8 @@ export function Header({ onMenuToggle, user }: HeaderProps) {
   const handleLogout = async () => {
     try {
       await logout.mutateAsync();
-      navigate('/login');
+      const loginPath = CLERK_ENABLED ? '/sign-in' : '/login';
+      navigate(loginPath);
     } catch (err) {
       console.error('Logout failed:', err);
     }
