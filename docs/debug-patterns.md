@@ -3127,4 +3127,80 @@ else:
 
 ---
 
+### 80. flush=False 후 raw_event.id 사용 시 None
+
+**문제**: SQLAlchemy에서 `session.add()` 후 `flush()` 없이 `object.id`를 사용하면 None. 외래키 연결 실패.
+
+```python
+# ❌ 잘못된 패턴 - flush 전에 id 사용
+raw_event = await self._store_raw_event(endpoint, data, flush=False)
+await self._store_health_metric(metric_data, raw_event_id=raw_event.id)  # None!
+
+# ✅ 올바른 패턴 - id 필요시 flush 필수
+raw_event = await self._store_raw_event(endpoint, data, flush=True)
+await self._store_health_metric(metric_data, raw_event_id=raw_event.id)  # 정상
+```
+
+**근본 원인**: SQLAlchemy는 DB INSERT 후에만 auto-increment ID 할당. `flush()`는 INSERT 실행.
+
+**적용 위치**: `backend/app/services/sync_service.py` (`_sync_daily_health_metric`)
+**날짜**: 2026-01-14
+
+---
+
+### 81. 일자별 동기화 실패가 전체 성공으로 처리됨
+
+**문제**: 개별 날짜 동기화 실패 시 로그만 남기고 `result.success=True` 설정. 실패한 날짜가 safety window 밖이면 재시도 안 됨.
+
+```python
+# ❌ 잘못된 패턴 - 실패 무시
+except Exception as e:
+    logger.warning(f"Failed to fetch for {current_date}: {e}")
+    # 실패 추적 없음 → result.success=True
+
+# ✅ 올바른 패턴 - 실패 추적
+except Exception as e:
+    logger.warning(f"Failed to fetch for {current_date}: {e}")
+    result.items_failed += 1
+    result.failed_dates.append(str(current_date))
+
+# SyncResult에 추가
+class SyncResult:
+    items_failed: int = 0
+    failed_dates: list[str] = []
+
+    @property
+    def partial_success(self) -> bool:
+        return self.items_created > 0 and self.items_failed > 0
+```
+
+**적용 위치**: `backend/app/services/sync_service.py` (SyncResult, _sync_sleep, _sync_heart_rate, _sync_daily_*)
+**날짜**: 2026-01-14
+
+---
+
+### 82. 연속 빈 응답 조기 종료로 장기 공백 데이터 누락
+
+**문제**: 부상/휴식 등 장기 공백이 있는 사용자의 과거 데이터가 조기 종료로 영구 누락.
+
+```python
+# ❌ 잘못된 패턴 - 고정 임계값
+max_consecutive_empty = settings.garmin_max_consecutive_empty  # 30일
+
+# ✅ 올바른 패턴 - 동기화 범위에 따라 동적 조정
+total_days = (end_date - start_date).days + 1
+base_max_empty = settings.garmin_max_consecutive_empty  # 30
+
+if total_days > 365:
+    # 1년 이상 백필: 90일 공백 허용 (3개월 부상/휴식)
+    max_consecutive_empty = max(base_max_empty, 90)
+else:
+    max_consecutive_empty = base_max_empty
+```
+
+**적용 위치**: `backend/app/services/sync_service.py` (`_sync_daily_raw`, `_sync_daily_health_metric`)
+**날짜**: 2026-01-14
+
+---
+
 *마지막 업데이트: 2026-01-14*

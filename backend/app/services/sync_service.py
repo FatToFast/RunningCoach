@@ -50,7 +50,9 @@ class SyncResult:
         self.items_fetched = 0
         self.items_created = 0
         self.items_updated = 0
+        self.items_failed = 0  # Count of failed items/dates
         self.error: Optional[str] = None
+        self.failed_dates: list[str] = []  # Track failed dates for retry
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,8 +61,15 @@ class SyncResult:
             "items_fetched": self.items_fetched,
             "items_created": self.items_created,
             "items_updated": self.items_updated,
+            "items_failed": self.items_failed,
             "error": self.error,
+            "failed_dates": self.failed_dates,
         }
+
+    @property
+    def partial_success(self) -> bool:
+        """True if some items succeeded but some failed."""
+        return self.items_created > 0 and self.items_failed > 0
 
 
 class GarminSyncService:
@@ -285,9 +294,19 @@ class GarminSyncService:
             else:
                 raise ValueError(f"Unknown endpoint: {endpoint}")
 
-            # Update sync state
-            await self._update_sync_state(endpoint, success=True)
-            result.success = True
+            # Update sync state - partial success if some items failed
+            if result.items_failed > 0:
+                logger.warning(
+                    f"Partial sync for {endpoint}: {result.items_created} succeeded, "
+                    f"{result.items_failed} failed. Failed dates: {result.failed_dates[:5]}"
+                )
+                # Still mark as success if most items succeeded, but log the partial failure
+                result.success = result.items_created > 0
+                result.error = f"{result.items_failed} items failed"
+            else:
+                result.success = True
+
+            await self._update_sync_state(endpoint, success=result.success)
 
         except Exception as e:
             logger.exception(f"Error syncing {endpoint}")
@@ -460,7 +479,13 @@ class GarminSyncService:
         dates_to_sync = [end_date - timedelta(days=i) for i in range(total_days)]
 
         # Early termination settings
-        max_consecutive_empty = settings.garmin_max_consecutive_empty  # default: 30
+        # For long backfills (>1 year), increase threshold to handle long gaps (injury, etc.)
+        base_max_empty = settings.garmin_max_consecutive_empty  # default: 30
+        if total_days > 365:
+            # For full backfills, allow up to 90 days of gaps (3 months injury/rest)
+            max_consecutive_empty = max(base_max_empty, 90)
+        else:
+            max_consecutive_empty = base_max_empty
         consecutive_empty = 0
         batch_size = 50  # Commit every 50 records
 
@@ -594,7 +619,13 @@ class GarminSyncService:
         total_days = (end_date - start_date).days + 1
         dates_to_sync = [end_date - timedelta(days=i) for i in range(total_days)]
 
-        max_consecutive_empty = settings.garmin_max_consecutive_empty
+        # Early termination settings
+        # For long backfills (>1 year), increase threshold to handle long gaps (injury, etc.)
+        base_max_empty = settings.garmin_max_consecutive_empty  # default: 30
+        if total_days > 365:
+            max_consecutive_empty = max(base_max_empty, 90)
+        else:
+            max_consecutive_empty = base_max_empty
         consecutive_empty = 0
         batch_size = 50
         items_in_batch = 0
@@ -607,7 +638,8 @@ class GarminSyncService:
                 )
                 if data:
                     result.items_fetched += 1
-                    raw_event = await self._store_raw_event(endpoint, data, flush=False)
+                    # Must flush to get raw_event.id for linking to health metrics
+                    raw_event = await self._store_raw_event(endpoint, data, flush=True)
                     result.items_created += 1
                     consecutive_empty = 0
                     items_in_batch += 1
@@ -618,7 +650,7 @@ class GarminSyncService:
                         for metric_data in metrics:
                             await self._store_health_metric(
                                 metric_data,
-                                raw_event_id=raw_event.id if raw_event else None,
+                                raw_event_id=raw_event.id,  # Now guaranteed to have id
                             )
                     except Exception as e:
                         logger.warning(f"Failed to extract {endpoint} metrics for {current_date}: {e}")
@@ -631,6 +663,8 @@ class GarminSyncService:
 
             except Exception as e:
                 logger.warning(f"Failed to fetch {endpoint} for {current_date}: {e}")
+                result.items_failed += 1
+                result.failed_dates.append(str(current_date))
                 consecutive_empty += 1
 
             if consecutive_empty >= max_consecutive_empty:
@@ -1523,6 +1557,8 @@ class GarminSyncService:
                     result.items_created += 1
             except Exception as e:
                 logger.warning(f"Failed to fetch sleep for {current_date}: {e}")
+                result.items_failed += 1
+                result.failed_dates.append(str(current_date))
 
             current_date += timedelta(days=1)
 
@@ -1593,6 +1629,8 @@ class GarminSyncService:
                     result.items_created += 1
             except Exception as e:
                 logger.warning(f"Failed to fetch heart rate for {current_date}: {e}")
+                result.items_failed += 1
+                result.failed_dates.append(str(current_date))
 
             current_date += timedelta(days=1)
 
