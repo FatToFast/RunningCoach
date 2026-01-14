@@ -51,8 +51,8 @@ async def get_current_user_hybrid(
     Raises:
         HTTPException: If no valid authentication found
     """
-    # Try Clerk JWT first if Bearer token present
-    if credentials and credentials.credentials:
+    # Try Clerk JWT first if Bearer token present AND Clerk is enabled
+    if credentials and credentials.credentials and settings.clerk_enabled:
         try:
             from app.core.clerk_auth import ClerkAuth
 

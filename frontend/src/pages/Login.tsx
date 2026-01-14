@@ -1,15 +1,20 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { Lock, Mail, AlertCircle } from 'lucide-react';
 import { useLogin } from '../hooks/useAuth';
+import { CLERK_ENABLED } from '../contexts/AuthContext';
 
 export function Login() {
   const navigate = useNavigate();
   const login = useLogin();
-
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // In Clerk mode, redirect to Clerk sign-in page
+  if (CLERK_ENABLED) {
+    return <Navigate to="/sign-in" replace />;
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

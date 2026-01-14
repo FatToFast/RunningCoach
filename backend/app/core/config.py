@@ -193,26 +193,41 @@ class Settings(BaseSettings):
         """Extract Clerk frontend API domain from publishable key.
 
         Clerk publishable key format: pk_test_XXX or pk_live_XXX
-        where XXX is base64-encoded "domain$" (domain with trailing $).
+        where XXX is base64url-encoded "domain$" (domain with trailing $).
         Example: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k -> clerk.example.com
+
+        Note: The encoded part may contain '_' (base64url uses _ instead of /).
+        We extract the prefix (pk_test_ or pk_live_) and decode the rest.
         """
         if not self.clerk_publishable_key:
             return None
         try:
             import base64
-            parts = self.clerk_publishable_key.split('_')
-            if len(parts) >= 3:
-                encoded_domain = parts[2]
-                # Add padding if needed for base64
-                padding = 4 - len(encoded_domain) % 4
-                if padding != 4:
-                    encoded_domain += '=' * padding
-                decoded = base64.b64decode(encoded_domain).decode('utf-8')
-                # Remove trailing $ marker
-                return decoded.rstrip('$')
-        except Exception:
-            pass
-        return None
+
+            key = self.clerk_publishable_key
+            # Extract the base64url-encoded portion after pk_test_ or pk_live_
+            if key.startswith('pk_test_'):
+                encoded_domain = key[8:]  # len('pk_test_') == 8
+            elif key.startswith('pk_live_'):
+                encoded_domain = key[8:]  # len('pk_live_') == 8
+            else:
+                return None
+
+            # Convert base64url to standard base64 (- -> +, _ -> /)
+            encoded_domain = encoded_domain.replace('-', '+').replace('_', '/')
+
+            # Add padding if needed for base64
+            padding = 4 - len(encoded_domain) % 4
+            if padding != 4:
+                encoded_domain += '=' * padding
+
+            decoded = base64.b64decode(encoded_domain).decode('utf-8')
+            # Remove trailing $ marker
+            return decoded.rstrip('$')
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to parse Clerk publishable key: {e}")
+            return None
 
     @property
     def clerk_jwks_url(self) -> Optional[str]:

@@ -11,7 +11,7 @@
  * - "hybrid": Try Clerk first, fall back to session
  */
 
-import { createContext, useContext, useEffect, useState, useCallback, useMemo, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useMemo, lazy, Suspense, type ReactNode } from 'react';
 import { apiClient } from '../api/client';
 
 // Auth mode from environment
@@ -45,7 +45,8 @@ interface AuthContextType {
   getToken: () => Promise<string | null>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+// Export context for ClerkAuthProvider to use
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 interface AuthProviderProps {
   children: ReactNode;
@@ -139,132 +140,23 @@ function SessionAuthProvider({ children }: AuthProviderProps) {
   );
 }
 
-/**
- * Clerk AuthProvider (uses Clerk hooks - must be inside ClerkProvider)
- */
-function ClerkAuthProvider({ children }: AuthProviderProps) {
-  // Dynamic import to avoid issues when Clerk is not available
-  // These hooks are safe to call because this component is only rendered inside ClerkProvider
-  const { useAuth: useClerkAuth, useUser: useClerkUser } = require('@clerk/clerk-react');
+// Lazy load ClerkAuthProvider only when needed
+const LazyClerkAuthProvider = lazy(() =>
+  import('./ClerkAuthProvider').then(module => ({
+    default: ({ children }: { children: ReactNode }) => (
+      <module.ClerkAuthProvider AuthContext={AuthContext}>
+        {children}
+      </module.ClerkAuthProvider>
+    )
+  }))
+);
 
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  const clerkAuth = useClerkAuth();
-  const clerkUser = useClerkUser();
-
-  console.log('[Auth] ClerkAuthProvider state:', {
-    isLoaded: clerkAuth.isLoaded,
-    isSignedIn: clerkAuth.isSignedIn,
-    userLoaded: clerkUser.isLoaded,
-    hasUser: !!clerkUser.user
-  });
-
-  // Get JWT token for API calls
-  const getToken = useCallback(async (): Promise<string | null> => {
-    if (clerkAuth.isSignedIn) {
-      try {
-        const token = await clerkAuth.getToken();
-        return token;
-      } catch (error) {
-        console.error('[Auth] Failed to get Clerk token:', error);
-      }
-    }
-    return null;
-  }, [clerkAuth]);
-
-  // Refresh user data
-  const refreshUser = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      if (clerkAuth.isSignedIn) {
-        const token = await clerkAuth.getToken();
-        const backendUser = await fetchBackendUser(token);
-        setUser(backendUser);
-      } else {
-        setUser(null);
-      }
-    } catch (error) {
-      console.error('[Auth] Error refreshing user:', error);
-      setUser(null);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [clerkAuth]);
-
-  // Traditional login (not available in Clerk mode)
-  const login = useCallback(async () => {
-    throw new Error('Session login not available in Clerk mode. Use Clerk sign-in.');
-  }, []);
-
-  // Logout
-  const logout = useCallback(async () => {
-    try {
-      if (clerkAuth.isSignedIn) {
-        await clerkAuth.signOut();
-      }
-    } catch (error) {
-      console.error('[Auth] Logout error:', error);
-    } finally {
-      setUser(null);
-    }
-  }, [clerkAuth]);
-
-  // Effect: Handle Clerk auth state changes
-  useEffect(() => {
-    // Wait for Clerk to be ready
-    if (!clerkAuth.isLoaded) {
-      console.log('[Auth] Waiting for Clerk to load...');
-      return;
-    }
-
-    const syncClerkUser = async () => {
-      console.log('[Auth] syncClerkUser called:', {
-        isSignedIn: clerkAuth.isSignedIn,
-        userLoaded: clerkUser.isLoaded,
-        hasUser: !!clerkUser.user
-      });
-
-      if (clerkAuth.isSignedIn && clerkUser.isLoaded && clerkUser.user) {
-        console.log('[Auth] Clerk user signed in, syncing with backend');
-        try {
-          const token = await clerkAuth.getToken();
-          console.log('[Auth] Got token:', !!token);
-          const backendUser = await fetchBackendUser(token);
-          console.log('[Auth] Backend user:', backendUser);
-          setUser(backendUser);
-        } catch (error) {
-          console.error('[Auth] Failed to sync user:', error);
-        }
-      } else {
-        console.log('[Auth] Clerk not signed in, clearing user');
-        setUser(null);
-      }
-      setIsLoading(false);
-    };
-
-    syncClerkUser();
-  }, [clerkAuth.isLoaded, clerkAuth.isSignedIn, clerkUser.isLoaded, clerkUser.user, clerkAuth]);
-
-  // Memoized context value
-  const contextValue = useMemo<AuthContextType>(() => ({
-    user,
-    isLoading: isLoading || !clerkAuth.isLoaded,
-    isAuthenticated: !!user,
-    authMode: AUTH_MODE as 'clerk' | 'session' | 'hybrid',
-    clerkEnabled: true,
-    login,
-    logout,
-    refreshUser,
-    getToken,
-  }), [user, isLoading, clerkAuth.isLoaded, login, logout, refreshUser, getToken]);
-
-  return (
-    <AuthContext.Provider value={contextValue}>
-      {children}
-    </AuthContext.Provider>
-  );
-}
+// Loading fallback for Clerk provider
+const AuthLoadingFallback = () => (
+  <div className="min-h-screen flex items-center justify-center">
+    <div className="text-accent animate-pulse">인증 로딩중...</div>
+  </div>
+);
 
 /**
  * Main AuthProvider - selects appropriate provider based on configuration
@@ -273,7 +165,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
   console.log('[Auth] AuthProvider: CLERK_ENABLED =', CLERK_ENABLED);
 
   if (CLERK_ENABLED) {
-    return <ClerkAuthProvider>{children}</ClerkAuthProvider>;
+    return (
+      <Suspense fallback={<AuthLoadingFallback />}>
+        <LazyClerkAuthProvider>{children}</LazyClerkAuthProvider>
+      </Suspense>
+    );
   }
 
   return <SessionAuthProvider>{children}</SessionAuthProvider>;
